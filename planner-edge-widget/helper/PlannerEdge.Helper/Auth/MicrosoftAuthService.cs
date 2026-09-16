@@ -15,45 +15,89 @@ public sealed record AzureAdOptions
 
 public interface IMicrosoftAuthService : IGraphTokenProvider
 {
+    Task<AzureAdOptions> GetConfigurationAsync(CancellationToken cancellationToken);
+    Task<AzureAdOptions> SaveConfigurationAsync(AzureAdOptions configuration, CancellationToken cancellationToken);
     Task<AuthStatusResponse> GetStatusAsync(CancellationToken cancellationToken);
     Task<AuthStatusResponse> SignInAsync(CancellationToken cancellationToken);
     Task SignOutAsync(CancellationToken cancellationToken);
 }
 
-public sealed class MicrosoftAuthService : IMicrosoftAuthService
+public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILocalJsonStore jsonStore, string? cacheDirectory = null) : IMicrosoftAuthService
 {
     private static readonly string[] Scopes = ["User.Read", "Tasks.ReadWrite"];
-    private readonly IPublicClientApplication? app;
-    private readonly Task cacheReady;
+    private readonly string cacheRoot = cacheDirectory ?? LocalPaths.AppDataRoot();
+    private readonly SemaphoreSlim configurationGate = new(1, 1);
+    private IPublicClientApplication? app;
+    private AzureAdOptions? currentConfiguration;
 
-    public MicrosoftAuthService(IOptions<AzureAdOptions> options)
+    public async Task<AzureAdOptions> GetConfigurationAsync(CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(options.Value.ClientId))
-        {
-            cacheReady = Task.CompletedTask;
-            return;
-        }
-
-        app = PublicClientApplicationBuilder.Create(options.Value.ClientId)
-            .WithAuthority(AzureCloudInstance.AzurePublic, options.Value.Tenant)
-            .WithDefaultRedirectUri()
-            .Build();
-
-        var cacheProperties = new StorageCreationPropertiesBuilder("msal.cache", LocalPaths.AppDataRoot()).Build();
-        cacheReady = RegisterCacheAsync(app, cacheProperties);
+        await EnsureInitializedAsync(cancellationToken);
+        return currentConfiguration!;
     }
 
-    private static async Task RegisterCacheAsync(IPublicClientApplication app, StorageCreationProperties properties)
+    public async Task<AzureAdOptions> SaveConfigurationAsync(AzureAdOptions configuration, CancellationToken cancellationToken)
     {
-        Directory.CreateDirectory(LocalPaths.AppDataRoot());
+        var normalized = Normalize(configuration);
+        await configurationGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (currentConfiguration == normalized) return normalized;
+            var configuredApp = await CreateAppAsync(normalized);
+            await jsonStore.WriteAsync("microsoft-auth", normalized, cancellationToken);
+            app = configuredApp;
+            currentConfiguration = normalized;
+            return normalized;
+        }
+        finally { configurationGate.Release(); }
+    }
+
+    private async Task EnsureInitializedAsync(CancellationToken cancellationToken)
+    {
+        if (currentConfiguration is not null) return;
+        await configurationGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (currentConfiguration is not null) return;
+            var saved = await jsonStore.ReadAsync<AzureAdOptions>("microsoft-auth", cancellationToken);
+            currentConfiguration = saved ?? defaults.Value;
+            app = await CreateAppAsync(currentConfiguration);
+        }
+        finally { configurationGate.Release(); }
+    }
+
+    private static AzureAdOptions Normalize(AzureAdOptions configuration)
+    {
+        if (!Guid.TryParse(configuration.ClientId, out var clientId))
+            throw new ArgumentException("Enter a valid Application (client) ID.");
+        var tenant = string.IsNullOrWhiteSpace(configuration.Tenant) ? "organizations" : configuration.Tenant.Trim();
+        if (tenant != "organizations" && !Guid.TryParse(tenant, out _))
+            throw new ArgumentException("Enter a tenant ID or use organizations.");
+        return new AzureAdOptions { ClientId = clientId.ToString(), Tenant = tenant };
+    }
+
+    private async Task<IPublicClientApplication?> CreateAppAsync(AzureAdOptions configuration)
+    {
+        if (string.IsNullOrWhiteSpace(configuration.ClientId)) return null;
+        var client = PublicClientApplicationBuilder.Create(configuration.ClientId)
+            .WithAuthority(AzureCloudInstance.AzurePublic, configuration.Tenant)
+            .WithDefaultRedirectUri()
+            .Build();
+        var cacheProperties = new StorageCreationPropertiesBuilder($"msal-{configuration.ClientId}-{configuration.Tenant}.cache", cacheRoot).Build();
+        await RegisterCacheAsync(client, cacheProperties);
+        return client;
+    }
+
+    private async Task RegisterCacheAsync(IPublicClientApplication app, StorageCreationProperties properties)
+    {
+        Directory.CreateDirectory(cacheRoot);
         var helper = await MsalCacheHelper.CreateAsync(properties);
         helper.RegisterCache(app.UserTokenCache);
     }
 
     public async Task<string> GetAccessTokenAsync(CancellationToken cancellationToken)
     {
-        var client = RequireApp();
-        await cacheReady;
+        var client = await RequireAppAsync(cancellationToken);
         var account = (await client.GetAccountsAsync()).FirstOrDefault()
             ?? throw new MsalUiRequiredException("no_account", "No Microsoft account is signed in.");
         return (await client.AcquireTokenSilent(Scopes, account).ExecuteAsync(cancellationToken)).AccessToken;
@@ -61,9 +105,9 @@ public sealed class MicrosoftAuthService : IMicrosoftAuthService
 
     public async Task<AuthStatusResponse> GetStatusAsync(CancellationToken cancellationToken)
     {
+        await EnsureInitializedAsync(cancellationToken);
         if (app is null)
             return new AuthStatusResponse(false, null, null, new ApiErrorResponse("not_configured", "Microsoft client ID is not configured."));
-        await cacheReady;
         cancellationToken.ThrowIfCancellationRequested();
         var account = (await app.GetAccountsAsync()).FirstOrDefault();
         return account is null
@@ -73,8 +117,7 @@ public sealed class MicrosoftAuthService : IMicrosoftAuthService
 
     public async Task<AuthStatusResponse> SignInAsync(CancellationToken cancellationToken)
     {
-        var client = RequireApp();
-        await cacheReady;
+        var client = await RequireAppAsync(cancellationToken);
         var result = await client.AcquireTokenInteractive(Scopes)
             .WithPrompt(Prompt.SelectAccount)
             .ExecuteAsync(cancellationToken);
@@ -83,8 +126,8 @@ public sealed class MicrosoftAuthService : IMicrosoftAuthService
 
     public async Task SignOutAsync(CancellationToken cancellationToken)
     {
+        await EnsureInitializedAsync(cancellationToken);
         if (app is null) return;
-        await cacheReady;
         foreach (var account in await app.GetAccountsAsync())
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -92,6 +135,9 @@ public sealed class MicrosoftAuthService : IMicrosoftAuthService
         }
     }
 
-    private IPublicClientApplication RequireApp() =>
-        app ?? throw new InvalidOperationException("Microsoft client ID is not configured.");
+    private async Task<IPublicClientApplication> RequireAppAsync(CancellationToken cancellationToken)
+    {
+        await EnsureInitializedAsync(cancellationToken);
+        return app ?? throw new InvalidOperationException("Microsoft client ID is not configured.");
+    }
 }

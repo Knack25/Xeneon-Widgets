@@ -6,25 +6,41 @@
   <title>Planner Edge Setup</title>
   <style>
     :root{font-family:Segoe UI,system-ui,sans-serif;color:#18212a;background:#f4f6f6}
-    body{margin:0} main{max-width:660px;margin:48px auto;padding:0 24px}
+    body{margin:0} main{max-width:660px;margin:38px auto;padding:0 24px}
     h1{font-size:28px;margin:0 0 8px} p{color:#52606b} section{border-top:1px solid #ced7d9;padding:24px 0}
-    button,select{font:inherit;padding:10px 12px;border:1px solid #7b9095;border-radius:4px;background:white;color:#18212a}
+    button,select,input[type=text]{font:inherit;padding:10px 12px;border:1px solid #7b9095;border-radius:4px;background:white;color:#18212a}
     button{cursor:pointer;background:#146b5b;color:white;border-color:#146b5b}
     button:disabled{opacity:.5;cursor:default} label{display:block;margin:14px 0 8px;font-weight:600}
-    select{width:100%} .actions{display:flex;gap:10px;margin-top:18px;align-items:center}
+    select,input[type=text]{width:100%} .actions{display:flex;gap:10px;margin-top:18px;align-items:center}
     .toggle{display:flex;gap:10px;align-items:center;font-weight:400}.toggle input{width:18px;height:18px}
     #message{min-height:24px;color:#9a3b2d} #account{font-weight:600;color:#18212a}
+    .hint{font-size:14px;line-height:1.4}.step{color:#146b5b;font-size:13px;font-weight:700;text-transform:uppercase}
+    details{margin-top:14px;color:#52606b;font-size:14px} summary{cursor:pointer;color:#146b5b}
   </style>
 </head>
 <body>
   <main>
     <h1>Planner Edge</h1>
-    <p>Choose the Microsoft Planner board shown on your XENEON EDGE.</p>
+    <p>Connect your work account and choose the Planner board shown on your XENEON EDGE.</p>
     <section>
-      <div id="account">Checking account...</div>
-      <div class="actions"><button id="sign-in">Sign in</button><button id="sign-out" hidden>Sign out</button></div>
+      <div class="step">1. Connect Microsoft Planner</div>
+      <label for="client-id">Application (client) ID</label>
+      <input id="client-id" type="text" inputmode="text" autocomplete="off" placeholder="00000000-0000-0000-0000-000000000000">
+      <p class="hint">Paste the ID from your organization's Microsoft Entra app registration. This is not a password or client secret.</p>
+      <label for="tenant-id">Tenant ID <span class="hint">(optional)</span></label>
+      <input id="tenant-id" type="text" autocomplete="off" placeholder="organizations">
+      <div class="actions"><button id="save-connection">Save connection</button></div>
+      <details><summary>Where do I find these IDs?</summary>
+        <p>In the <a href="https://entra.microsoft.com/" target="_blank" rel="noopener noreferrer">Microsoft Entra admin center</a>, open <strong>App registrations</strong> and select your public client app. Copy its Application (client) ID from Overview. You may also copy the Directory (tenant) ID. The app needs delegated Microsoft Graph permissions User.Read and Tasks.ReadWrite, plus a mobile/desktop redirect URI of http://localhost. Your IT administrator may need to create or approve it.</p>
+      </details>
     </section>
     <section>
+      <div class="step">2. Sign in</div>
+      <div id="account">Checking account...</div>
+      <div class="actions"><button id="sign-in" disabled>Sign in with Microsoft</button><button id="sign-out" hidden>Sign out</button></div>
+    </section>
+    <section>
+      <div class="step">3. Choose a board</div>
       <label for="board">Planner board</label>
       <select id="board" disabled><option value="">Sign in to load boards</option></select>
       <label class="toggle"><input id="hide-completed" type="checkbox" checked> Hide completed tasks</label>
@@ -40,6 +56,9 @@
     const signOut = document.querySelector('#sign-out');
     const save = document.querySelector('#save');
     const hideCompleted = document.querySelector('#hide-completed');
+    const clientId = document.querySelector('#client-id');
+    const tenantId = document.querySelector('#tenant-id');
+    const saveConnection = document.querySelector('#save-connection');
     let plans = [];
 
     async function api(path, options) {
@@ -51,6 +70,10 @@
     }
     async function refresh() {
       message.textContent = '';
+      const configuration = await api('/configuration');
+      clientId.value = configuration.clientId || '';
+      tenantId.value = configuration.tenant || '';
+      signIn.disabled = !configuration.clientId;
       const status = await api('/auth/status');
       account.textContent = status.isSignedIn ? `Signed in as ${status.displayName}` : 'Not signed in';
       if (status.error) message.textContent = status.error.message;
@@ -66,6 +89,17 @@
       board.value = settings.selectedPlanId || '';
       hideCompleted.checked = settings.hideCompletedTasks;
     }
+    saveConnection.addEventListener('click', async () => {
+      saveConnection.disabled = true;
+      try {
+        await api('/configuration', {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+          clientId:clientId.value.trim(),tenant:tenantId.value.trim() || 'organizations'
+        })});
+        await refresh();
+        message.textContent = 'Connection saved. Sign in with Microsoft to continue.';
+      } catch(error) { message.textContent = error.message; }
+      finally { saveConnection.disabled = false; }
+    });
     signIn.addEventListener('click', async () => {
       signIn.disabled = true;
       try { await api('/auth/sign-in', {method:'POST'}); await refresh(); }

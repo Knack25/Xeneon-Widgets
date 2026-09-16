@@ -1,4 +1,5 @@
 using System.Net;
+using System.Diagnostics;
 using Microsoft.Identity.Client;
 using PlannerEdge.Helper.Auth;
 using PlannerEdge.Helper.Contracts;
@@ -7,6 +8,8 @@ using PlannerEdge.Helper.Planner;
 using PlannerEdge.Helper.Storage;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole();
 builder.WebHost.UseUrls("http://localhost:8787");
 builder.Services.Configure<AzureAdOptions>(builder.Configuration.GetSection("AzureAd"));
 builder.Services.AddSingleton<ILocalJsonStore>(_ => new LocalJsonStore(LocalPaths.AppDataRoot()));
@@ -59,6 +62,7 @@ app.Use(async (context, next) =>
             GraphApiException => (502, "graph_error", "Microsoft Planner could not complete the request."),
             HttpRequestException => (503, "network_unavailable", "Microsoft Planner is unavailable."),
             InvalidOperationException error when (error.Message.Contains("client ID")) => (503, "not_configured", "Microsoft client ID is not configured."),
+            ArgumentException error => (400, "invalid_configuration", error.Message),
             InvalidOperationException => (404, "not_found", "The requested Planner item was not found."),
             _ => (500, "unknown_error", "The local helper encountered an error.")
         };
@@ -71,6 +75,20 @@ app.Use(async (context, next) =>
 app.UseDefaultFiles();
 app.UseStaticFiles();
 app.MapGet("/health", () => Results.Ok(new { status = "ok", version = "0.1.0" }));
+app.MapGet("/configuration", async (IMicrosoftAuthService auth, CancellationToken ct) =>
+    Results.Ok(await auth.GetConfigurationAsync(ct)));
+app.MapPut("/configuration", async (AzureAdOptions configuration, IMicrosoftAuthService auth,
+    IPlannerSettingsStore settings, CancellationToken ct) =>
+{
+    var previous = await auth.GetConfigurationAsync(ct);
+    var saved = await auth.SaveConfigurationAsync(configuration, ct);
+    if (previous != saved)
+    {
+        var selection = await settings.LoadSettingsAsync(ct);
+        await settings.SaveSettingsAsync(selection with { SelectedPlanId = null, SelectedPlanTitle = null }, ct);
+    }
+    return Results.Ok(saved);
+});
 app.MapGet("/auth/status", async (IMicrosoftAuthService auth, CancellationToken ct) =>
     Results.Ok(await auth.GetStatusAsync(ct)));
 app.MapGet("/auth/sign-in", async (IMicrosoftAuthService auth, CancellationToken ct) =>
@@ -99,4 +117,10 @@ app.MapGet("/display", async (PlannerCoordinator coordinator, CancellationToken 
 app.MapPost("/tasks/{taskId}/complete", async (string taskId, TaskCompletionService completion, CancellationToken ct) =>
     Results.Ok(await completion.CompleteAsync(taskId, ct)));
 
-app.Run();
+await app.StartAsync();
+if (OperatingSystem.IsWindows() && !args.Contains("--no-browser"))
+{
+    try { Process.Start(new ProcessStartInfo("http://localhost:8787") { UseShellExecute = true }); }
+    catch (Exception error) { app.Logger.LogWarning(error, "Could not open setup page automatically."); }
+}
+await app.WaitForShutdownAsync();
