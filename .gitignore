@@ -3,6 +3,7 @@ bin/
 obj/
 dist/
 out/
+.worktrees/
 
 # Node/package outputs if the widget tooling needs them later
 node_modules/
