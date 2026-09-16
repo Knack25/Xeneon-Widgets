@@ -1,0 +1,1 @@
+{"type":"module","scripts":{"test":"node tests/state.test.mjs"},"devDependencies":{"icuewidget-cli":"^0.4.47"}}

@@ -2,9 +2,9 @@
 
 Planner Edge Widget is a XENEON EDGE display project for showing and completing Microsoft Planner tasks from a work account.
 
-The planned architecture uses two parts:
+The project has two parts:
 
-- A local Windows helper service that handles Microsoft sign-in, Microsoft Graph calls, caching, and task completion.
-- A packaged iCUE widget that runs on the XENEON EDGE and talks only to the local helper over localhost.
+- `helper/PlannerEdge.Helper`: local Windows helper for Microsoft sign-in, board selection, caching, and task completion.
+- `widget`: iCUE widget for the XENEON EDGE that reads the selected board and confirms task completion.
 
-See `docs/superpowers/specs/2026-09-16-planner-edge-widget-design.md` for the current design.
+Start with [setup](docs/setup.md). The [design](docs/superpowers/specs/2026-09-16-planner-edge-widget-design.md) and [implementation plan](docs/superpowers/plans/2026-09-16-planner-edge-widget.md) record the architecture.

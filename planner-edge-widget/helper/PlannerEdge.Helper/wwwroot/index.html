@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Planner Edge Setup</title>
+  <style>
+    :root{font-family:Segoe UI,system-ui,sans-serif;color:#18212a;background:#f4f6f6}
+    body{margin:0} main{max-width:660px;margin:48px auto;padding:0 24px}
+    h1{font-size:28px;margin:0 0 8px} p{color:#52606b} section{border-top:1px solid #ced7d9;padding:24px 0}
+    button,select{font:inherit;padding:10px 12px;border:1px solid #7b9095;border-radius:4px;background:white;color:#18212a}
+    button{cursor:pointer;background:#146b5b;color:white;border-color:#146b5b}
+    button:disabled{opacity:.5;cursor:default} label{display:block;margin:14px 0 8px;font-weight:600}
+    select{width:100%} .actions{display:flex;gap:10px;margin-top:18px;align-items:center}
+    .toggle{display:flex;gap:10px;align-items:center;font-weight:400}.toggle input{width:18px;height:18px}
+    #message{min-height:24px;color:#9a3b2d} #account{font-weight:600;color:#18212a}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Planner Edge</h1>
+    <p>Choose the Microsoft Planner board shown on your XENEON EDGE.</p>
+    <section>
+      <div id="account">Checking account...</div>
+      <div class="actions"><button id="sign-in">Sign in</button><button id="sign-out" hidden>Sign out</button></div>
+    </section>
+    <section>
+      <label for="board">Planner board</label>
+      <select id="board" disabled><option value="">Sign in to load boards</option></select>
+      <label class="toggle"><input id="hide-completed" type="checkbox" checked> Hide completed tasks</label>
+      <div class="actions"><button id="save" disabled>Save board</button></div>
+    </section>
+    <p id="message" role="status"></p>
+  </main>
+  <script type="module">
+    const account = document.querySelector('#account');
+    const board = document.querySelector('#board');
+    const message = document.querySelector('#message');
+    const signIn = document.querySelector('#sign-in');
+    const signOut = document.querySelector('#sign-out');
+    const save = document.querySelector('#save');
+    const hideCompleted = document.querySelector('#hide-completed');
+    let plans = [];
+
+    async function api(path, options) {
+      const response = await fetch(path, options);
+      if (response.status === 204) return null;
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.message || 'Request failed');
+      return body;
+    }
+    async function refresh() {
+      message.textContent = '';
+      const status = await api('/auth/status');
+      account.textContent = status.isSignedIn ? `Signed in as ${status.displayName}` : 'Not signed in';
+      if (status.error) message.textContent = status.error.message;
+      signIn.hidden = status.isSignedIn;
+      signOut.hidden = !status.isSignedIn;
+      board.disabled = !status.isSignedIn;
+      save.disabled = !status.isSignedIn;
+      if (!status.isSignedIn) return;
+      const [available, settings] = await Promise.all([api('/plans'), api('/settings')]);
+      plans = available;
+      board.replaceChildren(new Option('Select a board', ''));
+      for (const plan of plans) board.add(new Option(`${plan.title}${plan.groupName ? ` (${plan.groupName})` : ''}`, plan.planId));
+      board.value = settings.selectedPlanId || '';
+      hideCompleted.checked = settings.hideCompletedTasks;
+    }
+    signIn.addEventListener('click', async () => {
+      signIn.disabled = true;
+      try { await api('/auth/sign-in', {method:'POST'}); await refresh(); }
+      catch(error) { message.textContent = error.message; }
+      finally { signIn.disabled = false; }
+    });
+    signOut.addEventListener('click', async () => {
+      try { await api('/auth/sign-out', {method:'POST'}); location.reload(); }
+      catch(error) { message.textContent = error.message; }
+    });
+    save.addEventListener('click', async () => {
+      const selected = plans.find(plan => plan.planId === board.value);
+      if (!selected) { message.textContent = 'Select a board first.'; return; }
+      try {
+        await api('/settings', {method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+          selectedPlanId:selected.planId,selectedPlanTitle:selected.title,hideCompletedTasks:hideCompleted.checked
+        })});
+        message.textContent = 'Board saved.';
+      } catch(error) { message.textContent = error.message; }
+    });
+    refresh().catch(error => { account.textContent = 'Unable to load setup'; message.textContent = error.message; });
+  </script>
+</body>
+</html>

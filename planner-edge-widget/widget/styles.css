@@ -1,0 +1,23 @@
+:root{font-family:"Segoe UI",system-ui,sans-serif;color:#f4faf9;background:#101a20}
+*{box-sizing:border-box}body{margin:0;overflow:hidden}button{font:inherit;cursor:pointer}
+#app{width:100vw;height:100vh;padding:18px 22px;background:#101a20}
+.status{height:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center}
+.status h1{font-size:32px}.status p{color:#a4b4b7;font-size:18px}
+.topbar{height:78px;display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
+h1,h2,p{margin:0}h1{font-size:30px;line-height:1.1}.topbar p{font-size:15px;color:#98aaa9;margin-top:5px}
+.notice{color:#ffcc8c;font-size:15px;max-width:50%;text-align:right}
+.board{height:calc(100vh - 106px);display:grid;grid-auto-flow:column;grid-auto-columns:minmax(280px,1fr);gap:12px;overflow-x:auto;overflow-y:hidden}
+.bucket{min-width:0;border:1px solid #3a5152;border-radius:6px;background:#1a282c;padding:13px;overflow-y:auto}
+.bucket h2{display:flex;justify-content:space-between;gap:12px;font-size:19px;line-height:1.3;color:#d9eae7}
+.bucket h2 span{color:#59d2b5}.tasks{display:grid;gap:8px;margin-top:13px}
+.task{display:grid;grid-template-columns:26px minmax(0,1fr) auto;gap:9px;align-items:center;min-height:56px;width:100%;padding:7px 10px;border:1px solid #405153;border-radius:5px;background:#263638;color:#f4faf9;text-align:left}
+.task:focus-visible,.confirm-actions button:focus-visible{outline:3px solid #73e8ca;outline-offset:2px}
+.checkbox{width:20px;height:20px;border:2px solid #59d2b5;border-radius:4px}
+.task-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:17px}.due{font-size:13px;color:#ffd48a}.empty{font-size:16px;color:#98aaa9}
+.confirm{position:fixed;inset:0;display:grid;place-items:center;background:#000a}
+.confirm-panel{width:min(580px,85vw);padding:24px;background:#203034;border:1px solid #5b7775;border-radius:6px}
+.confirm-panel h2{font-size:25px}.confirm-panel p{margin-top:10px;font-size:19px;overflow-wrap:anywhere}
+.confirm-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:23px}
+.confirm-actions button{min-width:120px;padding:11px 16px;border:1px solid #80a59b;border-radius:5px;color:#f4faf9;background:#33494b}
+.confirm-actions button:last-child{background:#167862;border-color:#167862}.confirm-actions button:disabled{opacity:.5}
+@media(max-width:700px){#app{padding:12px}.topbar{height:66px}h1{font-size:23px}.board{height:calc(100vh - 78px);grid-auto-columns:minmax(230px,80vw)}.task-title{font-size:15px}}

@@ -1,6 +1,102 @@
+using System.Net;
+using Microsoft.Identity.Client;
+using PlannerEdge.Helper.Auth;
+using PlannerEdge.Helper.Contracts;
+using PlannerEdge.Helper.Graph;
+using PlannerEdge.Helper.Planner;
+using PlannerEdge.Helper.Storage;
+
 var builder = WebApplication.CreateBuilder(args);
+builder.WebHost.UseUrls("http://localhost:8787");
+builder.Services.Configure<AzureAdOptions>(builder.Configuration.GetSection("AzureAd"));
+builder.Services.AddSingleton<ILocalJsonStore>(_ => new LocalJsonStore(LocalPaths.AppDataRoot()));
+builder.Services.AddSingleton<IPlannerSettingsStore, PlannerSettingsStore>();
+builder.Services.AddSingleton<IMicrosoftAuthService, MicrosoftAuthService>();
+builder.Services.AddSingleton<IGraphTokenProvider>(provider => provider.GetRequiredService<IMicrosoftAuthService>());
+builder.Services.AddHttpClient<IPlannerGraphClient, PlannerGraphClient>(client =>
+    client.BaseAddress = new Uri("https://graph.microsoft.com/v1.0/"));
+builder.Services.AddSingleton<PlannerBoardService>();
+builder.Services.AddSingleton<PlannerDisplayService>();
+builder.Services.AddSingleton<TaskCompletionService>();
+builder.Services.AddSingleton<PlannerCoordinator>();
+
 var app = builder.Build();
 
-app.MapGet("/", () => "Hello World!");
+app.Use(async (context, next) =>
+{
+    var origin = context.Request.Headers.Origin.ToString();
+    if (origin == "null")
+    {
+        context.Response.Headers.AccessControlAllowOrigin = "null";
+        context.Response.Headers.Vary = "Origin";
+        context.Response.Headers.AccessControlAllowMethods = "GET, POST, PUT, OPTIONS";
+        context.Response.Headers.AccessControlAllowHeaders = "Content-Type";
+    }
+    if (context.Request.Method == "OPTIONS")
+    {
+        context.Response.StatusCode = StatusCodes.Status204NoContent;
+        return;
+    }
+    if (!string.IsNullOrEmpty(origin) && origin != "null" && !origin.StartsWith("http://localhost:", StringComparison.OrdinalIgnoreCase))
+    {
+        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+        return;
+    }
+    try
+    {
+        await next(context);
+    }
+    catch (Exception exception) when (exception is not OperationCanceledException)
+    {
+        var (status, code, message) = exception switch
+        {
+            MsalUiRequiredException => (401, "signed_out", "Sign in to your Microsoft work account."),
+            MsalException => (401, "auth_required", "Microsoft sign-in needs attention."),
+            GraphApiException { StatusCode: HttpStatusCode.PreconditionFailed or HttpStatusCode.Conflict } => (409, "task_conflict", "The task changed. Refresh and try again."),
+            GraphApiException { StatusCode: HttpStatusCode.Forbidden } => (403, "permission_denied", "This account cannot access the requested Planner board."),
+            GraphApiException { StatusCode: HttpStatusCode.Unauthorized } => (401, "auth_required", "Microsoft sign-in needs attention."),
+            GraphApiException { StatusCode: HttpStatusCode.NotFound } => (404, "not_found", "The requested Planner item was not found."),
+            GraphApiException => (502, "graph_error", "Microsoft Planner could not complete the request."),
+            HttpRequestException => (503, "network_unavailable", "Microsoft Planner is unavailable."),
+            InvalidOperationException error when (error.Message.Contains("client ID")) => (503, "not_configured", "Microsoft client ID is not configured."),
+            InvalidOperationException => (404, "not_found", "The requested Planner item was not found."),
+            _ => (500, "unknown_error", "The local helper encountered an error.")
+        };
+        app.Logger.LogError(exception, "Helper request failed: {Code}", code);
+        context.Response.StatusCode = status;
+        await context.Response.WriteAsJsonAsync(new ApiErrorResponse(code, message));
+    }
+});
+
+app.UseDefaultFiles();
+app.UseStaticFiles();
+app.MapGet("/health", () => Results.Ok(new { status = "ok", version = "0.1.0" }));
+app.MapGet("/auth/status", async (IMicrosoftAuthService auth, CancellationToken ct) =>
+    Results.Ok(await auth.GetStatusAsync(ct)));
+app.MapGet("/auth/sign-in", async (IMicrosoftAuthService auth, CancellationToken ct) =>
+    Results.Ok(await auth.SignInAsync(ct)));
+app.MapPost("/auth/sign-in", async (IMicrosoftAuthService auth, CancellationToken ct) =>
+    Results.Ok(await auth.SignInAsync(ct)));
+app.MapPost("/auth/sign-out", async (IMicrosoftAuthService auth, CancellationToken ct) =>
+{
+    await auth.SignOutAsync(ct);
+    return Results.NoContent();
+});
+app.MapGet("/plans", async (PlannerBoardService boards, CancellationToken ct) =>
+    Results.Ok(await boards.GetPlansAsync(ct)));
+app.MapGet("/settings", async (IPlannerSettingsStore settings, CancellationToken ct) =>
+    Results.Ok(await settings.LoadSettingsAsync(ct)));
+app.MapPut("/settings", async (SettingsDto dto, IPlannerSettingsStore settings, CancellationToken ct) =>
+{
+    await settings.SaveSettingsAsync(dto, ct);
+    return Results.Ok(dto);
+});
+app.MapGet("/display", async (PlannerCoordinator coordinator, CancellationToken ct) =>
+{
+    var display = await coordinator.GetDisplayAsync(ct);
+    return display is null ? Results.NoContent() : Results.Ok(display);
+});
+app.MapPost("/tasks/{taskId}/complete", async (string taskId, TaskCompletionService completion, CancellationToken ct) =>
+    Results.Ok(await completion.CompleteAsync(taskId, ct)));
 
 app.Run();
