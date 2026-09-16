@@ -1,0 +1,23 @@
+# Build outputs
+bin/
+obj/
+dist/
+out/
+
+# Node/package outputs if the widget tooling needs them later
+node_modules/
+
+# Local editor/system files
+.vs/
+.vscode/
+*.user
+*.suo
+Thumbs.db
+Desktop.ini
+
+# Local helper secrets and caches
+*.db
+*.sqlite
+*.sqlite3
+*.log
+.env
