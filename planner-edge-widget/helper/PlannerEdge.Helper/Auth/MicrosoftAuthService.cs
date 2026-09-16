@@ -25,6 +25,7 @@ public interface IMicrosoftAuthService : IGraphTokenProvider
 public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILocalJsonStore jsonStore, string? cacheDirectory = null) : IMicrosoftAuthService
 {
     private static readonly string[] Scopes = ["User.Read", "Tasks.ReadWrite"];
+    private const string RedirectUri = "http://localhost";
     private readonly string cacheRoot = cacheDirectory ?? LocalPaths.AppDataRoot();
     private readonly SemaphoreSlim configurationGate = new(1, 1);
     private IPublicClientApplication? app;
@@ -81,7 +82,7 @@ public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILoc
         if (string.IsNullOrWhiteSpace(configuration.ClientId)) return null;
         var client = PublicClientApplicationBuilder.Create(configuration.ClientId)
             .WithAuthority(AzureCloudInstance.AzurePublic, configuration.Tenant)
-            .WithDefaultRedirectUri()
+            .WithRedirectUri(RedirectUri)
             .Build();
         var cacheProperties = new StorageCreationPropertiesBuilder($"msal-{configuration.ClientId}-{configuration.Tenant}.cache", cacheRoot).Build();
         await RegisterCacheAsync(client, cacheProperties);
@@ -120,6 +121,7 @@ public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILoc
         var client = await RequireAppAsync(cancellationToken);
         var result = await client.AcquireTokenInteractive(Scopes)
             .WithPrompt(Prompt.SelectAccount)
+            .WithUseEmbeddedWebView(false)
             .ExecuteAsync(cancellationToken);
         return new AuthStatusResponse(true, result.Account.Username, result.Account.Username);
     }

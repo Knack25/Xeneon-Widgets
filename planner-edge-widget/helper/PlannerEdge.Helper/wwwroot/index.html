@@ -16,6 +16,7 @@
     #message{min-height:24px;color:#9a3b2d} #account{font-weight:600;color:#18212a}
     .hint{font-size:14px;line-height:1.4}.step{color:#146b5b;font-size:13px;font-weight:700;text-transform:uppercase}
     details{margin-top:14px;color:#52606b;font-size:14px} summary{cursor:pointer;color:#146b5b}
+    .help{line-height:1.45}.help ol{padding-left:20px}.help li{margin:7px 0}.help code{font-family:Consolas,monospace}
   </style>
 </head>
 <body>
@@ -37,7 +38,17 @@
     <section>
       <div class="step">2. Sign in</div>
       <div id="account">Checking account...</div>
-      <div class="actions"><button id="sign-in" disabled>Sign in with Microsoft</button><button id="sign-out" hidden>Sign out</button></div>
+      <div class="actions"><button id="sign-in" disabled>Sign in with Microsoft</button><button id="cancel-sign-in" hidden>Cancel sign-in</button><button id="sign-out" hidden>Sign out</button></div>
+      <details class="help"><summary>Microsoft sign-in shows an error?</summary>
+        <p>If you see <strong>AADSTS900971: No reply address provided</strong>, the Microsoft app registration needs a redirect address:</p>
+        <ol>
+          <li>Open the app registration in <a href="https://entra.microsoft.com/" target="_blank" rel="noopener noreferrer">Microsoft Entra</a>.</li>
+          <li>Open <strong>Authentication</strong>, then add the <strong>Mobile and desktop applications</strong> platform.</li>
+          <li>Add the redirect URI <code>http://localhost</code> and save.</li>
+          <li>Return here and try signing in again.</li>
+        </ol>
+        <p>If you cannot edit the app registration, send those steps to your IT administrator.</p>
+      </details>
     </section>
     <section>
       <div class="step">3. Choose a board</div>
@@ -54,12 +65,14 @@
     const message = document.querySelector('#message');
     const signIn = document.querySelector('#sign-in');
     const signOut = document.querySelector('#sign-out');
+    const cancelSignIn = document.querySelector('#cancel-sign-in');
     const save = document.querySelector('#save');
     const hideCompleted = document.querySelector('#hide-completed');
     const clientId = document.querySelector('#client-id');
     const tenantId = document.querySelector('#tenant-id');
     const saveConnection = document.querySelector('#save-connection');
     let plans = [];
+    let signInRequest = null;
 
     async function api(path, options) {
       const response = await fetch(path, options);
@@ -102,10 +115,14 @@
     });
     signIn.addEventListener('click', async () => {
       signIn.disabled = true;
-      try { await api('/auth/sign-in', {method:'POST'}); await refresh(); }
-      catch(error) { message.textContent = error.message; }
-      finally { signIn.disabled = false; }
+      cancelSignIn.hidden = false;
+      signInRequest = new AbortController();
+      message.textContent = 'Complete sign-in in the Microsoft window. If it shows AADSTS900971, open the sign-in help above.';
+      try { await api('/auth/sign-in', {method:'POST',signal:signInRequest.signal}); await refresh(); }
+      catch(error) { message.textContent = error.name === 'AbortError' ? 'Sign-in cancelled. You can try again.' : error.message; }
+      finally { signInRequest = null; cancelSignIn.hidden = true; signIn.disabled = false; }
     });
+    cancelSignIn.addEventListener('click', () => signInRequest?.abort());
     signOut.addEventListener('click', async () => {
       try { await api('/auth/sign-out', {method:'POST'}); location.reload(); }
       catch(error) { message.textContent = error.message; }

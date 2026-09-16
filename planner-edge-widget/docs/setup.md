@@ -8,6 +8,8 @@ On the page, paste your organization's Microsoft Entra **Application (client) ID
 
 Your organization must have a public client app registration with delegated Microsoft Graph permissions `User.Read` and `Tasks.ReadWrite`, a mobile/desktop redirect URI of `http://localhost`, and public client flows enabled. An IT administrator may need to create or approve it. The page includes a short guide to finding the ID.
 
+If Microsoft shows `AADSTS900971: No reply address provided`, open the app registration's **Authentication** page in Microsoft Entra, add **Mobile and desktop applications** with redirect URI `http://localhost`, and save. This registration setting cannot be changed by the helper.
+
 The helper stores your selection and an encrypted Microsoft token cache under your Windows profile. The widget never receives tokens.
 
 For development, `scripts/publish-helper.ps1` builds the Windows executable. Once built, normal setup needs no terminal commands.
