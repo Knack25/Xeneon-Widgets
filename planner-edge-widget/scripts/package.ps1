@@ -1,6 +1,8 @@
 $ErrorActionPreference = "Stop"
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
-$stage = [IO.Path]::GetFullPath((Join-Path $projectRoot "dist\widget"))
+$manifest = Get-Content -Raw (Join-Path $projectRoot "widget\manifest.json") | ConvertFrom-Json
+if ($manifest.version -notmatch '^\d+\.\d+\.\d+$') { throw "Widget version must use major.minor.patch." }
+$stage = [IO.Path]::GetFullPath((Join-Path $projectRoot "dist\PlannerEdgeWidget-$($manifest.version)"))
 $distRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot "dist"))
 if (-not $stage.StartsWith($distRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
     throw "Packaging stage must stay inside dist."
@@ -18,3 +20,13 @@ node $cli validate $stage
 if ($LASTEXITCODE -ne 0) { throw "Widget validation failed." }
 node $cli package $stage
 if ($LASTEXITCODE -ne 0) { throw "Widget packaging failed." }
+
+$generated = [IO.Path]::GetFullPath((Join-Path $distRoot "planner-edge-widget.icuewidget"))
+$versioned = [IO.Path]::GetFullPath((Join-Path $distRoot "PlannerEdgeWidget-$($manifest.version).icuewidget"))
+if (-not $generated.StartsWith($distRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or
+    -not $versioned.StartsWith($distRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Package output must stay inside dist."
+}
+if (-not (Test-Path -LiteralPath $generated)) { throw "Widget package was not created." }
+Move-Item -LiteralPath $generated -Destination $versioned -Force
+Write-Host "Import: $versioned"
