@@ -8,6 +8,8 @@ This design extends the existing native iCUE widget and local helper for a work 
 
 The current helper preserves the order returned by the plan's task-list endpoint. Planner's bucket board instead orders tasks using each task's `bucketTaskBoardFormat.orderHint`. Read and cache that format for visible tasks, sort within each bucket using ordinal hint comparison, and use task ID as a stable tie-breaker. Keep the existing bucket ordering. Fetch formats with bounded concurrency and cache results across the normal display refresh; an unavailable format must leave the board usable and keep that task in a stable fallback position. Compare a known plan with Planner web before settling the final displayed direction. Do not issue an unbounded request for every task at each minute refresh.
 
+Keep each bucket name and task count pinned to the top of its own column while that column's tasks scroll vertically. Give the pinned heading an opaque background and enough stacking priority that task text cannot show through it. Horizontal board scrolling still moves the entire column and its heading together; a short or empty bucket keeps its heading in the normal position. Preserve the current per-bucket scroll position during refreshes and task detail updates.
+
 Add a top-right filter icon with an active state and accessible label, "My tasks". It filters only the selected board, preserving bucket columns and their order, and includes a task when its assignment IDs contain the signed-in user's Microsoft Graph ID. Fetch the user's ID with the existing `User.Read` permission and expose it to the widget through the helper. The filter defaults to off on a new widget load and remains active during refreshes and board switches in the same widget session. The existing hide-completed setting applies before this filter. Show an empty state in a bucket when no tasks remain.
 
 ## Task details and editing
@@ -29,6 +31,7 @@ Use buttons, checkboxes, and an in-widget calendar rather than native dropdown o
 ## Verification
 
 - Compare task order in multiple buckets, including an empty bucket, with the same plan in Planner web. Verify stable order across refreshes and after moving a task.
+- Touch-scroll a long bucket vertically and the board horizontally on the XENEON EDGE; verify its name and count remain visible, task cards do not overlap the heading, and opening and closing a dialog does not reset the scroll position.
 - Verify My tasks with tasks assigned only to the current user, to multiple users including the current user, and to other users; check board switching and hide-completed interaction.
 - Test assignment add, remove, and clear operations, rejected members, denied member-list permission, and concurrent edits.
 - Test due-date selection, clearing, month changes, timezone round-trip against Planner web, and start-date validation.
