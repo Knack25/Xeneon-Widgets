@@ -25,9 +25,9 @@ npm --prefix widget install
 .\scripts\package.ps1
 ```
 
-Import `dist/PlannerEdgeWidget-0.1.2.icuewidget` in iCUE and add it to the XENEON EDGE dashboard. The widget requests access to `localhost:8787` to read the helper. You can tap a task, review its title, then tap **Complete** or **Cancel**.
+Import `dist/PlannerEdgeWidget-0.1.3.icuewidget` in iCUE and add it to the XENEON EDGE dashboard. This version embeds the task view served by the helper at `localhost:8787`, avoiding the direct request that failed in the earlier package. You can tap a task, review its title, then tap **Complete** or **Cancel**.
 
-If iCUE shows **Failed to fetch** in the imported widget, test the same task view with the built-in **iFrame** widget (not **Web URL**, which may try HTTPS for a local HTTP link). Paste this into the iFrame widget's code field:
+If the imported widget does not load, keep using the same task view with the built-in **iFrame** widget (not **Web URL**, which may try HTTPS for a local HTTP link). Paste this into the iFrame widget's code field:
 
 ```html
 <iframe src="http://localhost:8787/board/index.html" width="100%" height="100%" frameborder="0"></iframe>
