@@ -1,3 +1,4 @@
+(() => {
 const { completeTask, getDisplay } = globalThis.PlannerApi;
 const { applyDisplayLoaded, applyError, beginConfirmComplete, cancelConfirmComplete, createInitialState } = globalThis.PlannerState;
 
@@ -100,3 +101,4 @@ function escapeHtml(value) {
 
 loadDisplay();
 setInterval(loadDisplay, 60000);
+})();

@@ -25,7 +25,7 @@ npm --prefix widget install
 .\scripts\package.ps1
 ```
 
-Import `dist/PlannerEdgeWidget-0.1.1.icuewidget` in iCUE and add it to the XENEON EDGE dashboard. The widget requests access to `localhost:8787` to read the helper. You can tap a task, review its title, then tap **Complete** or **Cancel**.
+Import `dist/PlannerEdgeWidget-0.1.2.icuewidget` in iCUE and add it to the XENEON EDGE dashboard. The widget requests access to `localhost:8787` to read the helper. You can tap a task, review its title, then tap **Complete** or **Cancel**.
 
 ## Verify
 
