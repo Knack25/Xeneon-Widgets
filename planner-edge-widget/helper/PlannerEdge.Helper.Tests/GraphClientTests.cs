@@ -7,6 +7,16 @@ namespace PlannerEdge.Helper.Tests;
 public sealed class GraphClientTests
 {
     [Fact]
+    public async Task GetBucketsAsync_MapsOrderHint()
+    {
+        var handler = new StubHandler(_ => """{"value":[{"id":"bucket","name":"Doing","planId":"plan","orderHint":"abc"}]}""");
+
+        var buckets = await CreateClient(handler).GetBucketsAsync("plan", CancellationToken.None);
+
+        Assert.Equal("abc", Assert.Single(buckets).OrderHint);
+    }
+
+    [Fact]
     public async Task GetTasksAsync_MapsTaskAndFollowsNextPage()
     {
         var handler = new StubHandler(request => request.RequestUri!.AbsolutePath.EndsWith("/tasks")

@@ -32,7 +32,8 @@ public sealed class PlannerGraphClient(HttpClient httpClient, IGraphTokenProvide
     {
         var buckets = new List<GraphBucket>();
         await foreach (var item in GetCollectionAsync($"planner/plans/{Uri.EscapeDataString(planId)}/buckets", cancellationToken))
-            buckets.Add(new GraphBucket(item.GetProperty("id").GetString()!, item.GetProperty("name").GetString() ?? "Unnamed bucket", planId));
+            buckets.Add(new GraphBucket(item.GetProperty("id").GetString()!, item.GetProperty("name").GetString() ?? "Unnamed bucket", planId,
+                item.TryGetProperty("orderHint", out var hint) ? hint.GetString() : null));
         return buckets;
     }
 

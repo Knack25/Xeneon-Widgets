@@ -6,6 +6,25 @@ namespace PlannerEdge.Helper.Tests;
 public sealed class PlannerDisplayServiceTests
 {
     [Fact]
+    public async Task GetDisplayAsync_OrdersBucketsByPlannerHint()
+    {
+        var graph = new FakePlannerGraphClient
+        {
+            Buckets =
+            [
+                new GraphBucket("last", "Last", "plan", "z"),
+                new GraphBucket("first", "First", "plan", "a"),
+                new GraphBucket("middle", "Middle", "plan", "m")
+            ],
+            Tasks = [new GraphTask("loose", "Loose", "plan", null, null, null, 0, "etag", [])]
+        };
+
+        var board = await new PlannerDisplayService(graph).GetDisplayAsync("plan", "Board", true, CancellationToken.None);
+
+        Assert.Equal(["First", "Middle", "Last", "No bucket"], board.Buckets.Select(bucket => bucket.Name));
+    }
+
+    [Fact]
     public async Task GetDisplayAsync_GroupsActiveTasksByBucketAndHidesCompleted()
     {
         var graph = new FakePlannerGraphClient

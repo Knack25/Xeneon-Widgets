@@ -23,6 +23,9 @@ public sealed class PlannerDisplayService(IPlannerGraphClient graphClient)
             .ToDictionary(group => group.Key, group => group.Select(ToDisplay).ToList());
 
         var bucketDisplays = buckets
+            .OrderBy(bucket => bucket.OrderHint is null)
+            .ThenBy(bucket => bucket.OrderHint, StringComparer.Ordinal)
+            .ThenBy(bucket => bucket.Id, StringComparer.Ordinal)
             .Select(bucket => new BucketDisplay(
                 bucket.Id,
                 bucket.Name,
