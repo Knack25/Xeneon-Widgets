@@ -1,0 +1,14 @@
+{
+  "author": "Nathan Schneider",
+  "id": "com.knack25.planneredgeconnectiontest",
+  "name": "Planner Edge Connection Test",
+  "description": "Checks whether an imported iCUE widget can reach the local Planner helper.",
+  "version": "0.0.1",
+  "preview_icon": "resources/icon.svg",
+  "min_app_version": "5.51",
+  "min_framework_version": "1.0.0",
+  "os": [{"platform":"windows"}],
+  "supported_devices": [{"type":"dashboard_lcd"}],
+  "interactive": true,
+  "permissions": [{"type":"url","domain":"localhost","port":8787}]
+}

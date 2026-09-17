@@ -35,6 +35,10 @@ If the imported widget does not load, keep using the same task view with the bui
 
 The helper must be running on the same computer. This uses the selected board and the same tap-to-confirm controls; keep the imported widget installed for later testing.
 
+## Connection diagnostic
+
+`scripts/package-connection-test.ps1` creates `dist/PlannerEdgeConnectionTest-0.0.1.icuewidget`. This separate, read-only widget checks only the helper's `/health` endpoint with standard and opaque requests. It never reads or changes Planner tasks. Import it alongside the existing widget if native network access needs troubleshooting; report both on-screen results and whether iCUE asks to allow `localhost:8787`.
+
 ## Verify
 
 ```powershell
