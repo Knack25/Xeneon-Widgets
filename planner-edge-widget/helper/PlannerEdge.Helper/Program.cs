@@ -71,6 +71,7 @@ app.Use(async (context, next) =>
             GraphApiException { StatusCode: HttpStatusCode.Forbidden } => (403, "permission_denied", "This account cannot access the requested Planner board."),
             GraphApiException { StatusCode: HttpStatusCode.Unauthorized } => (401, "auth_required", "Microsoft sign-in needs attention."),
             GraphApiException { StatusCode: HttpStatusCode.NotFound } => (404, "not_found", "The requested Planner item was not found."),
+            GraphApiException { StatusCode: HttpStatusCode.TooManyRequests } => (429, "throttled", "Microsoft Planner is busy. Please try again shortly."),
             GraphApiException => (502, "graph_error", "Microsoft Planner could not complete the request."),
             HttpRequestException => (503, "network_unavailable", "Microsoft Planner is unavailable."),
             InvalidOperationException error when (error.Message.Contains("client ID")) => (503, "not_configured", "Microsoft client ID is not configured."),
@@ -86,7 +87,7 @@ app.Use(async (context, next) =>
 
 app.UseDefaultFiles();
 app.UseStaticFiles();
-app.MapGet("/health", () => Results.Ok(new { status = "ok", version = "0.2.0" }));
+app.MapGet("/health", () => Results.Ok(new { status = "ok", version = "0.2.2" }));
 app.MapGet("/configuration", async (IMicrosoftAuthService auth, CancellationToken ct) =>
     Results.Ok(await auth.GetConfigurationAsync(ct)));
 app.MapPut("/configuration", async (AzureAdOptions configuration, IMicrosoftAuthService auth,

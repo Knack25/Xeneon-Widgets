@@ -14,11 +14,20 @@ public interface IGraphTokenProvider
 
 public sealed class PlannerGraphClient(HttpClient httpClient, IGraphTokenProvider tokenProvider) : IPlannerGraphClient
 {
+    public async Task<IReadOnlyList<GraphPlan>> GetMyPlansAsync(CancellationToken cancellationToken)
+    {
+        var plans = new List<GraphPlan>();
+        await foreach (var item in GetCollectionAsync("me/planner/plans", cancellationToken))
+            plans.Add(new GraphPlan(item.GetProperty("id").GetString()!, item.GetProperty("title").GetString() ?? "Untitled plan",
+                item.TryGetProperty("owner", out var owner) ? owner.GetString() ?? string.Empty : string.Empty, null));
+        return plans;
+    }
+
     public async Task<IReadOnlyList<GraphGroup>> GetMemberGroupsAsync(CancellationToken cancellationToken)
     {
         var groups = new List<GraphGroup>();
         await foreach (var item in GetCollectionAsync("me/memberOf/microsoft.graph.group?$select=id,displayName", cancellationToken))
-            groups.Add(new GraphGroup(item.GetProperty("id").GetString()!, item.GetProperty("displayName").GetString() ?? "Unnamed group"));
+            groups.Add(new GraphGroup(item.GetProperty("id").GetString()!, item.GetProperty("displayName").GetString() ?? "Planner"));
         return groups;
     }
 
@@ -142,12 +151,27 @@ public sealed class PlannerGraphClient(HttpClient httpClient, IGraphTokenProvide
 
     private async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
-        using (request)
+        var retryGet = request.Method == HttpMethod.Get;
+        var uri = request.RequestUri;
+        for (var attempt = 0; ; attempt++)
         {
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await tokenProvider.GetAccessTokenAsync(cancellationToken));
-            var response = await httpClient.SendAsync(request, cancellationToken);
+            using var current = attempt == 0 ? request : new HttpRequestMessage(HttpMethod.Get, uri);
+            current.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await tokenProvider.GetAccessTokenAsync(cancellationToken));
+            var response = await httpClient.SendAsync(current, cancellationToken);
             if (response.IsSuccessStatusCode)
                 return response;
+            if (response.StatusCode == HttpStatusCode.TooManyRequests && retryGet && attempt < 2)
+            {
+                var retry = response.Headers.RetryAfter;
+                var delay = retry?.Delta ?? (retry?.Date - DateTimeOffset.UtcNow) ?? TimeSpan.FromSeconds(1 << attempt);
+                if (delay < TimeSpan.Zero) delay = TimeSpan.Zero;
+                if (delay <= TimeSpan.FromSeconds(10))
+                {
+                    response.Dispose();
+                    await Task.Delay(delay, cancellationToken);
+                    continue;
+                }
+            }
             var body = await response.Content.ReadAsStringAsync(cancellationToken);
             var status = response.StatusCode;
             response.Dispose();

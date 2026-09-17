@@ -5,16 +5,18 @@ const app = document.getElementById("app");
 const details = new Map();
 const failures = new Set();
 const pending = new Set();
+const visibleTasks = new Set();
 let state = flow.createInitialState();
 let plans = null;
 let detailGeneration = 0;
+let taskObserver = null;
 
 async function loadDisplay(force = false) {
   if (!force && (state.dialog || state.completing)) return;
   try {
     const board = await api.getDisplay();
     detailGeneration++;
-    details.clear(); failures.clear();
+    details.clear(); failures.clear(); visibleTasks.clear();
     state = flow.applyDisplayLoaded(state, board);
   } catch (error) { state = flow.applyError(state, normalizeError(error)); }
   render();
@@ -40,6 +42,23 @@ function render() {
       <p>${board.isStale || state.mode === "error" ? "Offline view" : `Synced ${formatTime(board.syncedAt)}`}</p></div>
       ${state.error ? `<span class="notice">${escapeHtml(state.error.message)}</span>` : ""}</header>
     <section class="board">${board.buckets.map(renderBucket).join("")}</section>${renderDialog()}`;
+  observeTasks();
+}
+
+function observeTasks() {
+  taskObserver?.disconnect();
+  if (typeof IntersectionObserver !== "function" || !app.querySelectorAll) {
+    state.display?.buckets.flatMap(bucket => bucket.tasks).forEach(task => visibleTasks.add(task.taskId));
+    queueDetails();
+    return;
+  }
+  taskObserver = new IntersectionObserver(entries => {
+    for (const entry of entries) {
+      if (entry.isIntersecting) visibleTasks.add(entry.target.dataset.openTask);
+    }
+    queueDetails();
+  }, { rootMargin: "80px" });
+  app.querySelectorAll(".task").forEach(task => taskObserver.observe(task));
   queueDetails();
 }
 
@@ -108,8 +127,8 @@ function queueDetails() {
   if (!board) return;
   const planId = board.planId;
   const generation = detailGeneration;
-  const ids = board.buckets.flatMap(bucket => bucket.tasks).map(task => task.taskId);
-  while (pending.size < 4) {
+  const ids = [state.dialog?.taskId, ...visibleTasks].filter(Boolean);
+  while (pending.size < 2) {
     const taskId = ids.find(id => !details.has(id) && !failures.has(id) && !pending.has(id));
     if (!taskId) break;
     pending.add(taskId);

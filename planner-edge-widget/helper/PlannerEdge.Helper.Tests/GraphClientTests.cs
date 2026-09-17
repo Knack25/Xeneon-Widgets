@@ -58,6 +58,41 @@ public sealed class GraphClientTests
     }
 
     [Fact]
+    public async Task GetMyPlansAsync_RetriesThrottlingAndReadsOwner()
+    {
+        var calls = 0;
+        var handler = new ResponseHandler(request =>
+        {
+            Assert.Equal("/v1.0/me/planner/plans", request.RequestUri!.AbsolutePath);
+            if (++calls == 1)
+            {
+                var throttled = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+                throttled.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.Zero);
+                return throttled;
+            }
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("""{"value":[{"id":"plan","title":"Team","owner":"group"}]}""")
+            };
+        });
+
+        var plan = Assert.Single(await CreateClient(handler).GetMyPlansAsync(CancellationToken.None));
+
+        Assert.Equal("group", plan.GroupId);
+        Assert.Equal(2, calls);
+    }
+
+    [Fact]
+    public async Task GetMemberGroupsAsync_UsesNeutralLabelWhenNameIsUnavailable()
+    {
+        var handler = new StubHandler(_ => """{"value":[{"id":"group","displayName":null}]}""");
+
+        var group = Assert.Single(await CreateClient(handler).GetMemberGroupsAsync(CancellationToken.None));
+
+        Assert.Equal("Planner", group.DisplayName);
+    }
+
+    [Fact]
     public async Task GetTasksAsync_MapsTaskAndFollowsNextPage()
     {
         var handler = new StubHandler(request => request.RequestUri!.AbsolutePath.EndsWith("/tasks")
@@ -104,5 +139,11 @@ public sealed class GraphClientTests
                 Content = new StringContent(responseBody(request), Encoding.UTF8, "application/json")
             });
         }
+    }
+
+    private sealed class ResponseHandler(Func<HttpRequestMessage, HttpResponseMessage> response) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+            => Task.FromResult(response(request));
     }
 }

@@ -102,3 +102,36 @@ test("scheduled board refresh reloads checklist previews", async () => {
   await new Promise(resolve => setTimeout(resolve, 15));
   assert.equal(detailReads, 2);
 });
+
+test("only visible task cards prefetch details when observation is available", async () => {
+  let observer;
+  const reads = [];
+  const app = { innerHTML: "", addEventListener() {}, querySelectorAll: () => [
+    { dataset: { openTask: "visible" } }, { dataset: { openTask: "hidden" } }
+  ] };
+  const board = { planId: "plan", planTitle: "Work", syncedAt: new Date().toISOString(), buckets: [
+    { bucketId: "bucket", name: "Doing", tasks: [
+      { taskId: "visible", title: "Visible" }, { taskId: "hidden", title: "Hidden" }
+    ] }
+  ] };
+  class Observer {
+    constructor(callback) { this.callback = callback; observer = this; }
+    observe() {}
+    disconnect() {}
+  }
+  const context = { document: { getElementById: () => app }, setInterval() {}, Intl, Date,
+    IntersectionObserver: Observer,
+    fetch: async path => ({ ok: true, status: 200, json: async () => {
+      if (path.endsWith("/display")) return board;
+      reads.push(path);
+      return { checklist: [], assignees: [] };
+    } }) };
+  for (const file of ["state.js", "api.js", "app.js"])
+    runInNewContext(readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"), context);
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(reads.length, 0);
+  observer.callback([{ target: { dataset: { openTask: "visible" } }, isIntersecting: true }]);
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(reads.length, 1);
+  assert.match(reads[0], /visible/);
+});

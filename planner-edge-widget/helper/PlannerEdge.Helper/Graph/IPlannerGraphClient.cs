@@ -2,6 +2,8 @@ namespace PlannerEdge.Helper.Graph;
 
 public interface IPlannerGraphClient
 {
+    Task<IReadOnlyList<GraphPlan>> GetMyPlansAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
+
     Task<IReadOnlyList<GraphGroup>> GetMemberGroupsAsync(CancellationToken cancellationToken);
 
     Task<IReadOnlyList<GraphPlan>> GetPlansForGroupAsync(string groupId, CancellationToken cancellationToken);

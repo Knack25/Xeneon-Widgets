@@ -2,6 +2,7 @@ using PlannerEdge.Helper.Contracts;
 using PlannerEdge.Helper.Graph;
 using PlannerEdge.Helper.Planner;
 using PlannerEdge.Helper.Storage;
+using Microsoft.Extensions.Caching.Memory;
 
 namespace PlannerEdge.Helper.Tests;
 
@@ -11,7 +12,7 @@ public sealed class BoardSelectionServiceTests
     public async Task SelectAsync_SavesCurrentTitleAndPreservesHideCompleted()
     {
         var store = new FakeStore();
-        var service = new BoardSelectionService(new PlannerBoardService(new FakeGraph()), store);
+        var service = new BoardSelectionService(new PlannerBoardService(new FakeGraph(), new MemoryCache(new MemoryCacheOptions())), store);
 
         var selected = await service.SelectAsync("plan", CancellationToken.None);
 
@@ -23,7 +24,7 @@ public sealed class BoardSelectionServiceTests
     public async Task SelectAsync_DoesNotReplaceSettingsForUnknownPlan()
     {
         var store = new FakeStore();
-        var service = new BoardSelectionService(new PlannerBoardService(new FakeGraph()), store);
+        var service = new BoardSelectionService(new PlannerBoardService(new FakeGraph(), new MemoryCache(new MemoryCacheOptions())), store);
 
         await Assert.ThrowsAsync<ArgumentException>(() => service.SelectAsync("missing", CancellationToken.None));
 
@@ -41,6 +42,8 @@ public sealed class BoardSelectionServiceTests
 
     private sealed class FakeGraph : IPlannerGraphClient
     {
+        public Task<IReadOnlyList<GraphPlan>> GetMyPlansAsync(CancellationToken ct) =>
+            Task.FromResult<IReadOnlyList<GraphPlan>>([new GraphPlan("plan", "Current name", "group", null)]);
         public Task<IReadOnlyList<GraphGroup>> GetMemberGroupsAsync(CancellationToken ct) => Task.FromResult<IReadOnlyList<GraphGroup>>([new GraphGroup("group", "Team")]);
         public Task<IReadOnlyList<GraphPlan>> GetPlansForGroupAsync(string groupId, CancellationToken ct) =>
             Task.FromResult<IReadOnlyList<GraphPlan>>([new GraphPlan("plan", "Current name", groupId, null)]);

@@ -27,7 +27,7 @@ npm --prefix widget install
 .\scripts\package.ps1
 ```
 
-Import `dist/PlannerEdgeWidget-0.2.1.icuewidget` in iCUE and add it to the XENEON EDGE dashboard. Tap the board name to switch boards. The large task checkbox asks to complete the task; the rest of a task opens its details. A task card previews up to three checklist items; checklist items can be completed from the details view. Tap outside a dialog to close it.
+Import `dist/PlannerEdgeWidget-0.2.2.icuewidget` in iCUE and add it to the XENEON EDGE dashboard. Tap the board name to switch boards. The large task checkbox asks to complete the task; the rest of a task opens its details. A task card previews up to three checklist items; checklist items can be completed from the details view. Tap outside a dialog to close it.
 
 If the imported widget does not load, keep using the same task view with the built-in **iFrame** widget (not **Web URL**, which may try HTTPS for a local HTTP link). Paste this into the iFrame widget's code field:
 
