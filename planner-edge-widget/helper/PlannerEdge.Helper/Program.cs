@@ -6,6 +6,7 @@ using PlannerEdge.Helper.Contracts;
 using PlannerEdge.Helper.Graph;
 using PlannerEdge.Helper.Planner;
 using PlannerEdge.Helper.Storage;
+using PlannerEdge.Helper;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Logging.ClearProviders();
@@ -28,9 +29,21 @@ var app = builder.Build();
 app.Use(async (context, next) =>
 {
     var origin = context.Request.Headers.Origin.ToString();
-    if (origin == "null")
+    if (app.Configuration.GetValue<bool>("TraceWidgetHealth") && context.Request.Path == "/health")
     {
-        context.Response.Headers.AccessControlAllowOrigin = "null";
+        app.Logger.LogInformation("Widget health request: method={Method} origin={Origin} preflightMethod={PreflightMethod} privateNetwork={PrivateNetwork} fetchSite={FetchSite}",
+            context.Request.Method, origin, context.Request.Headers.AccessControlRequestMethod.ToString(),
+            context.Request.Headers["Access-Control-Request-Private-Network"].ToString(),
+            context.Request.Headers["Sec-Fetch-Site"].ToString());
+    }
+    if (!string.IsNullOrEmpty(origin) && !WidgetOriginPolicy.IsAllowed(origin))
+    {
+        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+        return;
+    }
+    if (WidgetOriginPolicy.IsAllowed(origin))
+    {
+        context.Response.Headers.AccessControlAllowOrigin = origin;
         context.Response.Headers.Vary = "Origin";
         context.Response.Headers.AccessControlAllowMethods = "GET, POST, PUT, OPTIONS";
         context.Response.Headers.AccessControlAllowHeaders = "Content-Type";
@@ -38,11 +51,6 @@ app.Use(async (context, next) =>
     if (context.Request.Method == "OPTIONS")
     {
         context.Response.StatusCode = StatusCodes.Status204NoContent;
-        return;
-    }
-    if (!string.IsNullOrEmpty(origin) && origin != "null" && !origin.StartsWith("http://localhost:", StringComparison.OrdinalIgnoreCase))
-    {
-        context.Response.StatusCode = StatusCodes.Status403Forbidden;
         return;
     }
     try
