@@ -43,4 +43,28 @@ public sealed class MicrosoftAuthConfigurationTests
         await Assert.ThrowsAsync<ArgumentException>(() => service.SaveConfigurationAsync(
             new AzureAdOptions { ClientId = "not-an-id" }, CancellationToken.None));
     }
+
+    [Fact]
+    public async Task FailedInitializationCanRetryAfterCacheBecomesAvailable()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "PlannerEdgeTests", Guid.NewGuid().ToString("N"));
+        var blockedCache = Path.Combine(root, "cache");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var store = new LocalJsonStore(root);
+            await store.WriteAsync("microsoft-auth", new AzureAdOptions { ClientId = Guid.NewGuid().ToString() }, CancellationToken.None);
+            await File.WriteAllTextAsync(blockedCache, "occupied");
+            var service = new MicrosoftAuthService(Options.Create(new AzureAdOptions()), store, blockedCache);
+
+            await Assert.ThrowsAnyAsync<IOException>(() => service.GetConfigurationAsync(CancellationToken.None));
+            File.Delete(blockedCache);
+
+            Assert.Null((await service.GetStatusAsync(CancellationToken.None)).Error);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
 }

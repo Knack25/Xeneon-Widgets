@@ -63,8 +63,10 @@ public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILoc
         {
             if (currentConfiguration is not null) return;
             var saved = await jsonStore.ReadAsync<AzureAdOptions>("microsoft-auth", cancellationToken);
-            currentConfiguration = saved ?? defaults.Value;
-            app = await CreateAppAsync(currentConfiguration);
+            var configuration = saved ?? defaults.Value;
+            var configuredApp = await CreateAppAsync(configuration);
+            app = configuredApp;
+            currentConfiguration = configuration;
         }
         finally { configurationGate.Release(); }
     }
