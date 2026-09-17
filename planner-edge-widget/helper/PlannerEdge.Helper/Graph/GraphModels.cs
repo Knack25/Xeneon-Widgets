@@ -6,6 +6,10 @@ public sealed record GraphPlan(string Id, string Title, string GroupId, string? 
 
 public sealed record GraphBucket(string Id, string Name, string PlanId, string? OrderHint = null);
 
+public sealed record GraphChecklistItem(string Id, string Title, bool IsChecked, string? OrderHint);
+
+public sealed record GraphTaskDetails(string ETag, IReadOnlyList<GraphChecklistItem> Checklist);
+
 public sealed record GraphTask(
     string Id,
     string Title,

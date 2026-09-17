@@ -7,6 +7,34 @@ namespace PlannerEdge.Helper.Tests;
 public sealed class GraphClientTests
 {
     [Fact]
+    public async Task GetTaskDetailsAsync_MapsOrderedChecklist()
+    {
+        var handler = new StubHandler(_ => """{"@odata.etag":"W/\"details\"","checklist":{"second":{"title":"Second","isChecked":true,"orderHint":"z"},"first":{"title":"First","isChecked":false,"orderHint":"a"}}}""");
+
+        var details = await CreateClient(handler).GetTaskDetailsAsync("task", CancellationToken.None);
+
+        Assert.Equal("W/\"details\"", details.ETag);
+        Assert.Equal(["first", "second"], details.Checklist.Select(item => item.Id));
+        Assert.True(details.Checklist[1].IsChecked);
+    }
+
+    [Fact]
+    public async Task CompleteChecklistItemAsync_PatchesOnlySelectedItemWithEtag()
+    {
+        var handler = new StubHandler(request =>
+        {
+            Assert.Equal(HttpMethod.Patch, request.Method);
+            Assert.EndsWith("/planner/tasks/task/details", request.RequestUri!.AbsolutePath);
+            Assert.Equal("W/\"latest\"", request.Headers.IfMatch.Single().ToString());
+            Assert.Equal("{\"checklist\":{\"item\":{\"@odata.type\":\"microsoft.graph.plannerChecklistItem\",\"isChecked\":true}}}",
+                request.Content!.ReadAsStringAsync().Result);
+            return "{}";
+        });
+
+        await CreateClient(handler).CompleteChecklistItemAsync("task", "item", "W/\"latest\"", CancellationToken.None);
+    }
+
+    [Fact]
     public async Task GetBucketsAsync_MapsOrderHint()
     {
         var handler = new StubHandler(_ => """{"value":[{"id":"bucket","name":"Doing","planId":"plan","orderHint":"abc"}]}""");

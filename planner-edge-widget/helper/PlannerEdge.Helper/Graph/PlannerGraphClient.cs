@@ -59,6 +59,51 @@ public sealed class PlannerGraphClient(HttpClient httpClient, IGraphTokenProvide
         }
     }
 
+    public async Task<GraphTaskDetails> GetTaskDetailsAsync(string taskId, CancellationToken cancellationToken)
+    {
+        using var response = await SendAsync(new HttpRequestMessage(HttpMethod.Get,
+            $"planner/tasks/{Uri.EscapeDataString(taskId)}/details"), cancellationToken);
+        using var document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellationToken), cancellationToken: cancellationToken);
+        var root = document.RootElement;
+        var checklist = new List<GraphChecklistItem>();
+        if (root.TryGetProperty("checklist", out var entries) && entries.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var entry in entries.EnumerateObject())
+            {
+                if (entry.Value.ValueKind != JsonValueKind.Object) continue;
+                var item = entry.Value;
+                checklist.Add(new GraphChecklistItem(entry.Name,
+                    item.TryGetProperty("title", out var title) ? title.GetString() ?? string.Empty : string.Empty,
+                    item.TryGetProperty("isChecked", out var checkedValue) && checkedValue.GetBoolean(),
+                    item.TryGetProperty("orderHint", out var hint) ? hint.GetString() : null));
+            }
+        }
+        return new GraphTaskDetails(root.TryGetProperty("@odata.etag", out var etag) ? etag.GetString() ?? string.Empty : string.Empty,
+            checklist.OrderBy(item => item.OrderHint is null)
+                .ThenBy(item => item.OrderHint, StringComparer.Ordinal)
+                .ThenBy(item => item.Id, StringComparer.Ordinal).ToList());
+    }
+
+    public async Task CompleteChecklistItemAsync(string taskId, string itemId, string etag, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Patch,
+            $"planner/tasks/{Uri.EscapeDataString(taskId)}/details");
+        request.Headers.IfMatch.ParseAdd(etag);
+        var body = new Dictionary<string, object>
+        {
+            ["checklist"] = new Dictionary<string, object>
+            {
+                [itemId] = new Dictionary<string, object>
+                {
+                    ["@odata.type"] = "microsoft.graph.plannerChecklistItem",
+                    ["isChecked"] = true
+                }
+            }
+        };
+        request.Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
+        using var response = await SendAsync(request, cancellationToken);
+    }
+
     public async Task CompleteTaskAsync(string taskId, string etag, CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(HttpMethod.Patch, $"planner/tasks/{Uri.EscapeDataString(taskId)}");

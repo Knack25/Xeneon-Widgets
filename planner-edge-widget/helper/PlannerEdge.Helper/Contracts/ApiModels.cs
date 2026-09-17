@@ -45,3 +45,12 @@ public sealed record CompleteTaskResponse(
     string TaskId,
     bool Completed,
     BoardDisplay? Board);
+
+public sealed record ChecklistItemDisplay(string ItemId, string Title, bool IsChecked);
+
+public sealed record TaskDetailsResponse(
+    string TaskId,
+    string Title,
+    DateTimeOffset? DueDateTime,
+    IReadOnlyList<string> Assignees,
+    IReadOnlyList<ChecklistItemDisplay> Checklist);

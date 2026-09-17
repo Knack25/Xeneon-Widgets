@@ -23,6 +23,9 @@ builder.Services.AddSingleton<PlannerBoardService>();
 builder.Services.AddSingleton<PlannerDisplayService>();
 builder.Services.AddSingleton<TaskCompletionService>();
 builder.Services.AddSingleton<PlannerCoordinator>();
+builder.Services.AddMemoryCache();
+builder.Services.AddSingleton<TaskDetailsService>();
+builder.Services.AddSingleton<ChecklistCompletionService>();
 
 var app = builder.Build();
 
@@ -124,6 +127,14 @@ app.MapGet("/display", async (PlannerCoordinator coordinator, CancellationToken 
 });
 app.MapPost("/tasks/{taskId}/complete", async (string taskId, TaskCompletionService completion, CancellationToken ct) =>
     Results.Ok(await completion.CompleteAsync(taskId, ct)));
+app.MapGet("/tasks/{taskId}/details", async (string taskId, TaskDetailsService details, CancellationToken ct) =>
+    Results.Ok(await details.GetAsync(taskId, ct)));
+app.MapPost("/tasks/{taskId}/checklist/{itemId}/complete", async (string taskId, string itemId,
+    ChecklistCompletionService completion, CancellationToken ct) =>
+{
+    await completion.CompleteAsync(taskId, itemId, ct);
+    return Results.NoContent();
+});
 
 await app.StartAsync();
 if (OperatingSystem.IsWindows() && !args.Contains("--no-browser"))
