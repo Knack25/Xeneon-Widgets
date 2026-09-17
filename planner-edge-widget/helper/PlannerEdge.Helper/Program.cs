@@ -88,7 +88,7 @@ app.Use(async (context, next) =>
 
 app.UseDefaultFiles();
 app.UseStaticFiles();
-app.MapGet("/health", () => Results.Ok(new { status = "ok", version = "0.2.3" }));
+app.MapGet("/health", () => Results.Ok(new { status = "ok", version = "0.2.4" }));
 app.MapGet("/configuration", async (IMicrosoftAuthService auth, CancellationToken ct) =>
     Results.Ok(await auth.GetConfigurationAsync(ct)));
 app.MapPut("/configuration", async (AzureAdOptions configuration, IMicrosoftAuthService auth,

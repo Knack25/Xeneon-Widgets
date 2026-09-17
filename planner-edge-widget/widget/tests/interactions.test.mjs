@@ -40,7 +40,7 @@ test("API uses focused helper endpoints for selection and checklist completion",
   assert.equal(calls[2][1], "PUT");
 });
 
-test("task details offer a bucket selector and move only after selection", async () => {
+test("task details use a tap-friendly bucket picker and move only after selection", async () => {
   const handlers = {};
   const calls = [];
   const app = { innerHTML: "", addEventListener: (type, listener) => { handlers[type] = listener; } };
@@ -60,10 +60,13 @@ test("task details offer a bucket selector and move only after selection", async
     runInNewContext(readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"), context);
   await new Promise(resolve => setTimeout(resolve, 15));
   await handlers.click({ target: { closest: selector => selector === "[data-open-task]" ? { dataset: { openTask: "task" } } : null } });
-  assert.match(app.innerHTML, /data-task-bucket/);
+  assert.match(app.innerHTML, /data-open-bucket-picker/);
+  assert.doesNotMatch(app.innerHTML, /<select/);
   assert.doesNotMatch(app.innerHTML, /data-move-task/);
 
-  handlers.change({ target: { matches: selector => selector === "[data-task-bucket]", value: "target" } });
+  await handlers.click({ target: { closest: selector => selector === "[data-open-bucket-picker]" ? { dataset: {} } : null } });
+  assert.match(app.innerHTML, /data-select-task-bucket="target"/);
+  await handlers.click({ target: { closest: selector => selector === "[data-select-task-bucket]" ? { dataset: { selectTaskBucket: "target" } } : null } });
   assert.match(app.innerHTML, /data-move-task/);
   await handlers.click({ target: { closest: selector => selector === "[data-move-task]" ? { dataset: {} } : null } });
   assert.ok(calls.some(([path, method]) => path.endsWith("/tasks/task/bucket") && method === "PUT"));

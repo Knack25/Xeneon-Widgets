@@ -19,12 +19,17 @@ function openBoardPicker(state) {
 }
 
 function openTaskDetails(state, taskId) {
-  return { ...state, dialog: { type: "taskDetails", taskId, selectedBucketId: null }, dialogError: null };
+  return { ...state, dialog: { type: "taskDetails", taskId, selectedBucketId: null, bucketPickerOpen: false }, dialogError: null };
+}
+
+function openTaskBucketPicker(state) {
+  if (state.dialog?.type !== "taskDetails") return state;
+  return { ...state, dialog: { ...state.dialog, bucketPickerOpen: !state.dialog.bucketPickerOpen }, dialogError: null };
 }
 
 function selectTaskBucket(state, bucketId) {
   if (state.dialog?.type !== "taskDetails") return state;
-  return { ...state, dialog: { ...state.dialog, selectedBucketId: bucketId }, dialogError: null };
+  return { ...state, dialog: { ...state.dialog, selectedBucketId: bucketId, bucketPickerOpen: false }, dialogError: null };
 }
 
 function beginConfirmChecklist(state, taskId, itemId, title, returnTo = null) {
@@ -41,4 +46,4 @@ function applyError(state, error) {
 }
 
 globalThis.PlannerState = { createInitialState, applyDisplayLoaded, beginConfirmComplete, cancelConfirmComplete,
-  openBoardPicker, openTaskDetails, selectTaskBucket, beginConfirmChecklist, closeDialog, applyError };
+  openBoardPicker, openTaskDetails, openTaskBucketPicker, selectTaskBucket, beginConfirmChecklist, closeDialog, applyError };

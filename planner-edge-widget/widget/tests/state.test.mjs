@@ -6,7 +6,7 @@ import { runInNewContext } from "node:vm";
 const context = {};
 runInNewContext(readFileSync(new URL("../src/state.js", import.meta.url), "utf8"), context);
 const { applyDisplayLoaded, applyError, beginConfirmComplete, cancelConfirmComplete, createInitialState,
-  openBoardPicker, openTaskDetails, beginConfirmChecklist, closeDialog } = context.PlannerState;
+  openBoardPicker, openTaskDetails, beginConfirmChecklist, closeDialog, openTaskBucketPicker } = context.PlannerState;
 
 test("display load selects board or no-board state", () => {
   const board = applyDisplayLoaded(createInitialState(), { planTitle: "Launch", buckets: [] });
@@ -41,7 +41,10 @@ test("picker, details, and checklist confirmation are distinct dialogs", () => {
 test("task details track a pending bucket choice", () => {
   const board = applyDisplayLoaded(createInitialState(), { planTitle: "Work", buckets: [] });
   const details = openTaskDetails(board, "task");
-  const selected = context.PlannerState.selectTaskBucket(details, "target");
+  const picker = openTaskBucketPicker(details);
+  assert.equal(picker.dialog.bucketPickerOpen, true);
+  const selected = context.PlannerState.selectTaskBucket(picker, "target");
   assert.equal(selected.dialog.selectedBucketId, "target");
+  assert.equal(selected.dialog.bucketPickerOpen, false);
   assert.equal(closeDialog(selected).dialog, null);
 });

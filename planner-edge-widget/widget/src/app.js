@@ -104,12 +104,16 @@ function renderDialog() {
     const buckets = state.display?.buckets || [];
     const currentBucketId = info?.bucketId ?? task?.bucketId ?? "";
     const selectedBucketId = dialog.selectedBucketId ?? currentBucketId;
+    const selectedBucketName = buckets.find(bucket => bucket.bucketId === selectedBucketId)?.name || "No bucket";
     const movingToDifferentBucket = selectedBucketId && selectedBucketId !== currentBucketId;
     content = `<h2>${escapeHtml(info?.title || task?.title || "Task")}</h2>${info ? `
       <dl class="task-meta"><dt>Due</dt><dd>${info.dueDateTime ? formatDate(info.dueDateTime) : "No due date"}</dd>
       <dt>Assigned to</dt><dd>${info.assignees?.length ? info.assignees.map(escapeHtml).join(", ") : "Unassigned"}</dd>
-      <dt>Bucket</dt><dd><select class="bucket-select" data-task-bucket ${state.completing ? "disabled" : ""}>${buckets.map(bucket =>
-        `<option value="${escapeHtml(bucket.bucketId)}" ${bucket.bucketId === selectedBucketId ? "selected" : ""}>${escapeHtml(bucket.name)}</option>`).join("")}</select></dd></dl>
+      <dt>Bucket</dt><dd><button type="button" class="bucket-picker-trigger" data-open-bucket-picker ${state.completing ? "disabled" : ""}
+        aria-expanded="${dialog.bucketPickerOpen ? "true" : "false"}"><span>${escapeHtml(selectedBucketName)}</span><span aria-hidden="true">v</span></button>
+        ${dialog.bucketPickerOpen ? `<div class="bucket-option-list" role="listbox" aria-label="Task bucket">${buckets.map(bucket =>
+          `<button type="button" data-select-task-bucket="${escapeHtml(bucket.bucketId)}" role="option"
+            aria-selected="${bucket.bucketId === selectedBucketId ? "true" : "false"}">${escapeHtml(bucket.name)}</button>`).join("")}</div>` : ""}</dd></dl>
       ${movingToDifferentBucket ? '<div class="confirm-actions move-action"><button class="primary" data-move-task>Move task</button></div>' : ""}
       <h3>Checklist</h3>${info.checklist?.length ? `<div class="detail-checklist">${info.checklist.map(item => renderChecklistButton(dialog.taskId, item, "detail-item")).join("")}</div>` : '<p>No checklist</p>'}`
       : `<p>${failures.has(dialog.taskId) ? "Task details unavailable." : "Loading task details..."}</p>
@@ -174,6 +178,13 @@ app.addEventListener("click", async event => {
     } catch (error) { state.completing = false; state.dialogError = normalizeError(error).message; render(); }
     return;
   }
+  if (hit("data-open-bucket-picker") && !state.completing && state.dialog?.type === "taskDetails") {
+    state = flow.openTaskBucketPicker(state); render(); return;
+  }
+  const selectedBucket = hit("data-select-task-bucket");
+  if (selectedBucket && !state.completing && state.dialog?.type === "taskDetails") {
+    state = flow.selectTaskBucket(state, selectedBucket.dataset.selectTaskBucket); render(); return;
+  }
   if (hit("data-move-task") && !state.completing && state.dialog?.type === "taskDetails") {
     const { taskId, selectedBucketId } = state.dialog;
     if (!selectedBucketId) return;
@@ -226,12 +237,6 @@ app.addEventListener("click", async event => {
       render();
     } catch (error) { state.completing = false; state.dialogError = normalizeError(error).message; render(); }
   }
-});
-
-app.addEventListener("change", event => {
-  if (!event.target.matches?.("[data-task-bucket]") || state.completing) return;
-  state = flow.selectTaskBucket(state, event.target.value);
-  render();
 });
 
 function normalizeError(error) {
