@@ -19,7 +19,8 @@ test("task card has separate tap targets and previews only three checklist items
   assert.match(app.innerHTML, /data-open-board-picker/);
   assert.match(app.innerHTML, /data-complete-task="task"/);
   assert.match(app.innerHTML, /data-open-task="task"/);
-  assert.equal((app.innerHTML.match(/data-checklist-item=/g) || []).length, 3);
+  assert.equal((app.innerHTML.match(/<span class="checklist-preview /g) || []).length, 3);
+  assert.doesNotMatch(app.innerHTML, /data-checklist-item=/);
   assert.match(app.innerHTML, /\+1 more/);
 });
 
@@ -55,9 +56,29 @@ test("task body and checklist taps do not open task completion", async () => {
   await tap("data-open-task", { openTask: "task" });
   assert.match(app.innerHTML, /No due date/);
   assert.doesNotMatch(app.innerHTML, /Complete task\?/);
+  assert.match(app.innerHTML, /data-checklist-item="item"/);
   await tap("data-checklist-item", { checklistTask: "task", checklistItem: "item" });
   assert.match(app.innerHTML, /Complete checklist item\?/);
   assert.doesNotMatch(app.innerHTML, /Complete task\?/);
+});
+
+test("outside tap closes the board picker", async () => {
+  let click;
+  const app = { innerHTML: "", addEventListener: (_, listener) => { click = listener; } };
+  const board = { planId: "plan", planTitle: "Work", syncedAt: new Date().toISOString(), buckets: [] };
+  const context = { document: { getElementById: () => app }, setInterval() {}, Intl, Date,
+    fetch: async () => ({ ok: true, status: 200, json: async () => board }) };
+  for (const file of ["state.js", "api.js", "app.js"])
+    runInNewContext(readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"), context);
+  await new Promise(resolve => setTimeout(resolve, 10));
+  const tap = async attribute => click({ target: {
+    closest: selector => selector === `[${attribute}]` ? { dataset: {} } : null,
+    matches: selector => selector === `[${attribute}]`
+  } });
+  await tap("data-open-board-picker");
+  assert.match(app.innerHTML, /Choose board/);
+  await tap("data-dialog-backdrop");
+  assert.doesNotMatch(app.innerHTML, /Choose board/);
 });
 
 test("scheduled board refresh reloads checklist previews", async () => {

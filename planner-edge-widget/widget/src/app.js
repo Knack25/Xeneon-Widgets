@@ -54,6 +54,10 @@ function renderChecklistButton(taskId, item, cssClass) {
     title="${item.isChecked ? "Completed" : "Complete checklist item"}"><span class="mini-check" aria-hidden="true"></span><span>${escapeHtml(item.title)}</span></button>`;
 }
 
+function renderChecklistPreview(item) {
+  return `<span class="checklist-preview ${item.isChecked ? "checked" : ""}"><span class="mini-check" aria-hidden="true"></span><span>${escapeHtml(item.title)}</span></span>`;
+}
+
 function renderTask(task) {
   const checklist = details.get(task.taskId)?.checklist || [];
   return `<article class="task" data-open-task="${escapeHtml(task.taskId)}">
@@ -61,7 +65,7 @@ function renderTask(task) {
       aria-label="Complete ${escapeHtml(task.title)}"><span class="checkbox" aria-hidden="true"></span></button>
     <div class="task-content"><button class="task-body" data-open-task="${escapeHtml(task.taskId)}" title="View task details">
       <span class="task-title">${escapeHtml(task.title)}</span>${task.dueDateTime ? `<span class="due">${formatDate(task.dueDateTime)}</span>` : ""}</button>
-      ${checklist.length ? `<div class="checklist-preview-list">${checklist.slice(0, 3).map(item => renderChecklistButton(task.taskId, item, "checklist-preview")).join("")}</div>` : ""}
+      ${checklist.length ? `<div class="checklist-preview-list">${checklist.slice(0, 3).map(renderChecklistPreview).join("")}</div>` : ""}
       ${checklist.length > 3 ? `<span class="more-items">+${checklist.length - 3} more</span>` : ""}
       ${failures.has(task.taskId) ? '<span class="detail-warning">Checklist unavailable</span>' : ""}</div></article>`;
 }
@@ -90,7 +94,7 @@ function renderDialog() {
       <button class="primary" ${dialog.type === "confirmTask" ? "data-confirm-task" : "data-confirm-checklist"}
         ${state.completing ? "disabled" : ""}>Complete</button></div>`;
   }
-  return `<section class="confirm" role="dialog" aria-modal="true"><div class="confirm-panel">${content}
+  return `<section class="confirm" data-dialog-backdrop role="dialog" aria-modal="true"><div class="confirm-panel">${content}
     ${state.dialogError ? `<p class="dialog-error">${escapeHtml(state.dialogError)}</p>` : ""}
     ${dialog.type === "boardPicker" || dialog.type === "taskDetails" ? '<div class="confirm-actions"><button data-close-dialog>Close</button></div>' : ""}</div></section>`;
 }
@@ -122,6 +126,10 @@ function queueDetails() {
 
 app.addEventListener("click", async event => {
   const hit = name => event.target.closest(`[${name}]`);
+  if (event.target.matches?.("[data-dialog-backdrop]")) {
+    if (!state.completing) { state = flow.closeDialog(state); render(); }
+    return;
+  }
   if (hit("data-close-dialog")) { if (!state.completing) { state = flow.closeDialog(state); render(); } return; }
   if (hit("data-open-board-picker")) {
     state = flow.openBoardPicker(state); plans = null; render();

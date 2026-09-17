@@ -24,7 +24,7 @@ public sealed class PlannerDisplayService(IPlannerGraphClient graphClient)
 
         var bucketDisplays = buckets
             .OrderBy(bucket => bucket.OrderHint is null)
-            .ThenBy(bucket => bucket.OrderHint, StringComparer.Ordinal)
+            .ThenByDescending(bucket => bucket.OrderHint, StringComparer.Ordinal)
             .ThenBy(bucket => bucket.Id, StringComparer.Ordinal)
             .Select(bucket => new BucketDisplay(
                 bucket.Id,

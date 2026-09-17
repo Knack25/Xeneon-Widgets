@@ -21,7 +21,7 @@ public sealed class PlannerDisplayServiceTests
 
         var board = await new PlannerDisplayService(graph).GetDisplayAsync("plan", "Board", true, CancellationToken.None);
 
-        Assert.Equal(["First", "Middle", "Last", "No bucket"], board.Buckets.Select(bucket => bucket.Name));
+        Assert.Equal(["Last", "Middle", "First", "No bucket"], board.Buckets.Select(bucket => bucket.Name));
     }
 
     [Fact]
