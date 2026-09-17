@@ -10,6 +10,7 @@ Let the user switch Planner boards on the XENEON EDGE, open task details without
 ## Interaction Model
 
 - The board title is a button. It opens a compact board picker listing accessible plans, grouped or labeled by Microsoft 365 group. Choosing a plan saves the selection through the helper, closes the picker, and loads that board. A failed save leaves the current board in place and shows an error.
+- Buckets appear in the same left-to-right order as Planner and Teams. The helper reads each bucket's `orderHint` and sorts by ordinal string value rather than relying on API response order. The synthetic "No bucket" column, when present, stays last.
 - Each task card has a large, separate checkbox button. Only that button opens the existing task-completion confirmation.
 - Tapping the rest of a task card opens a detail view. It shows the full checklist, assignee names, and due date. Missing values are shown plainly as "No checklist," "Unassigned," and "No due date." The detail view can be closed without changing the task.
 - A card previews the first three checklist items in Planner order. If more exist, it shows a count of the remainder. Checklist items have their own tap targets; tapping one in the preview or detail view opens a confirmation before marking it complete. Already checked items are displayed but are not sent for completion again.
@@ -29,6 +30,6 @@ Board selection is stored in the existing local settings so the helper setup pag
 
 No task creation, title editing, reassignment, due-date editing, or checklist reordering is included. The detail view is for inspection and checklist completion only.
 
-Tests cover board selection and failure rollback, distinct task-card tap targets, three-item preview ordering, detail empty states, checklist confirmation and cancellation, Graph ETag/conflict behavior, and partial detail or directory failures. Verify the packaged native widget on the XENEON EDGE in addition to automated tests.
+Tests cover board selection and failure rollback, bucket ordering from shuffled Graph results, distinct task-card tap targets, three-item preview ordering, detail empty states, checklist confirmation and cancellation, Graph ETag/conflict behavior, and partial detail or directory failures. Verify the packaged native widget on the XENEON EDGE in addition to automated tests.
 
-Microsoft Graph references: [task details](https://learn.microsoft.com/en-us/graph/api/plannertaskdetails-get?view=graph-rest-1.0), [task-details updates](https://learn.microsoft.com/en-us/graph/api/plannertaskdetails-update?view=graph-rest-1.0), [basic user profiles](https://learn.microsoft.com/en-us/graph/permissions-reference#userreadbasicall).
+Microsoft Graph references: [bucket order hints](https://learn.microsoft.com/en-us/graph/api/resources/planner-overview?view=graph-rest-1.0), [task details](https://learn.microsoft.com/en-us/graph/api/plannertaskdetails-get?view=graph-rest-1.0), [task-details updates](https://learn.microsoft.com/en-us/graph/api/plannertaskdetails-update?view=graph-rest-1.0), [basic user profiles](https://learn.microsoft.com/en-us/graph/permissions-reference#userreadbasicall).
