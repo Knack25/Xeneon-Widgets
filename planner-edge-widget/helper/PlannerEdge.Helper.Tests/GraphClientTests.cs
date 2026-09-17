@@ -120,6 +120,21 @@ public sealed class GraphClientTests
         await CreateClient(handler).CompleteTaskAsync("task-1", "W/\"latest\"", CancellationToken.None);
     }
 
+    [Fact]
+    public async Task MoveTaskAsync_PatchesOnlyBucketWithLatestEtag()
+    {
+        var handler = new StubHandler(request =>
+        {
+            Assert.Equal(HttpMethod.Patch, request.Method);
+            Assert.EndsWith("/planner/tasks/task", request.RequestUri!.AbsolutePath);
+            Assert.Equal("W/\"latest\"", request.Headers.IfMatch.Single().ToString());
+            Assert.Equal("{\"bucketId\":\"target\"}", request.Content!.ReadAsStringAsync().Result);
+            return "{}";
+        });
+
+        await CreateClient(handler).MoveTaskAsync("task", "target", "W/\"latest\"", CancellationToken.None);
+    }
+
     private static PlannerGraphClient CreateClient(HttpMessageHandler handler) => new(
         new HttpClient(handler) { BaseAddress = new Uri("https://graph.microsoft.com/v1.0/") },
         new StaticTokenProvider());

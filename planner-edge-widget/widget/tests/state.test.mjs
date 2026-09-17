@@ -37,3 +37,11 @@ test("picker, details, and checklist confirmation are distinct dialogs", () => {
   assert.equal(confirming.dialog.type, "confirmChecklist");
   assert.equal(closeDialog(confirming).dialog, null);
 });
+
+test("task details track a pending bucket choice", () => {
+  const board = applyDisplayLoaded(createInitialState(), { planTitle: "Work", buckets: [] });
+  const details = openTaskDetails(board, "task");
+  const selected = context.PlannerState.selectTaskBucket(details, "target");
+  assert.equal(selected.dialog.selectedBucketId, "target");
+  assert.equal(closeDialog(selected).dialog, null);
+});

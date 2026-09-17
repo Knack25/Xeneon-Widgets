@@ -31,7 +31,7 @@ public sealed class TaskDetailsService(IPlannerGraphClient graphClient, IMemoryC
             }
             assignees.Add(string.IsNullOrWhiteSpace(name) ? "Assigned person unavailable" : name);
         }
-        var response = new TaskDetailsResponse(task.Id, task.Title, task.DueDateTime, assignees,
+        var response = new TaskDetailsResponse(task.Id, task.Title, task.BucketId, task.DueDateTime, assignees,
             details.Checklist.Select(item => new ChecklistItemDisplay(item.Id, item.Title, item.IsChecked)).ToList());
         cache.Set(taskId, response, TimeSpan.FromSeconds(45));
         return response;

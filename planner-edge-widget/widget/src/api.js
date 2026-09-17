@@ -32,7 +32,13 @@ async function completeChecklistItem(taskId, itemId) {
     { method: "POST" }));
 }
 
-globalThis.PlannerApi = { getDisplay, completeTask, getPlans, selectPlan, getTaskDetails, completeChecklistItem };
+async function moveTask(taskId, bucketId) {
+  return parseJsonResponse(await fetch(`${BASE_URL}/tasks/${encodeURIComponent(taskId)}/bucket`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ bucketId })
+  }));
+}
+
+globalThis.PlannerApi = { getDisplay, completeTask, getPlans, selectPlan, getTaskDetails, completeChecklistItem, moveTask };
 
 async function parseJsonResponse(response) {
   if (response.status === 204) return null;

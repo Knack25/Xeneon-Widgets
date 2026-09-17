@@ -21,6 +21,8 @@ public sealed record SettingsDto(
 
 public sealed record SelectedPlanRequest(string PlanId);
 
+public sealed record MoveTaskRequest(string BucketId);
+
 public sealed record BucketDisplay(
     string BucketId,
     string Name,
@@ -53,6 +55,7 @@ public sealed record ChecklistItemDisplay(string ItemId, string Title, bool IsCh
 public sealed record TaskDetailsResponse(
     string TaskId,
     string Title,
+    string? BucketId,
     DateTimeOffset? DueDateTime,
     IReadOnlyList<string> Assignees,
     IReadOnlyList<ChecklistItemDisplay> Checklist);

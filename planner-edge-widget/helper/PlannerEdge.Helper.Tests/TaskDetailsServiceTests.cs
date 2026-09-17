@@ -16,6 +16,7 @@ public sealed class TaskDetailsServiceTests
         var second = await service.GetAsync("task", CancellationToken.None);
 
         Assert.Equal("task", first.TaskId);
+        Assert.Equal("bucket", first.BucketId);
         Assert.Equal("Checklist", Assert.Single(first.Checklist).Title);
         Assert.Equal("Alex Smith", Assert.Single(first.Assignees));
         Assert.Same(first, second);

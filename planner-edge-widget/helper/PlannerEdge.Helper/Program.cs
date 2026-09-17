@@ -26,6 +26,7 @@ builder.Services.AddSingleton<TaskCompletionService>();
 builder.Services.AddSingleton<PlannerCoordinator>();
 builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<TaskDetailsService>();
+builder.Services.AddSingleton<TaskMoveService>();
 builder.Services.AddSingleton<ChecklistCompletionService>();
 
 var app = builder.Build();
@@ -87,7 +88,7 @@ app.Use(async (context, next) =>
 
 app.UseDefaultFiles();
 app.UseStaticFiles();
-app.MapGet("/health", () => Results.Ok(new { status = "ok", version = "0.2.2" }));
+app.MapGet("/health", () => Results.Ok(new { status = "ok", version = "0.2.3" }));
 app.MapGet("/configuration", async (IMicrosoftAuthService auth, CancellationToken ct) =>
     Results.Ok(await auth.GetConfigurationAsync(ct)));
 app.MapPut("/configuration", async (AzureAdOptions configuration, IMicrosoftAuthService auth,
@@ -135,6 +136,11 @@ app.MapPost("/tasks/{taskId}/complete", async (string taskId, TaskCompletionServ
     Results.Ok(await completion.CompleteAsync(taskId, ct)));
 app.MapGet("/tasks/{taskId}/details", async (string taskId, TaskDetailsService details, CancellationToken ct) =>
     Results.Ok(await details.GetAsync(taskId, ct)));
+app.MapPut("/tasks/{taskId}/bucket", async (string taskId, MoveTaskRequest request, TaskMoveService moves, CancellationToken ct) =>
+{
+    await moves.MoveAsync(taskId, request.BucketId, ct);
+    return Results.NoContent();
+});
 app.MapPost("/tasks/{taskId}/checklist/{itemId}/complete", async (string taskId, string itemId,
     ChecklistCompletionService completion, CancellationToken ct) =>
 {

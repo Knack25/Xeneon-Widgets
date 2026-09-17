@@ -101,9 +101,16 @@ function renderDialog() {
   } else if (dialog.type === "taskDetails") {
     const info = details.get(dialog.taskId);
     const task = findTask(dialog.taskId);
+    const buckets = state.display?.buckets || [];
+    const currentBucketId = info?.bucketId ?? task?.bucketId ?? "";
+    const selectedBucketId = dialog.selectedBucketId ?? currentBucketId;
+    const movingToDifferentBucket = selectedBucketId && selectedBucketId !== currentBucketId;
     content = `<h2>${escapeHtml(info?.title || task?.title || "Task")}</h2>${info ? `
       <dl class="task-meta"><dt>Due</dt><dd>${info.dueDateTime ? formatDate(info.dueDateTime) : "No due date"}</dd>
-      <dt>Assigned to</dt><dd>${info.assignees?.length ? info.assignees.map(escapeHtml).join(", ") : "Unassigned"}</dd></dl>
+      <dt>Assigned to</dt><dd>${info.assignees?.length ? info.assignees.map(escapeHtml).join(", ") : "Unassigned"}</dd>
+      <dt>Bucket</dt><dd><select class="bucket-select" data-task-bucket ${state.completing ? "disabled" : ""}>${buckets.map(bucket =>
+        `<option value="${escapeHtml(bucket.bucketId)}" ${bucket.bucketId === selectedBucketId ? "selected" : ""}>${escapeHtml(bucket.name)}</option>`).join("")}</select></dd></dl>
+      ${movingToDifferentBucket ? '<div class="confirm-actions move-action"><button class="primary" data-move-task>Move task</button></div>' : ""}
       <h3>Checklist</h3>${info.checklist?.length ? `<div class="detail-checklist">${info.checklist.map(item => renderChecklistButton(dialog.taskId, item, "detail-item")).join("")}</div>` : '<p>No checklist</p>'}`
       : `<p>${failures.has(dialog.taskId) ? "Task details unavailable." : "Loading task details..."}</p>
       ${failures.has(dialog.taskId) ? `<button data-retry-details="${escapeHtml(dialog.taskId)}">Retry</button>` : ""}`}`;
@@ -167,6 +174,21 @@ app.addEventListener("click", async event => {
     } catch (error) { state.completing = false; state.dialogError = normalizeError(error).message; render(); }
     return;
   }
+  if (hit("data-move-task") && !state.completing && state.dialog?.type === "taskDetails") {
+    const { taskId, selectedBucketId } = state.dialog;
+    if (!selectedBucketId) return;
+    state.completing = true; render();
+    try {
+      await api.moveTask(taskId, selectedBucketId);
+      details.delete(taskId); failures.delete(taskId);
+      await loadDisplay(true);
+    } catch (error) {
+      state.completing = false;
+      state.dialogError = normalizeError(error).message;
+      render();
+    }
+    return;
+  }
   const itemButton = hit("data-checklist-item");
   if (itemButton && !itemButton.disabled) {
     const taskId = itemButton.dataset.checklistTask;
@@ -204,6 +226,12 @@ app.addEventListener("click", async event => {
       render();
     } catch (error) { state.completing = false; state.dialogError = normalizeError(error).message; render(); }
   }
+});
+
+app.addEventListener("change", event => {
+  if (!event.target.matches?.("[data-task-bucket]") || state.completing) return;
+  state = flow.selectTaskBucket(state, event.target.value);
+  render();
 });
 
 function normalizeError(error) {

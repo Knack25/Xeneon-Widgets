@@ -33,13 +33,45 @@ test("API uses focused helper endpoints for selection and checklist completion",
   runInNewContext(readFileSync(new URL("../src/api.js", import.meta.url), "utf8"), context);
   await context.PlannerApi.selectPlan("plan");
   await context.PlannerApi.completeChecklistItem("task", "item");
-  assert.deepEqual(calls.map(([path, method]) => [path.endsWith("/selected-plan"), method]), [[true, "PUT"], [false, "POST"]]);
+  await context.PlannerApi.moveTask("task", "target");
+  assert.deepEqual(calls.map(([path, method]) => [path.endsWith("/selected-plan"), method]), [[true, "PUT"], [false, "POST"], [false, "PUT"]]);
   assert.match(calls[1][0], /tasks\/task\/checklist\/item\/complete$/);
+  assert.match(calls[2][0], /tasks\/task\/bucket$/);
+  assert.equal(calls[2][1], "PUT");
+});
+
+test("task details offer a bucket selector and move only after selection", async () => {
+  const handlers = {};
+  const calls = [];
+  const app = { innerHTML: "", addEventListener: (type, listener) => { handlers[type] = listener; } };
+  const task = { taskId: "task", title: "Build", bucketId: "current" };
+  const board = { planId: "plan", planTitle: "Work", syncedAt: new Date().toISOString(), buckets: [
+    { bucketId: "current", name: "Current", tasks: [task] },
+    { bucketId: "target", name: "Target", tasks: [] }
+  ] };
+  const detail = { taskId: "task", title: "Build", bucketId: "current", checklist: [], assignees: [] };
+  const context = { document: { getElementById: () => app }, setInterval() {}, Intl, Date,
+    fetch: async (path, options) => {
+      calls.push([path, options?.method]);
+      return { ok: true, status: options?.method === "PUT" ? 204 : 200,
+        json: async () => path.endsWith("/display") ? board : detail };
+    } };
+  for (const file of ["state.js", "api.js", "app.js"])
+    runInNewContext(readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"), context);
+  await new Promise(resolve => setTimeout(resolve, 15));
+  await handlers.click({ target: { closest: selector => selector === "[data-open-task]" ? { dataset: { openTask: "task" } } : null } });
+  assert.match(app.innerHTML, /data-task-bucket/);
+  assert.doesNotMatch(app.innerHTML, /data-move-task/);
+
+  handlers.change({ target: { matches: selector => selector === "[data-task-bucket]", value: "target" } });
+  assert.match(app.innerHTML, /data-move-task/);
+  await handlers.click({ target: { closest: selector => selector === "[data-move-task]" ? { dataset: {} } : null } });
+  assert.ok(calls.some(([path, method]) => path.endsWith("/tasks/task/bucket") && method === "PUT"));
 });
 
 test("task body and checklist taps do not open task completion", async () => {
-  let click;
-  const app = { innerHTML: "", addEventListener: (_, listener) => { click = listener; } };
+  const handlers = {};
+  const app = { innerHTML: "", addEventListener: (type, listener) => { handlers[type] = listener; } };
   const board = { planId: "plan", planTitle: "Work", syncedAt: new Date().toISOString(), buckets: [
     { bucketId: "b", name: "Doing", tasks: [{ taskId: "task", title: "Build" }] }
   ] };
@@ -50,7 +82,7 @@ test("task body and checklist taps do not open task completion", async () => {
     runInNewContext(readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"), context);
   await new Promise(resolve => setTimeout(resolve, 20));
 
-  const tap = async (attribute, dataset) => click({ target: {
+  const tap = async (attribute, dataset) => handlers.click({ target: {
     closest: selector => selector === `[${attribute}]` ? { dataset } : null
   } });
   await tap("data-open-task", { openTask: "task" });
@@ -63,15 +95,15 @@ test("task body and checklist taps do not open task completion", async () => {
 });
 
 test("outside tap closes the board picker", async () => {
-  let click;
-  const app = { innerHTML: "", addEventListener: (_, listener) => { click = listener; } };
+  const handlers = {};
+  const app = { innerHTML: "", addEventListener: (type, listener) => { handlers[type] = listener; } };
   const board = { planId: "plan", planTitle: "Work", syncedAt: new Date().toISOString(), buckets: [] };
   const context = { document: { getElementById: () => app }, setInterval() {}, Intl, Date,
     fetch: async () => ({ ok: true, status: 200, json: async () => board }) };
   for (const file of ["state.js", "api.js", "app.js"])
     runInNewContext(readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"), context);
   await new Promise(resolve => setTimeout(resolve, 10));
-  const tap = async attribute => click({ target: {
+  const tap = async attribute => handlers.click({ target: {
     closest: selector => selector === `[${attribute}]` ? { dataset: {} } : null,
     matches: selector => selector === `[${attribute}]`
   } });
