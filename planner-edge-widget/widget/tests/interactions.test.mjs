@@ -59,3 +59,25 @@ test("task body and checklist taps do not open task completion", async () => {
   assert.match(app.innerHTML, /Complete checklist item\?/);
   assert.doesNotMatch(app.innerHTML, /Complete task\?/);
 });
+
+test("scheduled board refresh reloads checklist previews", async () => {
+  let refresh;
+  let detailReads = 0;
+  const app = { innerHTML: "", addEventListener() {} };
+  const board = { planId: "plan", planTitle: "Work", syncedAt: new Date().toISOString(), buckets: [
+    { bucketId: "bucket", name: "Doing", tasks: [{ taskId: "task", title: "Build" }] }
+  ] };
+  const context = { document: { getElementById: () => app }, setInterval: callback => { refresh = callback; }, Intl, Date,
+    fetch: async path => ({ ok: true, status: 200, json: async () => {
+      if (path.endsWith("/display")) return board;
+      detailReads++;
+      return { taskId: "task", checklist: [], assignees: [] };
+    } }) };
+  for (const file of ["state.js", "api.js", "app.js"])
+    runInNewContext(readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"), context);
+  await new Promise(resolve => setTimeout(resolve, 15));
+  assert.equal(detailReads, 1);
+  await refresh();
+  await new Promise(resolve => setTimeout(resolve, 15));
+  assert.equal(detailReads, 2);
+});

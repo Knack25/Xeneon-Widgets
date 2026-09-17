@@ -7,12 +7,14 @@ const failures = new Set();
 const pending = new Set();
 let state = flow.createInitialState();
 let plans = null;
+let detailGeneration = 0;
 
 async function loadDisplay(force = false) {
   if (!force && (state.dialog || state.completing)) return;
   try {
     const board = await api.getDisplay();
-    if (board?.planId !== state.display?.planId) { details.clear(); failures.clear(); }
+    detailGeneration++;
+    details.clear(); failures.clear();
     state = flow.applyDisplayLoaded(state, board);
   } catch (error) { state = flow.applyError(state, normalizeError(error)); }
   render();
@@ -101,15 +103,16 @@ function queueDetails() {
   const board = state.display;
   if (!board) return;
   const planId = board.planId;
+  const generation = detailGeneration;
   const ids = board.buckets.flatMap(bucket => bucket.tasks).map(task => task.taskId);
   while (pending.size < 4) {
     const taskId = ids.find(id => !details.has(id) && !failures.has(id) && !pending.has(id));
     if (!taskId) break;
     pending.add(taskId);
     api.getTaskDetails(taskId).then(info => {
-      if (state.display?.planId === planId) details.set(taskId, info);
+      if (state.display?.planId === planId && detailGeneration === generation) details.set(taskId, info);
     }).catch(() => {
-      if (state.display?.planId === planId) failures.add(taskId);
+      if (state.display?.planId === planId && detailGeneration === generation) failures.add(taskId);
     }).finally(() => {
       pending.delete(taskId);
       if (state.display?.planId === planId) render();

@@ -10,3 +10,8 @@ test("native and hosted entries both run the task app directly", () => {
   assert.match(hostedPage, /src="src\/app\.js"/);
   assert.doesNotMatch(hostedPage, /<iframe/);
 });
+
+test("next widget package has its own version", () => {
+  const manifest = JSON.parse(readFileSync(new URL("../manifest.json", import.meta.url), "utf8"));
+  assert.equal(manifest.version, "0.2.0");
+});
