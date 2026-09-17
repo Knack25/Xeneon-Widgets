@@ -13,9 +13,29 @@ async function completeTask(taskId) {
   return parseJsonResponse(response);
 }
 
-globalThis.PlannerApi = { getDisplay, completeTask };
+async function getPlans() {
+  return parseJsonResponse(await fetch(`${BASE_URL}/plans`));
+}
+
+async function selectPlan(planId) {
+  return parseJsonResponse(await fetch(`${BASE_URL}/selected-plan`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ planId })
+  }));
+}
+
+async function getTaskDetails(taskId) {
+  return parseJsonResponse(await fetch(`${BASE_URL}/tasks/${encodeURIComponent(taskId)}/details`));
+}
+
+async function completeChecklistItem(taskId, itemId) {
+  return parseJsonResponse(await fetch(`${BASE_URL}/tasks/${encodeURIComponent(taskId)}/checklist/${encodeURIComponent(itemId)}/complete`,
+    { method: "POST" }));
+}
+
+globalThis.PlannerApi = { getDisplay, completeTask, getPlans, selectPlan, getTaskDetails, completeChecklistItem };
 
 async function parseJsonResponse(response) {
+  if (response.status === 204) return null;
   const body = await response.json().catch(() => null);
   if (!response.ok) throw body ?? { code: "unknown_error", message: "The local helper returned an error." };
   return body;

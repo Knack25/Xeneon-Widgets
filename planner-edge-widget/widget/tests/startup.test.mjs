@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 
 test("widget scripts start together and show the selected board", async () => {
-  const app = { innerHTML: '<section class="status">Loading Planner...</section>', querySelectorAll: () => [], querySelector: () => null };
+  const app = { innerHTML: '<section class="status">Loading Planner...</section>', addEventListener() {} };
   const context = {
     document: { getElementById: () => app },
     fetch: async () => ({ ok: true, status: 200, json: async () => ({ planTitle: "Work", syncedAt: new Date().toISOString(), buckets: [] }) }),
