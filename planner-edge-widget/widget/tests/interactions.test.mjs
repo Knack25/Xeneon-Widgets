@@ -138,6 +138,67 @@ test("scheduled board refresh reloads checklist previews", async () => {
   assert.equal(detailReads, 2);
 });
 
+test("task detail updates preserve board and bucket scroll positions", async () => {
+  let resolveDetails;
+  let markup = "";
+  let boardElement = { dataset: { planId: "plan" }, scrollLeft: 0 };
+  let bucketElement = { dataset: { bucketId: "bucket" }, scrollTop: 0 };
+  const app = {
+    addEventListener() {},
+    get innerHTML() { return markup; },
+    set innerHTML(value) {
+      markup = value;
+      boardElement = { dataset: { planId: "plan" }, scrollLeft: 0 };
+      bucketElement = { dataset: { bucketId: "bucket" }, scrollTop: 0 };
+    },
+    querySelector: selector => selector === ".board" ? boardElement : null,
+    querySelectorAll: selector => selector === ".bucket" ? [bucketElement] : []
+  };
+  const board = { planId: "plan", planTitle: "Work", syncedAt: new Date().toISOString(), buckets: [
+    { bucketId: "bucket", name: "Doing", tasks: [{ taskId: "task", title: "Build" }] }
+  ] };
+  const context = { document: { getElementById: () => app }, setInterval() {}, Intl, Date,
+    fetch: async path => ({ ok: true, status: 200, json: async () => path.endsWith("/display") ? board :
+      new Promise(resolve => { resolveDetails = resolve; }) }) };
+  for (const file of ["state.js", "api.js", "app.js"])
+    runInNewContext(readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"), context);
+  await new Promise(resolve => setTimeout(resolve, 10));
+  boardElement.scrollLeft = 420;
+  bucketElement.scrollTop = 180;
+  resolveDetails({ taskId: "task", title: "Build", checklist: [], assignees: [] });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(boardElement.scrollLeft, 420);
+  assert.equal(bucketElement.scrollTop, 180);
+});
+
+test("checklist loading updates its card without rebuilding the scrolling board", async () => {
+  let resolveDetails;
+  let boardRenders = 0;
+  let markup = "";
+  const supplement = { innerHTML: "" };
+  const card = { dataset: { openTask: "task" }, querySelector: () => supplement };
+  const app = {
+    addEventListener() {},
+    get innerHTML() { return markup; },
+    set innerHTML(value) { markup = value; boardRenders++; },
+    querySelectorAll: selector => selector === ".task" ? [card] : []
+  };
+  const board = { planId: "plan", planTitle: "Work", syncedAt: new Date().toISOString(), buckets: [
+    { bucketId: "bucket", name: "Doing", tasks: [{ taskId: "task", title: "Build" }] }
+  ] };
+  const context = { document: { getElementById: () => app }, setInterval() {}, Intl, Date,
+    fetch: async path => ({ ok: true, status: 200, json: async () => path.endsWith("/display") ? board :
+      new Promise(resolve => { resolveDetails = resolve; }) }) };
+  for (const file of ["state.js", "api.js", "app.js"])
+    runInNewContext(readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"), context);
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(boardRenders, 1);
+  resolveDetails({ taskId: "task", title: "Build", checklist: [{ itemId: "one", title: "First", isChecked: false }], assignees: [] });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(boardRenders, 1);
+  assert.match(supplement.innerHTML, /First/);
+});
+
 test("only visible task cards prefetch details when observation is available", async () => {
   let observer;
   const reads = [];

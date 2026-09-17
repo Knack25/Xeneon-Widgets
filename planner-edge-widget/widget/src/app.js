@@ -37,11 +37,21 @@ function render() {
     return;
   }
   const board = state.display;
+  const previousBoard = app.querySelector?.(".board");
+  const sameBoard = previousBoard && previousBoard.dataset.planId === board.planId;
+  const boardScrollLeft = sameBoard ? previousBoard.scrollLeft : 0;
+  const bucketScrollTops = new Map(Array.from(sameBoard ? app.querySelectorAll?.(".bucket") || [] : [],
+    bucket => [bucket.dataset.bucketId, bucket.scrollTop]));
   app.innerHTML = `<header class="topbar"><div class="board-heading">
       <button class="board-title" data-open-board-picker title="Choose Planner board">${escapeHtml(board.planTitle)}</button>
       <p>${board.isStale || state.mode === "error" ? "Offline view" : `Synced ${formatTime(board.syncedAt)}`}</p></div>
       ${state.error ? `<span class="notice">${escapeHtml(state.error.message)}</span>` : ""}</header>
-    <section class="board">${board.buckets.map(renderBucket).join("")}</section>${renderDialog()}`;
+    <section class="board" data-plan-id="${escapeHtml(board.planId)}">${board.buckets.map(renderBucket).join("")}</section>${renderDialog()}`;
+  const renderedBoard = app.querySelector?.(".board");
+  if (renderedBoard) renderedBoard.scrollLeft = boardScrollLeft;
+  app.querySelectorAll?.(".bucket").forEach(bucket => {
+    bucket.scrollTop = bucketScrollTops.get(bucket.dataset.bucketId) ?? 0;
+  });
   observeTasks();
 }
 
@@ -63,7 +73,7 @@ function observeTasks() {
 }
 
 function renderBucket(bucket) {
-  return `<article class="bucket"><h2>${escapeHtml(bucket.name)} <span>${bucket.tasks.length}</span></h2>
+  return `<article class="bucket" data-bucket-id="${escapeHtml(bucket.bucketId)}"><h2>${escapeHtml(bucket.name)} <span>${bucket.tasks.length}</span></h2>
     <div class="tasks">${bucket.tasks.map(renderTask).join("") || '<p class="empty">Clear</p>'}</div></article>`;
 }
 
@@ -78,15 +88,19 @@ function renderChecklistPreview(item) {
 }
 
 function renderTask(task) {
-  const checklist = details.get(task.taskId)?.checklist || [];
   return `<article class="task" data-open-task="${escapeHtml(task.taskId)}">
     <button class="complete-target" data-complete-task="${escapeHtml(task.taskId)}" title="Complete task"
       aria-label="Complete ${escapeHtml(task.title)}"><span class="checkbox" aria-hidden="true"></span></button>
     <div class="task-content"><button class="task-body" data-open-task="${escapeHtml(task.taskId)}" title="View task details">
       <span class="task-title">${escapeHtml(task.title)}</span>${task.dueDateTime ? `<span class="due">${formatDate(task.dueDateTime)}</span>` : ""}</button>
-      ${checklist.length ? `<div class="checklist-preview-list">${checklist.slice(0, 3).map(renderChecklistPreview).join("")}</div>` : ""}
-      ${checklist.length > 3 ? `<span class="more-items">+${checklist.length - 3} more</span>` : ""}
-      ${failures.has(task.taskId) ? '<span class="detail-warning">Checklist unavailable</span>' : ""}</div></article>`;
+      <div class="task-supplement">${renderTaskSupplement(task)}</div></div></article>`;
+}
+
+function renderTaskSupplement(task) {
+  const checklist = details.get(task.taskId)?.checklist || [];
+  return `${checklist.length ? `<div class="checklist-preview-list">${checklist.slice(0, 3).map(renderChecklistPreview).join("")}</div>` : ""}
+    ${checklist.length > 3 ? `<span class="more-items">+${checklist.length - 3} more</span>` : ""}
+    ${failures.has(task.taskId) ? '<span class="detail-warning">Checklist unavailable</span>' : ""}`;
 }
 
 function renderDialog() {
@@ -149,7 +163,16 @@ function queueDetails() {
       if (state.display?.planId === planId && detailGeneration === generation) failures.add(taskId);
     }).finally(() => {
       pending.delete(taskId);
-      if (state.display?.planId === planId) render();
+      if (state.display?.planId === planId) {
+        const card = Array.from(app.querySelectorAll?.(".task") || [])
+          .find(element => element.dataset.openTask === taskId);
+        const supplement = card?.querySelector?.(".task-supplement");
+        const task = findTask(taskId);
+        if (supplement && task) supplement.innerHTML = renderTaskSupplement(task);
+        if (state.dialog?.type === "taskDetails" && state.dialog.taskId === taskId) render();
+        else if (!supplement) render();
+        else queueDetails();
+      }
     });
   }
 }
