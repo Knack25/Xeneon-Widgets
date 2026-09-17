@@ -35,6 +35,7 @@ public sealed class TaskCompletionServiceTests
         public List<(string TaskId, string ETag)> CompletedCalls { get; } = [];
 
         public Task<GraphTask?> GetTaskAsync(string taskId, CancellationToken cancellationToken) => Task.FromResult(task);
+        public Task<string?> GetUserDisplayNameAsync(string userId, CancellationToken cancellationToken) => throw new NotSupportedException();
 
         public Task CompleteTaskAsync(string taskId, string etag, CancellationToken cancellationToken)
         {

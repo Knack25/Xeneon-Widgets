@@ -14,7 +14,24 @@ public sealed class TaskDetailsService(IPlannerGraphClient graphClient, IMemoryC
         var task = await graphClient.GetTaskAsync(taskId, cancellationToken)
             ?? throw new InvalidOperationException("Planner task was not found.");
         var details = await graphClient.GetTaskDetailsAsync(taskId, cancellationToken);
-        var response = new TaskDetailsResponse(task.Id, task.Title, task.DueDateTime, task.Assignments,
+        var assignees = new List<string>();
+        foreach (var userId in task.Assignments.Distinct(StringComparer.Ordinal))
+        {
+            if (!cache.TryGetValue<string>($"user:{userId}", out var name))
+            {
+                try
+                {
+                    name = await graphClient.GetUserDisplayNameAsync(userId, cancellationToken);
+                    if (!string.IsNullOrWhiteSpace(name)) cache.Set($"user:{userId}", name, TimeSpan.FromHours(1));
+                }
+                catch (Exception error) when (error is not OperationCanceledException)
+                {
+                    name = null;
+                }
+            }
+            assignees.Add(string.IsNullOrWhiteSpace(name) ? "Assigned person unavailable" : name);
+        }
+        var response = new TaskDetailsResponse(task.Id, task.Title, task.DueDateTime, assignees,
             details.Checklist.Select(item => new ChecklistItemDisplay(item.Id, item.Title, item.IsChecked)).ToList());
         cache.Set(taskId, response, TimeSpan.FromSeconds(45));
         return response;

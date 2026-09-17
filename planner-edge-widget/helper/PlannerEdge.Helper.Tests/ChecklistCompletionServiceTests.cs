@@ -36,6 +36,7 @@ public sealed class ChecklistCompletionServiceTests
     {
         public List<(string, string, string)> Writes { get; } = [];
         public Task<GraphTaskDetails> GetTaskDetailsAsync(string taskId, CancellationToken ct) => Task.FromResult(details);
+        public Task<string?> GetUserDisplayNameAsync(string userId, CancellationToken ct) => throw new NotSupportedException();
         public Task CompleteChecklistItemAsync(string taskId, string itemId, string etag, CancellationToken ct)
         {
             Writes.Add((taskId, itemId, etag));

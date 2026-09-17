@@ -8,6 +8,8 @@ namespace PlannerEdge.Helper.Graph;
 public interface IGraphTokenProvider
 {
     Task<string> GetAccessTokenAsync(CancellationToken cancellationToken);
+
+    Task<string> GetBasicUserTokenAsync(CancellationToken cancellationToken) => GetAccessTokenAsync(cancellationToken);
 }
 
 public sealed class PlannerGraphClient(HttpClient httpClient, IGraphTokenProvider tokenProvider) : IPlannerGraphClient
@@ -57,6 +59,19 @@ public sealed class PlannerGraphClient(HttpClient httpClient, IGraphTokenProvide
         {
             return null;
         }
+    }
+
+    public async Task<string?> GetUserDisplayNameAsync(string userId, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get,
+            $"users/{Uri.EscapeDataString(userId)}?$select=displayName");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer",
+            await tokenProvider.GetBasicUserTokenAsync(cancellationToken));
+        using var response = await httpClient.SendAsync(request, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+            throw new GraphApiException(response.StatusCode, await response.Content.ReadAsStringAsync(cancellationToken));
+        using var document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellationToken), cancellationToken: cancellationToken);
+        return document.RootElement.TryGetProperty("displayName", out var name) ? name.GetString() : null;
     }
 
     public async Task<GraphTaskDetails> GetTaskDetailsAsync(string taskId, CancellationToken cancellationToken)

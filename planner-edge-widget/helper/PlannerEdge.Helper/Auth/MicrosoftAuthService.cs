@@ -19,12 +19,14 @@ public interface IMicrosoftAuthService : IGraphTokenProvider
     Task<AzureAdOptions> SaveConfigurationAsync(AzureAdOptions configuration, CancellationToken cancellationToken);
     Task<AuthStatusResponse> GetStatusAsync(CancellationToken cancellationToken);
     Task<AuthStatusResponse> SignInAsync(CancellationToken cancellationToken);
+    Task<AuthStatusResponse> EnableAssigneeNamesAsync(CancellationToken cancellationToken);
     Task SignOutAsync(CancellationToken cancellationToken);
 }
 
 public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILocalJsonStore jsonStore, string? cacheDirectory = null) : IMicrosoftAuthService
 {
     private static readonly string[] Scopes = ["User.Read", "Tasks.ReadWrite"];
+    private static readonly string[] BasicUserScopes = ["User.ReadBasic.All"];
     private const string RedirectUri = "http://localhost";
     private readonly string cacheRoot = cacheDirectory ?? LocalPaths.AppDataRoot();
     private readonly SemaphoreSlim configurationGate = new(1, 1);
@@ -104,6 +106,14 @@ public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILoc
         return (await client.AcquireTokenSilent(Scopes, account).ExecuteAsync(cancellationToken)).AccessToken;
     }
 
+    public async Task<string> GetBasicUserTokenAsync(CancellationToken cancellationToken)
+    {
+        var client = await RequireAppAsync(cancellationToken);
+        var account = (await client.GetAccountsAsync()).FirstOrDefault()
+            ?? throw new MsalUiRequiredException("no_account", "No Microsoft account is signed in.");
+        return (await client.AcquireTokenSilent(BasicUserScopes, account).ExecuteAsync(cancellationToken)).AccessToken;
+    }
+
     public async Task<AuthStatusResponse> GetStatusAsync(CancellationToken cancellationToken)
     {
         await EnsureInitializedAsync(cancellationToken);
@@ -121,6 +131,19 @@ public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILoc
         var client = await RequireAppAsync(cancellationToken);
         var result = await client.AcquireTokenInteractive(Scopes)
             .WithPrompt(Prompt.SelectAccount)
+            .WithUseEmbeddedWebView(false)
+            .ExecuteAsync(cancellationToken);
+        return new AuthStatusResponse(true, result.Account.Username, result.Account.Username);
+    }
+
+    public async Task<AuthStatusResponse> EnableAssigneeNamesAsync(CancellationToken cancellationToken)
+    {
+        var client = await RequireAppAsync(cancellationToken);
+        var account = (await client.GetAccountsAsync()).FirstOrDefault()
+            ?? throw new MsalUiRequiredException("no_account", "Sign in to Planner first.");
+        var result = await client.AcquireTokenInteractive(BasicUserScopes)
+            .WithAccount(account)
+            .WithPrompt(Prompt.Consent)
             .WithUseEmbeddedWebView(false)
             .ExecuteAsync(cancellationToken);
         return new AuthStatusResponse(true, result.Account.Username, result.Account.Username);

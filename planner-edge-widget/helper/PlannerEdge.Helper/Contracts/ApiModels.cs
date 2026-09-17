@@ -19,6 +19,8 @@ public sealed record SettingsDto(
     string? SelectedPlanTitle,
     bool HideCompletedTasks);
 
+public sealed record SelectedPlanRequest(string PlanId);
+
 public sealed record BucketDisplay(
     string BucketId,
     string Name,

@@ -7,6 +7,19 @@ namespace PlannerEdge.Helper.Tests;
 public sealed class GraphClientTests
 {
     [Fact]
+    public async Task GetUserDisplayNameAsync_ReadsBasicProfile()
+    {
+        var handler = new StubHandler(request =>
+        {
+            Assert.Equal("/v1.0/users/person", request.RequestUri!.AbsolutePath);
+            Assert.Equal("?$select=displayName", request.RequestUri.Query);
+            return """{"displayName":"Alex Smith"}""";
+        });
+
+        Assert.Equal("Alex Smith", await CreateClient(handler).GetUserDisplayNameAsync("person", CancellationToken.None));
+    }
+
+    [Fact]
     public async Task GetTaskDetailsAsync_MapsOrderedChecklist()
     {
         var handler = new StubHandler(_ => """{"@odata.etag":"W/\"details\"","checklist":{"second":{"title":"Second","isChecked":true,"orderHint":"z"},"first":{"title":"First","isChecked":false,"orderHint":"a"}}}""");

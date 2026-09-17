@@ -12,6 +12,8 @@ public interface IPlannerGraphClient
 
     Task<GraphTask?> GetTaskAsync(string taskId, CancellationToken cancellationToken);
 
+    Task<string?> GetUserDisplayNameAsync(string userId, CancellationToken cancellationToken);
+
     Task<GraphTaskDetails> GetTaskDetailsAsync(string taskId, CancellationToken cancellationToken);
 
     Task CompleteChecklistItemAsync(string taskId, string itemId, string etag, CancellationToken cancellationToken);

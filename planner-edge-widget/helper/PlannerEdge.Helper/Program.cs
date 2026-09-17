@@ -20,6 +20,7 @@ builder.Services.AddSingleton<IGraphTokenProvider>(provider => provider.GetRequi
 builder.Services.AddHttpClient<IPlannerGraphClient, PlannerGraphClient>(client =>
     client.BaseAddress = new Uri("https://graph.microsoft.com/v1.0/"));
 builder.Services.AddSingleton<PlannerBoardService>();
+builder.Services.AddSingleton<BoardSelectionService>();
 builder.Services.AddSingleton<PlannerDisplayService>();
 builder.Services.AddSingleton<TaskCompletionService>();
 builder.Services.AddSingleton<PlannerCoordinator>();
@@ -106,6 +107,8 @@ app.MapGet("/auth/sign-in", async (IMicrosoftAuthService auth, CancellationToken
     Results.Ok(await auth.SignInAsync(ct)));
 app.MapPost("/auth/sign-in", async (IMicrosoftAuthService auth, CancellationToken ct) =>
     Results.Ok(await auth.SignInAsync(ct)));
+app.MapPost("/auth/enable-assignee-names", async (IMicrosoftAuthService auth, CancellationToken ct) =>
+    Results.Ok(await auth.EnableAssigneeNamesAsync(ct)));
 app.MapPost("/auth/sign-out", async (IMicrosoftAuthService auth, CancellationToken ct) =>
 {
     await auth.SignOutAsync(ct);
@@ -120,6 +123,8 @@ app.MapPut("/settings", async (SettingsDto dto, IPlannerSettingsStore settings, 
     await settings.SaveSettingsAsync(dto, ct);
     return Results.Ok(dto);
 });
+app.MapPut("/selected-plan", async (SelectedPlanRequest request, BoardSelectionService selection, CancellationToken ct) =>
+    Results.Ok(await selection.SelectAsync(request.PlanId, ct)));
 app.MapGet("/display", async (PlannerCoordinator coordinator, CancellationToken ct) =>
 {
     var display = await coordinator.GetDisplayAsync(ct);

@@ -17,15 +17,31 @@ public sealed class TaskDetailsServiceTests
 
         Assert.Equal("task", first.TaskId);
         Assert.Equal("Checklist", Assert.Single(first.Checklist).Title);
+        Assert.Equal("Alex Smith", Assert.Single(first.Assignees));
         Assert.Same(first, second);
         Assert.Equal(1, graph.DetailReads);
+    }
+
+    [Fact]
+    public async Task GetAsync_FallsBackWhenDirectoryNameIsUnavailable()
+    {
+        var graph = new FakeGraph { FailNameLookup = true };
+
+        var details = await new TaskDetailsService(graph, new MemoryCache(new MemoryCacheOptions()))
+            .GetAsync("task", CancellationToken.None);
+
+        Assert.Equal("Assigned person unavailable", Assert.Single(details.Assignees));
     }
 
     private sealed class FakeGraph : IPlannerGraphClient
     {
         public int DetailReads { get; private set; }
+        public bool FailNameLookup { get; init; }
         public Task<GraphTask?> GetTaskAsync(string taskId, CancellationToken ct) =>
-            Task.FromResult<GraphTask?>(new GraphTask(taskId, "Task", "plan", "bucket", null, null, 0, "etag", []));
+            Task.FromResult<GraphTask?>(new GraphTask(taskId, "Task", "plan", "bucket", null, null, 0, "etag", ["person"]));
+        public Task<string?> GetUserDisplayNameAsync(string userId, CancellationToken ct) => FailNameLookup
+            ? throw new HttpRequestException("Directory unavailable")
+            : Task.FromResult<string?>("Alex Smith");
         public Task<GraphTaskDetails> GetTaskDetailsAsync(string taskId, CancellationToken ct)
         {
             DetailReads++;
