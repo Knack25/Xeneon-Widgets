@@ -19,3 +19,14 @@ test("widget scripts start together and show the selected board", async () => {
   assert.match(app.innerHTML, /Work/);
   assert.doesNotMatch(app.innerHTML, /Loading Planner/);
 });
+
+test("helper-hosted view requests its own origin", async () => {
+  const paths = [];
+  const context = {
+    location: { protocol: "http:", hostname: "localhost", port: "8787" },
+    fetch: async path => { paths.push(path); return { ok: true, status: 204 }; },
+  };
+  runInNewContext(readFileSync(new URL("../src/api.js", import.meta.url), "utf8"), context);
+  await context.PlannerApi.getDisplay();
+  assert.deepEqual(paths, ["/display"]);
+});

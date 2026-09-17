@@ -27,6 +27,8 @@ npm --prefix widget install
 
 Import `dist/PlannerEdgeWidget-0.1.2.icuewidget` in iCUE and add it to the XENEON EDGE dashboard. The widget requests access to `localhost:8787` to read the helper. You can tap a task, review its title, then tap **Complete** or **Cancel**.
 
+If iCUE shows **Failed to fetch** in the imported widget, you can test the same task view with the built-in **Web URL** widget. Set its URL to `http://localhost:8787/board/index.html`. The helper must be running on the same computer. This uses the selected board and the same tap-to-confirm controls; keep the imported widget installed for later testing.
+
 ## Verify
 
 ```powershell

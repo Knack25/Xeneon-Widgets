@@ -1,4 +1,6 @@
-const BASE_URL = "http://localhost:8787";
+const BASE_URL = globalThis.location?.protocol === "http:" &&
+  globalThis.location.hostname === "localhost" && globalThis.location.port === "8787"
+  ? "" : "http://localhost:8787";
 
 async function getDisplay() {
   const response = await fetch(`${BASE_URL}/display`);
