@@ -6,12 +6,14 @@
   <title>Microsoft Widgets Helper</title>
   <style>
     :root{font-family:Segoe UI,system-ui,sans-serif;color:#18212a;background:#f4f6f6}
+    [hidden]{display:none!important}
     body{margin:0} main{max-width:660px;margin:38px auto;padding:0 24px}
     h1{font-size:28px;margin:0 0 8px} p{color:#52606b} section{border-top:1px solid #ced7d9;padding:24px 0}
     button,select,input[type=text]{font:inherit;padding:10px 12px;border:1px solid #7b9095;border-radius:4px;background:white;color:#18212a}
     button{cursor:pointer;background:#146b5b;color:white;border-color:#146b5b}
     button:disabled{opacity:.5;cursor:default} label{display:block;margin:14px 0 8px;font-weight:600}
-    select,input[type=text]{width:100%} .actions{display:flex;gap:10px;margin-top:18px;align-items:center}
+    *{box-sizing:border-box} select,input[type=text]{width:100%} .actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:18px;align-items:center}
+    .download{display:inline-block;padding:11px 14px;background:#146b5b;color:white;border-radius:4px;text-decoration:none}.secondary{background:white;color:#146b5b}.install-steps{padding-left:22px;line-height:1.6}.install-steps li{margin-bottom:8px}footer{border-top:1px solid #ced7d9;padding:18px 0 28px;display:flex;flex-wrap:wrap;align-items:center;gap:16px}footer small{color:#52606b}
     .toggle{display:flex;gap:10px;align-items:center;font-weight:400}.toggle input{width:18px;height:18px}
     #message{min-height:24px;color:#9a3b2d} #account{font-weight:600;color:#18212a}
     .hint{font-size:14px;line-height:1.4}.step{color:#146b5b;font-size:13px;font-weight:700;text-transform:uppercase}
@@ -24,7 +26,7 @@
     <h1>Microsoft Widgets Helper</h1>
     <p>Microsoft work account</p>
     <section>
-      <div class="step">1. Connect Microsoft Planner</div>
+      <div class="step">1. Connect your work account</div>
       <label for="client-id">Application (client) ID</label>
       <input id="client-id" type="text" inputmode="text" autocomplete="off" placeholder="00000000-0000-0000-0000-000000000000">
       <p class="hint">Paste the ID from your organization's Microsoft Entra app registration. This is not a password or client secret.</p>
@@ -52,13 +54,25 @@
       </details>
     </section>
     <section>
-      <div class="step">3. Choose a board</div>
+      <div class="step">3. Planner board</div>
       <label for="board">Planner board</label>
       <select id="board" disabled><option value="">Sign in to load boards</option></select>
       <label class="toggle"><input id="hide-completed" type="checkbox" checked> Hide completed tasks</label>
       <div class="actions"><button id="save" disabled>Save board</button></div>
     </section>
+    <section>
+      <div class="step">4. Add Planner to iCUE</div>
+      <div class="actions"><a id="download-widget" class="download" href="/downloads/planner" download hidden>Download Planner widget</a><a class="secondary" href="/board/index.html" target="_blank" rel="noopener">Preview board</a></div>
+      <p id="widget-package-status" class="hint">Checking widget package...</p>
+      <ol class="install-steps">
+        <li>Download the Planner widget above.</li>
+        <li>In iCUE, select your XENEON EDGE, open <strong>Widgets</strong>, and choose <strong>+</strong> to import the downloaded <strong>.icuewidget</strong> file.</li>
+        <li>Add Planner Edge to a display page and choose your preferred size. Allow access to <strong>localhost:8787</strong> if iCUE asks.</li>
+      </ol>
+      <p class="hint">Keep the helper running while using Microsoft widgets. Open <strong>Microsoft Widgets Setup</strong> from the Start menu to return here.</p>
+    </section>
     <p id="message" role="status"></p>
+    <footer><small id="helper-version">Microsoft Widgets Helper</small><button id="stop-helper" class="secondary">Stop helper</button></footer>
   </main>
   <script type="module">
     const account = document.querySelector('#account');
@@ -76,6 +90,21 @@
     const saveConnection = document.querySelector('#save-connection');
     let plans = [];
     let signInRequest = null;
+
+    async function loadInstallation() {
+      const installation = await api('/installation');
+      document.querySelector('#helper-version').textContent = `Microsoft Widgets Helper ${installation.version}`;
+      document.querySelector('#download-widget').hidden = !installation.plannerWidgetAvailable;
+      document.querySelector('#widget-package-status').textContent = installation.plannerWidgetAvailable
+        ? 'Planner widget package is ready.' : 'Install the latest Microsoft Widgets release to get the widget package.';
+    }
+    document.querySelector('#stop-helper').addEventListener('click', async () => {
+      if (!confirm('Stop the helper? Microsoft widgets will stop refreshing until you start it again.')) return;
+      const response = await fetch('/host/stop', {method:'POST'}).catch(() => null);
+      if (!response?.ok) { message.textContent = 'Unable to stop the helper. Try again.'; return; }
+      document.querySelectorAll('button').forEach(button => { button.disabled = true; });
+      message.textContent = 'Helper stopped. Open Microsoft Widgets Setup from the Start menu to restart it.';
+    });
 
     async function api(path, options) {
       const response = await fetch(path, options);
@@ -157,6 +186,7 @@
       } catch(error) { message.textContent = error.message; }
     });
     refresh().catch(error => { account.textContent = 'Unable to load setup'; message.textContent = error.message; });
+    loadInstallation().catch(() => { document.querySelector('#widget-package-status').textContent = 'Unable to check the widget package.'; });
   </script>
 </body>
 </html>

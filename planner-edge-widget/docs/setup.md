@@ -2,7 +2,7 @@
 
 ## Start the helper
 
-Double-click `../microsoft-widgets-helper/dist/helper/MicrosoftWidgets.Helper.exe`. It opens the shared Microsoft Widgets Helper setup page in your browser. Leave the helper running while using the widget. Stop any old Planner Edge helper first; both use the same port. Existing saved sign-in and board settings are reused.
+Install **MicrosoftWidgetsSetup-0.3.0.exe** from the [latest release](https://github.com/Knack25/Xeneon-Widgets/releases/latest), then open **Microsoft Widgets Setup** from the Start menu. It opens the shared helper setup page in your browser. Leave the helper running while using the widget. Stop any old portable Planner Edge helper first; both use the same port. Existing saved sign-in and board settings are reused. See the [installation guide](../../docs/INSTALL.md) for details.
 
 On the page, paste your organization's Microsoft Entra **Application (client) ID**, save the connection, sign in with your work account, and choose a board. You can change the app ID later on the same page without restarting the helper.
 
@@ -22,7 +22,9 @@ The helper uses [http://localhost:8787](http://localhost:8787). The widget updat
 
 ## Widget
 
-From the `planner-edge-widget` folder run:
+Use **Download Planner widget** on the helper setup page, then import that file through **Widgets > +** in iCUE. No build commands are required for release downloads.
+
+For development only, from the `planner-edge-widget` folder run:
 
 ```powershell
 npm --prefix widget install

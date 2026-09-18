@@ -7,8 +7,29 @@ using PlannerEdge.Helper.Graph;
 using PlannerEdge.Helper.Planner;
 using PlannerEdge.Helper.Storage;
 using PlannerEdge.Helper;
+using PlannerEdge.Helper.Hosting;
 
-var builder = WebApplication.CreateBuilder(args);
+if (args.Contains("--stop"))
+{
+    using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+    try { await client.PostAsync("http://localhost:8787/host/stop", null); }
+    catch (HttpRequestException) { }
+    catch (TaskCanceledException) { }
+    return;
+}
+
+using var instance = new Mutex(false, "Local\\Knack25.MicrosoftWidgetsHelper", out var firstInstance);
+if (!firstInstance)
+{
+    if (!args.Contains("--no-browser")) HelperHost.OpenSetup();
+    return;
+}
+
+var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+{
+    Args = args,
+    ContentRootPath = AppContext.BaseDirectory
+});
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
 builder.WebHost.UseUrls("http://localhost:8787");
@@ -79,7 +100,8 @@ app.Use(async (context, next) =>
 
 app.UseDefaultFiles();
 app.UseStaticFiles();
-app.MapGet("/health", () => Results.Ok(new { status = "ok", version = "0.1.0", service = "Microsoft Widgets Helper", integrations = new[] { "planner" } }));
+app.MapGet("/health", () => Results.Ok(new { status = "ok", version = HelperHost.Version, service = "Microsoft Widgets Helper", integrations = new[] { "planner" } }));
+app.MapHelperHost();
 app.MapGet("/configuration", async (IMicrosoftAuthService auth, CancellationToken ct) =>
     Results.Ok(await auth.GetConfigurationAsync(ct)));
 app.MapPut("/configuration", async (AzureAdOptions configuration, IMicrosoftAuthService auth,
@@ -116,7 +138,7 @@ app.MapPlannerIntegration();
 await app.StartAsync();
 if (OperatingSystem.IsWindows() && !args.Contains("--no-browser"))
 {
-    try { Process.Start(new ProcessStartInfo("http://localhost:8787") { UseShellExecute = true }); }
+    try { HelperHost.OpenSetup(); }
     catch (Exception error) { app.Logger.LogWarning(error, "Could not open setup page automatically."); }
 }
 await app.WaitForShutdownAsync();

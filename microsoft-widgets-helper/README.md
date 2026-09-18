@@ -1,6 +1,10 @@
 # Microsoft Widgets Helper
 
-Shared Windows companion for Microsoft widgets on the XENEON EDGE. Version 0.1.0 is the first independent helper release; Planner widget versions remain separate.
+Shared Windows companion for Microsoft widgets on the XENEON EDGE. Helper version 0.1.1 is included in Microsoft Widgets 0.3.0; Planner widget versions remain separate.
+
+## Install
+
+Download **MicrosoftWidgetsSetup-0.3.0.exe** from the [latest release](https://github.com/Knack25/Xeneon-Widgets/releases/latest). The per-user installer includes the helper and Planner widget, Start menu shortcuts, and optional startup at Windows sign-in. No terminal commands or separate .NET installation are needed. See the [installation guide](../docs/INSTALL.md).
 
 ## Build and run
 
