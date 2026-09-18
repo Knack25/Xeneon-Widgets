@@ -4,6 +4,12 @@ import { defaultSettings, normalizeSettings, settingsStore, selectedKeys, instan
 import { rangeFor, moveDate, maskEvent, RefreshState, workingPeriods, workingIntervals, initialScrollTime } from '../widget/src/state.js';
 import { OutlookApi, loadMetadata } from '../widget/src/api.js';
 
+test('theme defaults to light and validates saved preferences', () => {
+  assert.equal(defaultSettings().theme,'light');
+  for(const theme of ['light','dark','system'])assert.equal(normalizeSettings({theme}).theme,theme);
+  assert.equal(normalizeSettings({theme:'invalid'}).theme,'light');
+});
+
 test('Week, Sunday, seven days, weekends and PC zone are defaults', () => {
   const s = defaultSettings();
   assert.equal(s.view, 'timeGridWeek'); assert.equal(s.firstDay, 0);

@@ -1,8 +1,9 @@
-export const defaultSettings = () => ({ view:'timeGridWeek', firstDay:0, weekends:true, agendaDays:7,
+export const defaultSettings = () => ({ theme:'light', view:'timeGridWeek', firstDay:0, weekends:true, agendaDays:7,
   selectionMode:'primary', calendarKeys:[], timeZone:'local', hoursMode:'outlook', hoursStart:'08:00', hoursEnd:'18:00', credential:'' });
 
 export function normalizeSettings(value) {
   const s = defaultSettings(), v = value && typeof value === 'object' ? value : {};
+  if(['light','dark','system'].includes(v.theme))s.theme=v.theme;
   if (['timeGridWeek','agenda','dayGridMonth'].includes(v.view)) s.view=v.view;
   if (Number.isInteger(v.firstDay) && v.firstDay>=0 && v.firstDay<=6) s.firstDay=v.firstDay;
   if (typeof v.weekends==='boolean') s.weekends=v.weekends;

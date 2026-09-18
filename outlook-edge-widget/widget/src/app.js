@@ -16,6 +16,10 @@ export async function start(root,environment={}) {
   try {identity=await waitForIdentity({protocol:location.protocol,search:location.search,readId:()=>environment.uniqueId??(typeof uniqueId==='undefined'?undefined:uniqueId)});}
   catch(error){root.replaceChildren(el('section',{class:'startup'},el('h1',{},'Outlook'),el('p',{},error.message)));return;}
   const store=settingsStore(localStorage,identity.id);let settings=store.load();
+  const themeMedia=matchMedia('(prefers-color-scheme: dark)');
+  const applyTheme=()=>{document.documentElement.dataset.theme=settings.theme==='system'?(themeMedia.matches?'dark':'light'):settings.theme;};
+  themeMedia.addEventListener('change',applyTheme);applyTheme();
+  window.addEventListener('pagehide',()=>themeMedia.removeEventListener('change',applyTheme),{once:true});
   const api=identity.demo?new FixtureApi():new OutlookApi({native:identity.native,credential:settings.credential});
   let catalog=[], preferences=null, anchor=today(zoneFor(settings)), adapter, controller, metadataAt=0, ready=false, lastZone=zoneFor(settings), recovering=false;
   const state=new RefreshState();
@@ -58,7 +62,7 @@ export async function start(root,environment={}) {
     const unit=settings.view==='dayGridMonth'?'month':settings.view==='agenda'?`${settings.agendaDays} days`:'week';
     for(const [b,label] of [[previous,`Previous ${unit}`],[next,`Next ${unit}`]]){b.title=label;b.setAttribute('aria-label',label);}
   }
-  function change(patch){settings=normalizeSettings({...settings,...patch});save();controls();reconfigure();refresh();}
+  function change(patch){settings=normalizeSettings({...settings,...patch});save();applyTheme();if(Object.keys(patch).every(key=>key==='theme'))return;controls();reconfigure();refresh();}
   function navigate(n){anchor=moveDate(anchor,n,settings);reconfigure();refresh();}
   function reconfigure(){adapter?.configure(settings,anchor,preferences);controls();}
   function showEvents(){adapter?.update(state.events,catalog);const noSelection=!selectedKeys(settings,catalog).length;empty.hidden=!noSelection && (!state.offline || state.events.length>0);empty.textContent=noSelection?'No calendars selected':'Calendar unavailable for this range';}
@@ -120,6 +124,7 @@ export async function start(root,environment={}) {
       return field;
     };
     const first=choices('Week starts on','week-start',['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'].map((name,i)=>[i,name]),settings.firstDay,firstDay=>change({firstDay}));
+    dialogs.panel.append(choices('Appearance','theme',[['light','Light'],['dark','Dark'],['system','System']],settings.theme,theme=>change({theme})));
     const start=el('input',{type:'text',inputmode:'numeric',maxlength:5,'aria-label':'Workday starts',value:settings.hoursStart}),end=el('input',{type:'text',inputmode:'numeric',maxlength:5,'aria-label':'Workday ends',value:settings.hoursEnd});
     const hoursToggle=()=>{start.disabled=end.disabled=settings.hoursMode!=='manual';};hoursToggle();
     const hours=choices('Working hours','hours-mode',[['outlook','Use Outlook hours'],['manual','Custom hours']],settings.hoursMode,hoursMode=>{change({hoursMode});hoursToggle();});
