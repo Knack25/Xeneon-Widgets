@@ -167,7 +167,7 @@ public sealed class PlannerGraphClient(HttpClient httpClient, IGraphTokenProvide
         }
         return new GraphTaskDetails(root.TryGetProperty("@odata.etag", out var etag) ? etag.GetString() ?? string.Empty : string.Empty,
             checklist.OrderBy(item => item.OrderHint is null)
-                .ThenBy(item => item.OrderHint, StringComparer.Ordinal)
+                .ThenByDescending(item => item.OrderHint, StringComparer.Ordinal)
                 .ThenBy(item => item.Id, StringComparer.Ordinal).ToList(),
             root.TryGetProperty("description", out var description) ? description.GetString() : null);
     }

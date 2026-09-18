@@ -45,8 +45,8 @@ public sealed class GraphClientTests
         var details = await CreateClient(handler).GetTaskDetailsAsync("task", CancellationToken.None);
 
         Assert.Equal("W/\"details\"", details.ETag);
-        Assert.Equal(["first", "second"], details.Checklist.Select(item => item.Id));
-        Assert.True(details.Checklist[1].IsChecked);
+        Assert.Equal(["second", "first"], details.Checklist.Select(item => item.Id));
+        Assert.True(details.Checklist[0].IsChecked);
         Assert.Equal("Line one\nLine two", details.Description);
     }
 
