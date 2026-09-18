@@ -4,6 +4,7 @@ using Microsoft.Identity.Client.Extensions.Msal;
 using PlannerEdge.Helper.Contracts;
 using PlannerEdge.Helper.Graph;
 using PlannerEdge.Helper.Storage;
+using PlannerEdge.Helper.Outlook;
 
 namespace PlannerEdge.Helper.Auth;
 
@@ -20,6 +21,7 @@ public interface IMicrosoftAuthService : IGraphTokenProvider
     Task<AzureAdOptions> SaveConfigurationAsync(AzureAdOptions configuration, CancellationToken cancellationToken);
     Task<AuthStatusResponse> GetStatusAsync(CancellationToken cancellationToken);
     Task<AuthStatusResponse> SignInAsync(CancellationToken cancellationToken);
+    Task<AuthStatusResponse> ConnectOutlookAsync(CancellationToken cancellationToken);
     Task<AuthStatusResponse> EnableAssigneeNamesAsync(CancellationToken cancellationToken);
     Task<AuthStatusResponse> EnableBoardMembersAsync(CancellationToken cancellationToken);
     Task SignOutAsync(CancellationToken cancellationToken);
@@ -136,7 +138,28 @@ public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILoc
             .WithPrompt(Prompt.SelectAccount)
             .WithUseEmbeddedWebView(false)
             .ExecuteAsync(cancellationToken);
+        await RetainAccountAsync(client, result.Account);
         return new AuthStatusResponse(true, result.Account.Username, result.Account.Username);
+    }
+
+    public async Task<AuthStatusResponse> ConnectOutlookAsync(CancellationToken cancellationToken)
+    {
+        var client = await RequireAppAsync(cancellationToken);
+        var account = (await client.GetAccountsAsync()).FirstOrDefault();
+        var request = client.AcquireTokenInteractive(OutlookScopes.All)
+            .WithUseEmbeddedWebView(false);
+        request = account is null ? request.WithPrompt(Prompt.SelectAccount) : request.WithAccount(account);
+        var result = await request.ExecuteAsync(cancellationToken);
+        await RetainAccountAsync(client, result.Account);
+        return new AuthStatusResponse(true, result.Account.Username, result.Account.Username);
+    }
+
+    private static async Task RetainAccountAsync(IPublicClientApplication client, IAccount selected)
+    {
+        // All integrations share one account; never silently fall back to a previously cached user.
+        foreach (var cached in await client.GetAccountsAsync())
+            if (cached.HomeAccountId.Identifier != selected.HomeAccountId.Identifier)
+                await client.RemoveAsync(cached);
     }
 
     public async Task<AuthStatusResponse> EnableAssigneeNamesAsync(CancellationToken cancellationToken)

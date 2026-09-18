@@ -8,6 +8,9 @@ $manifest = Get-Content -Raw (Join-Path $widgetRoot 'widget\manifest.json') | Co
 $helperVersion = $project.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
 $releaseVersion = $project.Project.PropertyGroup.ReleaseVersion | Where-Object { $_ } | Select-Object -First 1
 $widgetVersion = $manifest.version
+$outlookRoot = Join-Path $root 'outlook-edge-widget'
+$outlookManifest = Get-Content -Raw (Join-Path $outlookRoot 'widget/manifest.json') | ConvertFrom-Json
+$outlookVersion = $outlookManifest.version
 $release = Join-Path $root 'dist\release'
 $stage = Join-Path $helperRoot 'dist\release-helper'
 if (-not $InnoCompiler) {
@@ -16,19 +19,32 @@ if (-not $InnoCompiler) {
 }
 if (-not $InnoCompiler -or -not (Test-Path -LiteralPath $InnoCompiler)) { throw 'Install Inno Setup 6 or pass -InnoCompiler.' }
 & (Join-Path $widgetRoot 'scripts\verify.ps1')
+node (Join-Path $helperRoot 'tests/outlook-setup.test.mjs')
+if ($LASTEXITCODE -ne 0) { throw 'Outlook setup tests failed.' }
+Push-Location $outlookRoot
+try {
+    npm test
+    if ($LASTEXITCODE -ne 0) { throw 'Outlook widget tests failed.' }
+} finally { Pop-Location }
 & (Join-Path $widgetRoot 'scripts\package.ps1')
-& (Join-Path $helperRoot 'scripts\publish.ps1') -OutputDirectory $stage -SkipArchive
+& (Join-Path $root 'scripts/package-outlook.ps1')
+& (Join-Path $helperRoot 'scripts\publish.ps1') -OutputDirectory $stage -SkipArchive -SkipWidgetBuild
 New-Item -ItemType Directory -Force -Path $release, (Join-Path $stage 'widgets') | Out-Null
 $widget = Join-Path $widgetRoot "dist\PlannerEdgeWidget-$widgetVersion.icuewidget"
 Copy-Item -LiteralPath $widget -Destination (Join-Path $stage 'widgets\PlannerEdgeWidget.icuewidget') -Force
+$outlookWidget = Join-Path $root "dist/OutlookEdgeWidget-$outlookVersion.icuewidget"
+Copy-Item -LiteralPath $outlookWidget -Destination (Join-Path $stage 'widgets/OutlookEdgeWidget.icuewidget') -Force
 Copy-Item -LiteralPath (Join-Path $root 'docs\INSTALL.md') -Destination $stage -Force
+Copy-Item -LiteralPath (Join-Path $root 'docs\OUTLOOK.md') -Destination $stage -Force
 & $InnoCompiler "/DReleaseVersion=$releaseVersion" "/DHelperSource=$stage" (Join-Path $helperRoot 'installer\MicrosoftWidgets.iss')
 if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed.' }
 Copy-Item -LiteralPath $widget -Destination $release -Force
+Copy-Item -LiteralPath $outlookWidget -Destination $release -Force
+Copy-Item -LiteralPath (Join-Path $root 'docs/OUTLOOK.md') -Destination $release -Force
 Copy-Item -LiteralPath (Join-Path $root 'docs\INSTALL.md') -Destination $release -Force
 $portable = Join-Path $release "MicrosoftWidgetsHelper-$helperVersion-portable-win-x64.zip"
 Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $portable -Force
-$assets = @("MicrosoftWidgetsSetup-$releaseVersion.exe", "PlannerEdgeWidget-$widgetVersion.icuewidget", "MicrosoftWidgetsHelper-$helperVersion-portable-win-x64.zip", 'INSTALL.md')
+$assets = @("MicrosoftWidgetsSetup-$releaseVersion.exe", "PlannerEdgeWidget-$widgetVersion.icuewidget", "OutlookEdgeWidget-$outlookVersion.icuewidget", "MicrosoftWidgetsHelper-$helperVersion-portable-win-x64.zip", 'INSTALL.md', 'OUTLOOK.md')
 $checksums = foreach ($asset in $assets) {
     $hash = Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $release $asset)
     "$($hash.Hash.ToLowerInvariant())  $asset"

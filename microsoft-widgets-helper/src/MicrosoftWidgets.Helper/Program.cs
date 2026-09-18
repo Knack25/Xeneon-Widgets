@@ -9,6 +9,8 @@ using PlannerEdge.Helper.Storage;
 using PlannerEdge.Helper;
 using PlannerEdge.Helper.Hosting;
 using PlannerEdge.Helper.Updates;
+using PlannerEdge.Helper.Outlook;
+using Microsoft.AspNetCore.Http.Features;
 
 if (args.FirstOrDefault() == "--apply-update")
 {
@@ -46,6 +48,7 @@ builder.Services.AddSingleton<IMicrosoftAuthService, MicrosoftAuthService>();
 builder.Services.AddSingleton<IGraphTokenProvider>(provider => provider.GetRequiredService<IMicrosoftAuthService>());
 builder.Services.AddMemoryCache();
 builder.Services.AddPlannerIntegration();
+builder.Services.AddOutlookIntegration();
 builder.Services.AddHttpClient<IReleaseClient, ReleaseClient>(client =>
 {
     client.Timeout = TimeSpan.FromMinutes(5);
@@ -80,7 +83,7 @@ app.Use(async (context, next) =>
         context.Response.Headers.AccessControlAllowOrigin = origin;
         context.Response.Headers.Vary = "Origin";
         context.Response.Headers.AccessControlAllowMethods = "GET, POST, PUT, OPTIONS";
-        context.Response.Headers.AccessControlAllowHeaders = "Content-Type";
+        context.Response.Headers.AccessControlAllowHeaders = "Content-Type, Authorization, X-Outlook-Session";
     }
     if (context.Request.Method == "OPTIONS")
     {
@@ -95,6 +98,7 @@ app.Use(async (context, next) =>
     {
         var (status, code, message) = exception switch
         {
+            BadHttpRequestException error => (error.StatusCode, "invalid_request", "The local helper request is invalid or too large."),
             MsalUiRequiredException => (401, "signed_out", "Sign in to your Microsoft work account."),
             MsalException => (401, "auth_required", "Microsoft sign-in needs attention."),
             BoardMembersUnavailableException error => (403, "board_members_unavailable", error.Message),
@@ -116,18 +120,34 @@ app.Use(async (context, next) =>
     }
 });
 
+app.Use(async (context, next) =>
+{
+    // Limit Outlook bodies before minimal-API JSON binding, including chunked requests.
+    if (context.Request.Path.StartsWithSegments("/api/outlook"))
+    {
+        if (context.Request.ContentLength > 16384)
+        {
+            context.Response.StatusCode = StatusCodes.Status413PayloadTooLarge;
+            await context.Response.WriteAsJsonAsync(new { error = new { code = "invalid_request", message = "The Outlook request is too large." } });
+            return;
+        }
+        var bodyLimit = context.Features.Get<IHttpMaxRequestBodySizeFeature>();
+        if (bodyLimit is { IsReadOnly: false }) bodyLimit.MaxRequestBodySize = 16384;
+    }
+    await next(context);
+});
 app.UseDefaultFiles();
 app.UseStaticFiles();
-app.MapGet("/health", () => Results.Ok(new { status = "ok", version = HelperHost.Version, service = "Microsoft Widgets Helper", integrations = new[] { "planner" } }));
+app.MapGet("/health", () => Results.Ok(new { status = "ok", version = HelperHost.Version, service = "Microsoft Widgets Helper", integrations = new[] { "planner", "outlook" } }));
 app.MapHelperHost();
 app.MapUpdates();
 app.MapGet("/configuration", async (IMicrosoftAuthService auth, CancellationToken ct) =>
     Results.Ok(await auth.GetConfigurationAsync(ct)));
 app.MapPut("/configuration", async (AzureAdOptions configuration, IMicrosoftAuthService auth,
-    IPlannerSettingsStore settings, CancellationToken ct) =>
+    IPlannerSettingsStore settings, OutlookAccountState outlookAccount, CancellationToken ct) =>
 {
     var previous = await auth.GetConfigurationAsync(ct);
-    var saved = await auth.SaveConfigurationAsync(configuration, ct);
+    var saved = await outlookAccount.TransitionAsync(() => auth.SaveConfigurationAsync(configuration, ct), ct);
     if (previous != saved)
     {
         var selection = await settings.LoadSettingsAsync(ct);
@@ -139,20 +159,21 @@ app.MapGet("/auth/status", async (IMicrosoftAuthService auth, CancellationToken 
     Results.Ok(await auth.GetStatusAsync(ct)));
 app.MapGet("/auth/me", async (IPlannerGraphClient graph, CancellationToken ct) =>
     Results.Ok(new { userId = await graph.GetCurrentUserIdAsync(ct) }));
-app.MapGet("/auth/sign-in", async (IMicrosoftAuthService auth, CancellationToken ct) =>
-    Results.Ok(await auth.SignInAsync(ct)));
-app.MapPost("/auth/sign-in", async (IMicrosoftAuthService auth, CancellationToken ct) =>
-    Results.Ok(await auth.SignInAsync(ct)));
-app.MapPost("/auth/enable-assignee-names", async (IMicrosoftAuthService auth, CancellationToken ct) =>
-    Results.Ok(await auth.EnableAssigneeNamesAsync(ct)));
-app.MapPost("/auth/enable-board-members", async (IMicrosoftAuthService auth, CancellationToken ct) =>
-    Results.Ok(await auth.EnableBoardMembersAsync(ct)));
-app.MapPost("/auth/sign-out", async (IMicrosoftAuthService auth, CancellationToken ct) =>
+app.MapGet("/auth/sign-in", async (IMicrosoftAuthService auth, OutlookAccountState outlookAccount, CancellationToken ct) =>
+    Results.Ok(await outlookAccount.TransitionAsync(() => auth.SignInAsync(ct), ct)));
+app.MapPost("/auth/sign-in", async (IMicrosoftAuthService auth, OutlookAccountState outlookAccount, CancellationToken ct) =>
+    Results.Ok(await outlookAccount.TransitionAsync(() => auth.SignInAsync(ct), ct)));
+app.MapPost("/auth/enable-assignee-names", async (IMicrosoftAuthService auth, OutlookAccountState outlookAccount, CancellationToken ct) =>
+    Results.Ok(await outlookAccount.TransitionAsync(() => auth.EnableAssigneeNamesAsync(ct), ct)));
+app.MapPost("/auth/enable-board-members", async (IMicrosoftAuthService auth, OutlookAccountState outlookAccount, CancellationToken ct) =>
+    Results.Ok(await outlookAccount.TransitionAsync(() => auth.EnableBoardMembersAsync(ct), ct)));
+app.MapPost("/auth/sign-out", async (IMicrosoftAuthService auth, OutlookAccountState outlookAccount, CancellationToken ct) =>
 {
-    await auth.SignOutAsync(ct);
+    await outlookAccount.TransitionAsync(async () => { await auth.SignOutAsync(ct); return true; }, ct, forceInvalidate: true);
     return Results.NoContent();
 });
 app.MapPlannerIntegration();
+app.MapOutlookIntegration();
 
 await app.StartAsync();
 if (OperatingSystem.IsWindows() && !args.Contains("--no-browser"))

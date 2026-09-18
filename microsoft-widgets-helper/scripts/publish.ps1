@@ -1,7 +1,14 @@
-param([string]$OutputDirectory, [switch]$SkipArchive)
+param([string]$OutputDirectory, [switch]$SkipArchive, [switch]$SkipWidgetBuild)
 $ErrorActionPreference = "Stop"
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $project = Join-Path $projectRoot "src\MicrosoftWidgets.Helper\MicrosoftWidgets.Helper.csproj"
+if (-not $SkipWidgetBuild) {
+    Push-Location (Join-Path $projectRoot '../outlook-edge-widget')
+    try {
+        npm run build
+        if ($LASTEXITCODE -ne 0) { throw 'Outlook build failed. Run npm ci in outlook-edge-widget first.' }
+    } finally { Pop-Location }
+}
 $output = if ($OutputDirectory) { [IO.Path]::GetFullPath($OutputDirectory) } else { Join-Path $projectRoot "dist\helper" }
 dotnet publish $project -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o $output
 if ($LASTEXITCODE -ne 0) { throw "Helper publish failed." }

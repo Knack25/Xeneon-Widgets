@@ -18,6 +18,7 @@
     #message{min-height:24px;color:#9a3b2d} #account{font-weight:600;color:#18212a}
     .hint{font-size:14px;line-height:1.4}.step{color:#146b5b;font-size:13px;font-weight:700;text-transform:uppercase}
     details{margin-top:14px;color:#52606b;font-size:14px} summary{cursor:pointer;color:#146b5b}
+    .outlook-list{list-style:none;padding:0}.outlook-list li{display:flex;gap:12px;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #ced7d9;overflow-wrap:anywhere}.outlook-list li span{min-width:0}.outlook-list button{flex-shrink:0}#outlook-message{color:#9a3b2d;min-height:24px}#outlook-status{font-weight:600;color:#18212a}main a,main code{overflow-wrap:anywhere}
     .help{line-height:1.45}.help ol{padding-left:20px}.help li{margin:7px 0}.help code{font-family:Consolas,monospace}
   </style>
 </head>
@@ -34,13 +35,13 @@
       <input id="tenant-id" type="text" autocomplete="off" placeholder="organizations">
       <div class="actions"><button id="save-connection">Save connection</button></div>
       <details><summary>Where do I find these IDs?</summary>
-        <p>In the <a href="https://entra.microsoft.com/" target="_blank" rel="noopener noreferrer">Microsoft Entra admin center</a>, open <strong>App registrations</strong> and select your public client app. Copy its Application (client) ID from Overview. You may also copy the Directory (tenant) ID. The app needs delegated Microsoft Graph permissions User.Read and Tasks.ReadWrite, plus a mobile/desktop redirect URI of http://localhost. Your IT administrator may need to create or approve it.</p>
+        <p>In the <a href="https://entra.microsoft.com/" target="_blank" rel="noopener noreferrer">Microsoft Entra admin center</a>, open <strong>App registrations</strong> and select your public client app. Copy its Application (client) ID from Overview. You may also copy the Directory (tenant) ID. Configure a mobile/desktop redirect URI of http://localhost. Planner uses User.Read and Tasks.ReadWrite; Outlook's complete permission list is below. Your IT administrator may need to create or approve the registration.</p>
       </details>
     </section>
     <section>
-      <div class="step">2. Sign in</div>
+      <div class="step">2. Planner connection</div>
       <div id="account">Checking account...</div>
-      <div class="actions"><button id="sign-in" disabled>Sign in with Microsoft</button><button id="enable-names" hidden>Show assignee names</button><button id="enable-members" hidden>Enable board members</button><button id="cancel-sign-in" hidden>Cancel sign-in</button><button id="sign-out" hidden>Sign out</button></div>
+      <div class="actions"><button id="sign-in" disabled>Connect Planner</button><button id="enable-names" hidden>Show assignee names</button><button id="enable-members" hidden>Enable board members</button><button id="cancel-sign-in" hidden>Cancel sign-in</button><button id="sign-out" hidden>Sign out</button></div>
       <p class="hint">Showing assignee names requires User.ReadBasic.All. Editing assignees requires GroupMember.ReadBasic.All. Your work administrator may need to approve these permissions.</p>
       <details class="help"><summary>Microsoft sign-in shows an error?</summary>
         <p>If you see <strong>AADSTS900971: No reply address provided</strong>, the Microsoft app registration needs a redirect address:</p>
@@ -70,6 +71,28 @@
         <li>Add Planner Edge to a display page and choose your preferred size. Allow access to <strong>localhost:8787</strong> if iCUE asks.</li>
       </ol>
       <p class="hint">Keep the helper running while using Microsoft widgets. Open <strong>Microsoft Widgets Setup</strong> from the Start menu to return here.</p>
+    </section>
+    <section id="outlook" aria-labelledby="outlook-heading">
+      <h2 id="outlook-heading">Outlook calendar</h2>
+      <p id="outlook-status" role="status">Checking Outlook connection...</p>
+      <div class="actions"><button id="outlook-connect" disabled>Connect Outlook</button><button id="outlook-cancel" class="secondary" hidden>Cancel sign-in</button><button id="outlook-refresh" class="secondary">Refresh status</button></div>
+      <details class="help"><summary>Outlook permissions for your administrator</summary>
+        <p>Register these <strong>delegated</strong> Microsoft Graph permissions together on the same app: <code>User.Read</code>, <code>Calendars.Read.Shared</code>, <code>MailboxSettings.Read</code>, and <code>Group.Read.All</code>. Connect Outlook requests the complete bundle in one sign-in flow.</p>
+        <p><strong>Group.Read.All</strong> requires administrator consent and permits reading other accessible group content, including conversations and files. This widget only uses the membership and calendar APIs. No calendar write or mail permissions are requested.</p>
+        <p>After your administrator approves the complete bundle, select <strong>Connect Outlook</strong> again. This uses your existing account and does not require consenting to Planner first.</p>
+      </details>
+      <details><summary>Available calendars</summary><ul id="outlook-calendars" class="outlook-list"></ul><p id="outlook-calendar-empty" class="hint">No calendars loaded.</p></details>
+      <details class="help"><summary>Add a missing shared calendar</summary>
+        <label for="outlook-owner">Calendar owner email address</label><input id="outlook-owner" type="text" autocomplete="off" inputmode="email" placeholder="owner@organization.com">
+        <div class="actions"><button id="outlook-add-source" disabled>Add shared calendar</button></div>
+        <p>This adds the owner's primary calendar when your account already has access. For a custom shared calendar, accept or add it in Outlook first. No sharing permissions are changed.</p>
+      </details>
+      <h3>Widget connections</h3>
+      <ul id="outlook-pairings" class="outlook-list"></ul><p id="outlook-pairing-empty" class="hint">No widgets waiting for approval.</p><ul id="outlook-paired" class="outlook-list"></ul>
+      <div class="actions"><a id="outlook-download" class="download" href="/downloads/outlook" download hidden>Download Outlook widget</a><a href="/outlook/index.html?instance=preview" target="_blank" rel="noopener">Preview calendar</a><a href="/outlook/index.html?demo=1" target="_blank" rel="noopener">Sample calendar</a></div>
+      <p id="outlook-package-status" class="hint">Checking widget package...</p>
+      <ol class="install-steps"><li>Import the Outlook <strong>.icuewidget</strong> file using <strong>+</strong> in iCUE Widgets.</li><li>Allow access to <strong>localhost:8787</strong> and match the widget's connection code with the approval shown here.</li><li>Choose your calendars on the display. Each widget saves its own selections and view.</li></ol>
+      <p id="outlook-message" role="status"></p>
     </section>
     <section id="updates" aria-labelledby="updates-heading">
       <h2 id="updates-heading">Updates</h2>
@@ -137,12 +160,19 @@
       board.disabled = !status.isSignedIn;
       save.disabled = !status.isSignedIn;
       if (!status.isSignedIn) return;
-      const [available, settings] = await Promise.all([api('/plans'), api('/settings')]);
-      plans = available;
-      board.replaceChildren(new Option('Select a board', ''));
-      for (const plan of plans) board.add(new Option(`${plan.title}${plan.groupName ? ` (${plan.groupName})` : ''}`, plan.planId));
-      board.value = settings.selectedPlanId || '';
-      hideCompleted.checked = settings.hideCompletedTasks;
+      try {
+        const [available, settings] = await Promise.all([api('/plans'), api('/settings')]);
+        plans = available;
+        board.replaceChildren(new Option('Select a board', ''));
+        for (const plan of plans) board.add(new Option(`${plan.title}${plan.groupName ? ` (${plan.groupName})` : ''}`, plan.planId));
+        board.value = settings.selectedPlanId || '';
+        hideCompleted.checked = settings.hideCompletedTasks;
+      } catch(error) {
+        board.disabled = true; save.disabled = true;
+        board.replaceChildren(new Option('Connect Planner to load boards', ''));
+        signIn.hidden = false;
+        message.textContent = `Planner: ${error.message}`;
+      }
     }
     saveConnection.addEventListener('click', async () => {
       saveConnection.disabled = true;
@@ -151,6 +181,7 @@
           clientId:clientId.value.trim(),tenant:tenantId.value.trim() || 'organizations'
         })});
         await refresh();
+        document.dispatchEvent(new CustomEvent('microsoft-configuration-changed'));
         message.textContent = 'Connection saved. Sign in with Microsoft to continue.';
       } catch(error) { message.textContent = error.message; }
       finally { saveConnection.disabled = false; }
@@ -194,8 +225,10 @@
       } catch(error) { message.textContent = error.message; }
     });
     refresh().catch(error => { account.textContent = 'Unable to load setup'; message.textContent = error.message; });
+    document.addEventListener('microsoft-account-changed', () => refresh().catch(error => { message.textContent = error.message; }));
     loadInstallation().catch(() => { document.querySelector('#widget-package-status').textContent = 'Unable to check the widget package.'; });
   </script>
   <script type="module" src="/updates.js"></script>
+  <script type="module" src="/outlook-setup.js"></script>
 </body>
 </html>

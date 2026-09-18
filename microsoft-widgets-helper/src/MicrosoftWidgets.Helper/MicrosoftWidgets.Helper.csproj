@@ -21,10 +21,15 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Content Include="..\..\..\outlook-edge-widget\dist\**\*" Link="wwwroot\outlook\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="..\..\..\planner-edge-widget\widget\board.html" Link="wwwroot\board\index.html" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="..\..\..\planner-edge-widget\widget\styles.css" Link="wwwroot\board\styles.css" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="..\..\..\planner-edge-widget\widget\src\*.js" Link="wwwroot\board\src\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="..\..\..\planner-edge-widget\widget\resources\*.svg" Link="wwwroot\board\resources\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
+
+  <Target Name="RequireOutlookBundle" BeforeTargets="PrepareForPublish">
+    <Error Condition="!Exists('..\..\..\outlook-edge-widget\dist\index.html')" Text="Build the Outlook widget first: npm ci and npm run build in outlook-edge-widget." />
+  </Target>
 
 </Project>

@@ -13,6 +13,8 @@ The installer includes the .NET runtime. You do not need PowerShell, Node.js, or
 
 ## Microsoft account setup
 
+Outlook-enabled development builds additionally include **Outlook Edge Widget**. Its setup, complete administrator permission bundle, and native-widget pairing steps are in [OUTLOOK.md](OUTLOOK.md). It has not been published as part of the existing release yet. Connecting Outlook does not require enabling Planner.
+
 Your organization supplies the Application (client) ID for a Microsoft Entra public-client app. The setup page explains where to find it. Initial Planner access requires delegated `User.Read` and `Tasks.ReadWrite`; showing names uses `User.ReadBasic.All`, and editing assignees uses `GroupMember.ReadBasic.All`. The desktop redirect URI is `http://localhost`.
 
 Work-account permissions may require administrator approval. Once approved, return to setup and repeat the relevant permission button. The installer cannot grant Microsoft permissions for your organization.

@@ -7,6 +7,15 @@ namespace PlannerEdge.Helper.Tests;
 public sealed class MicrosoftAuthConfigurationTests
 {
     [Fact]
+    public async Task OutlookConnectRequiresConfigurationBeforeOpeningInteractiveSignIn()
+    {
+        var service = new MicrosoftAuthService(Options.Create(new AzureAdOptions()),
+            new LocalJsonStore(Path.Combine(Path.GetTempPath(), "PlannerEdgeTests", Guid.NewGuid().ToString("N"))));
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => service.ConnectOutlookAsync(CancellationToken.None));
+        Assert.Contains("client ID", error.Message);
+    }
+
+    [Fact]
     public async Task SavingConfigurationAppliesWithoutRestartAndPersists()
     {
         var root = Path.Combine(Path.GetTempPath(), "PlannerEdgeTests", Guid.NewGuid().ToString("N"));

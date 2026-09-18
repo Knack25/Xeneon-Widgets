@@ -1,6 +1,6 @@
 # Outlook Edge Widget: Read-Only Design
 
-Status: visual design approved; technical design awaiting user review.
+Status: visual design and technical design approved. User explicitly approved including Group.Read.All in the single permission bundle.
 
 ## Goal
 
@@ -136,4 +136,4 @@ Layout/browser tests cover XL at 2560x720, L and M tile widths, and a 390px help
 
 ## Approval Boundary
 
-User has approved the read-only feature set and visual mockup. This document adds the concrete permission bundle (including the broader group scope), discovery fallback, per-instance pairing, and implementation boundaries. Obtain review of this technical design before writing the implementation plan and application code. No Graph consent, live event read, installation, or release has been performed as part of this design task.
+User approved the read-only feature set, visual mockup, technical design, and inclusion of the broader group scope. Implementation may proceed. No Graph consent, live event read, installation, or release has been performed as part of this design task.
