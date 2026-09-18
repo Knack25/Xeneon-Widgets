@@ -11,9 +11,14 @@ const root = fileURLToPath(new URL('../src/MicrosoftWidgets.Helper/wwwroot/', im
 const output = fileURLToPath(new URL('../dist/setup-browser/', import.meta.url));
 const calls = [];
 let connected = false;
+let permissionState = 'available';
 const api = pathname => {
   if (pathname === '/configuration') return { clientId: '11111111-1111-1111-1111-111111111111', tenant: 'organizations' };
-  if (pathname === '/auth/status') return { isSignedIn: false };
+  if (pathname === '/auth/status') return { isSignedIn: true, displayName: 'Example account' };
+  if (pathname === '/auth/capabilities') return Object.fromEntries(['planner', 'assigneeNames', 'boardMembers'].map(key => [key, { state: permissionState }]));
+  if (pathname === '/auth/enable-assignee-names') { permissionState = 'available'; return {isSignedIn:true}; }
+  if (pathname === '/plans') return [{planId:'fixture',title:'Example board'}];
+  if (pathname === '/settings') return {selectedPlanId:'fixture',hideCompletedTasks:true};
   if (pathname === '/installation') return { version: 'development', plannerWidgetAvailable: true, outlookWidgetAvailable: true };
   if (pathname === '/updates') return { state: 'idle', currentVersion: 'development' };
   if (pathname === '/updates/result') return {};
@@ -44,9 +49,15 @@ try {
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
   await page.getByRole('button', { name: 'Connect Outlook', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Assignee names enabled', exact: true }).waitFor();
+  assert.equal(await page.locator('#enable-names').isDisabled(), true);
+  assert.equal(await page.locator('#enable-members').isDisabled(), true);
+  assert.equal(await page.locator('#sign-in').isDisabled(), true);
+  assert.equal(await page.locator('#board').inputValue(), 'fixture');
   assert.equal(calls.some(c => c.method === 'POST'), false);
   await page.getByRole('button', { name: 'Connect Outlook', exact: true }).click();
   await page.getByText('Outlook is connected.', { exact: true }).waitFor();
+  assert.equal(await page.locator('#outlook-connect').isDisabled(), true);
   await page.getByText('Available calendars', { exact: true }).click();
   assert.match(await page.locator('#outlook-calendars').textContent(), /<script>Calendar label<\/script>/);
   assert.equal(await page.locator('#outlook-calendars script').count(), 0);
@@ -57,8 +68,24 @@ try {
     await page.screenshot({ path: path.join(output, `${width}.png`), fullPage: true });
   }
   assert.equal(calls.filter(c => c.pathname.endsWith('/connect')).length, 1);
+  permissionState = 'unavailable';
+  await page.reload();
+  await page.getByRole('button', {name:'Retry assignee names',exact:true}).waitFor();
+  const postsBefore = calls.filter(c => c.method === 'POST').length;
+  permissionState = 'available';
+  await page.getByRole('button', {name:'Retry assignee names',exact:true}).click();
+  await page.getByRole('button', {name:'Planner connected',exact:true}).waitFor();
+  await page.waitForFunction(() => !document.querySelector('#board').disabled, null, {timeout:3000});
+  assert.equal(await page.locator('#board').inputValue(), 'fixture');
+  assert.equal(calls.filter(c => c.method === 'POST').length, postsBefore);
+  permissionState = 'interaction_required';
+  await page.reload();
+  await page.getByRole('button', {name:'Show assignee names',exact:true}).click();
+  await page.getByRole('button', {name:'Assignee names enabled',exact:true}).waitFor();
+  assert.equal(await page.locator('#enable-names').isDisabled(), true);
+  assert.equal(calls.filter(c => c.pathname === '/auth/enable-assignee-names').length, 1);
   assert.deepEqual(errors, []);
-  console.log('Setup browser checks passed: one explicit consent request, literal calendar text, desktop/mobile layout, no runtime errors.');
+  console.log('Setup browser checks passed: automatic permission states/data load, disabled available actions, retry without consent, explicit missing-permission flow, literal calendar text, desktop/mobile layout, no runtime errors.');
 } finally {
   await browser.close();
   await new Promise(resolve => server.close(resolve));

@@ -7,6 +7,8 @@
   let pending = false;
   let controller;
   let refreshPending = false;
+  let connectMode = 'retry';
+  let catalogLoaded = false;
 
   async function request(path, method = 'GET', body, signal) {
     if (!session) {
@@ -81,8 +83,9 @@
     refreshPending = true;
     try {
       const value = await request('/status');
-      connect.disabled = !value.configured;
-      connect.textContent = value.ready ? 'Reconnect Outlook' : 'Connect Outlook';
+      connectMode = value.ready ? 'available' : !value.signedIn || ['consent_required', 'sign_in_required'].includes(value.error?.code) ? 'connect' : 'retry';
+      connect.disabled = !value.configured || value.ready;
+      connect.textContent = value.ready ? 'Outlook connected' : connectMode === 'retry' ? 'Retry Outlook' : 'Connect Outlook';
       status.textContent = value.ready ? 'Outlook is connected.'
         : value.error?.message || (!value.configured ? 'Save your Microsoft connection above first.'
           : value.signedIn ? 'Outlook permission approval is required.' : 'Connect Outlook to sign in.');
@@ -94,14 +97,15 @@
         $('#outlook-pairings').replaceChildren();
         $('#outlook-paired').replaceChildren();
       }
-      if (value.ready && loadCatalog) await loadCalendars();
-      if (!value.ready) $('#outlook-calendars').replaceChildren();
-    } catch (error) { status.textContent = error.message; connect.disabled = false; }
+      if (value.ready && (loadCatalog || !catalogLoaded)) { await loadCalendars(); catalogLoaded = true; }
+      if (!value.ready) { catalogLoaded = false; $('#outlook-calendars').replaceChildren(); }
+    } catch (error) { status.textContent = error.message; connectMode = 'retry'; connect.textContent = 'Retry Outlook'; connect.disabled = false; }
     finally { refreshPending = false; }
   }
 
   connect.addEventListener('click', async () => {
-    if (pending) return;
+    if (pending || connect.disabled || connectMode === 'available') return;
+    if (connectMode === 'retry') { await refresh(true); return; }
     pending = true;
     connect.disabled = true;
     controller = new AbortController();
@@ -134,7 +138,8 @@
     } catch (error) { message.textContent = error.message; }
     finally { button.disabled = false; }
   });
-  document.addEventListener('microsoft-configuration-changed', () => { session = null; refresh(true); });
+  document.addEventListener('microsoft-configuration-changed', () => { session = null; catalogLoaded = false; refresh(true); });
+  document.addEventListener('microsoft-account-changed', () => { session = null; catalogLoaded = false; refresh(true); });
   fetch('/installation', { cache: 'no-store' }).then(r => r.json()).then(value => {
     $('#outlook-download').hidden = !value.outlookWidgetAvailable;
     $('#outlook-package-status').textContent = value.outlookWidgetAvailable ? 'Outlook widget package is ready.' : 'The Outlook widget package is not included in this build.';

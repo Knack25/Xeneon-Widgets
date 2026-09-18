@@ -5,6 +5,9 @@ using PlannerEdge.Helper.Contracts;
 using PlannerEdge.Helper.Graph;
 using PlannerEdge.Helper.Storage;
 using PlannerEdge.Helper.Outlook;
+using System.Runtime.CompilerServices;
+
+[assembly: InternalsVisibleTo("MicrosoftWidgets.Helper.Tests")]
 
 namespace PlannerEdge.Helper.Auth;
 
@@ -29,9 +32,9 @@ public interface IMicrosoftAuthService : IGraphTokenProvider
 
 public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILocalJsonStore jsonStore, string? cacheDirectory = null) : IMicrosoftAuthService
 {
-    private static readonly string[] Scopes = ["User.Read", "Tasks.ReadWrite"];
-    private static readonly string[] BasicUserScopes = ["User.ReadBasic.All"];
-    private static readonly string[] GroupMemberScopes = ["GroupMember.ReadBasic.All"];
+    internal static IReadOnlyList<string> PlannerScopes { get; } = Array.AsReadOnly(new[] { "User.Read", "Tasks.ReadWrite" });
+    internal static IReadOnlyList<string> AssigneeNamesScopes { get; } = Array.AsReadOnly(new[] { "User.ReadBasic.All" });
+    internal static IReadOnlyList<string> BoardMembersScopes { get; } = Array.AsReadOnly(new[] { "GroupMember.ReadBasic.All" });
     private const string RedirectUri = "http://localhost";
     private readonly string cacheRoot = cacheDirectory ?? LocalPaths.AppDataRoot();
     private readonly SemaphoreSlim configurationGate = new(1, 1);
@@ -105,11 +108,11 @@ public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILoc
         helper.RegisterCache(app.UserTokenCache);
     }
 
-    public Task<string> GetAccessTokenAsync(CancellationToken cancellationToken) => GetTokenForScopesAsync(Scopes, cancellationToken);
+    public Task<string> GetAccessTokenAsync(CancellationToken cancellationToken) => GetTokenForScopesAsync(PlannerScopes, cancellationToken);
 
-    public Task<string> GetBasicUserTokenAsync(CancellationToken cancellationToken) => GetTokenForScopesAsync(BasicUserScopes, cancellationToken);
+    public Task<string> GetBasicUserTokenAsync(CancellationToken cancellationToken) => GetTokenForScopesAsync(AssigneeNamesScopes, cancellationToken);
 
-    public Task<string> GetGroupMemberTokenAsync(CancellationToken cancellationToken) => GetTokenForScopesAsync(GroupMemberScopes, cancellationToken);
+    public Task<string> GetGroupMemberTokenAsync(CancellationToken cancellationToken) => GetTokenForScopesAsync(BoardMembersScopes, cancellationToken);
 
     public async Task<string> GetTokenForScopesAsync(IEnumerable<string> scopes, CancellationToken cancellationToken)
     {
@@ -131,27 +134,49 @@ public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILoc
             : new AuthStatusResponse(true, account.Username, account.Username);
     }
 
-    public async Task<AuthStatusResponse> SignInAsync(CancellationToken cancellationToken)
+    public Task<AuthStatusResponse> SignInAsync(CancellationToken cancellationToken) =>
+        ConnectAsync(PlannerScopes, requireExistingAccount: false, cancellationToken);
+
+    public Task<AuthStatusResponse> ConnectOutlookAsync(CancellationToken cancellationToken) =>
+        ConnectAsync(OutlookScopes.All, requireExistingAccount: false, cancellationToken);
+
+    public Task<AuthStatusResponse> EnableAssigneeNamesAsync(CancellationToken cancellationToken) =>
+        ConnectAsync(AssigneeNamesScopes, requireExistingAccount: true, cancellationToken);
+
+    public Task<AuthStatusResponse> EnableBoardMembersAsync(CancellationToken cancellationToken) =>
+        ConnectAsync(BoardMembersScopes, requireExistingAccount: true, cancellationToken);
+
+    private async Task<AuthStatusResponse> ConnectAsync(IEnumerable<string> scopes, bool requireExistingAccount, CancellationToken cancellationToken)
     {
         var client = await RequireAppAsync(cancellationToken);
-        var result = await client.AcquireTokenInteractive(Scopes)
-            .WithPrompt(Prompt.SelectAccount)
-            .WithUseEmbeddedWebView(false)
-            .ExecuteAsync(cancellationToken);
+        var account = (await client.GetAccountsAsync()).FirstOrDefault();
+        if (requireExistingAccount && account is null)
+            throw new MsalUiRequiredException("no_account", "Sign in to Microsoft first.");
+        var result = await AcquireSilentFirstAsync(
+            ct => account is null
+                ? Task.FromException<AuthenticationResult>(new MsalUiRequiredException("no_account", "No Microsoft account is signed in."))
+                : client.AcquireTokenSilent(scopes, account).ExecuteAsync(ct),
+            (required, ct) =>
+            {
+                var request = client.AcquireTokenInteractive(scopes).WithUseEmbeddedWebView(false);
+                request = account is null ? request.WithPrompt(Prompt.SelectAccount) : request.WithAccount(account);
+                if (!string.IsNullOrEmpty(required.Claims)) request = request.WithClaims(required.Claims);
+                return request.ExecuteAsync(ct);
+            }, cancellationToken);
         await RetainAccountAsync(client, result.Account);
         return new AuthStatusResponse(true, result.Account.Username, result.Account.Username);
     }
 
-    public async Task<AuthStatusResponse> ConnectOutlookAsync(CancellationToken cancellationToken)
+    internal static async Task<T> AcquireSilentFirstAsync<T>(Func<CancellationToken, Task<T>> silent,
+        Func<MsalUiRequiredException, CancellationToken, Task<T>> interactive, CancellationToken cancellationToken)
     {
-        var client = await RequireAppAsync(cancellationToken);
-        var account = (await client.GetAccountsAsync()).FirstOrDefault();
-        var request = client.AcquireTokenInteractive(OutlookScopes.All)
-            .WithUseEmbeddedWebView(false);
-        request = account is null ? request.WithPrompt(Prompt.SelectAccount) : request.WithAccount(account);
-        var result = await request.ExecuteAsync(cancellationToken);
-        await RetainAccountAsync(client, result.Account);
-        return new AuthStatusResponse(true, result.Account.Username, result.Account.Username);
+        cancellationToken.ThrowIfCancellationRequested();
+        try { return await silent(cancellationToken); }
+        catch (MsalUiRequiredException required)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return await interactive(required, cancellationToken);
+        }
     }
 
     private static async Task RetainAccountAsync(IPublicClientApplication client, IAccount selected)
@@ -160,32 +185,6 @@ public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILoc
         foreach (var cached in await client.GetAccountsAsync())
             if (cached.HomeAccountId.Identifier != selected.HomeAccountId.Identifier)
                 await client.RemoveAsync(cached);
-    }
-
-    public async Task<AuthStatusResponse> EnableAssigneeNamesAsync(CancellationToken cancellationToken)
-    {
-        var client = await RequireAppAsync(cancellationToken);
-        var account = (await client.GetAccountsAsync()).FirstOrDefault()
-            ?? throw new MsalUiRequiredException("no_account", "Sign in to Planner first.");
-        var result = await client.AcquireTokenInteractive(BasicUserScopes)
-            .WithAccount(account)
-            .WithPrompt(Prompt.Consent)
-            .WithUseEmbeddedWebView(false)
-            .ExecuteAsync(cancellationToken);
-        return new AuthStatusResponse(true, result.Account.Username, result.Account.Username);
-    }
-
-    public async Task<AuthStatusResponse> EnableBoardMembersAsync(CancellationToken cancellationToken)
-    {
-        var client = await RequireAppAsync(cancellationToken);
-        var account = (await client.GetAccountsAsync()).FirstOrDefault()
-            ?? throw new MsalUiRequiredException("no_account", "Sign in to Planner first.");
-        var result = await client.AcquireTokenInteractive(GroupMemberScopes)
-            .WithAccount(account)
-            .WithPrompt(Prompt.Consent)
-            .WithUseEmbeddedWebView(false)
-            .ExecuteAsync(cancellationToken);
-        return new AuthStatusResponse(true, result.Account.Username, result.Account.Username);
     }
 
     public async Task SignOutAsync(CancellationToken cancellationToken)

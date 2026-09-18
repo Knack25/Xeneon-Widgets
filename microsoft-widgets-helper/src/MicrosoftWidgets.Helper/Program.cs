@@ -45,6 +45,7 @@ builder.WebHost.UseUrls("http://localhost:8787");
 builder.Services.Configure<AzureAdOptions>(builder.Configuration.GetSection("AzureAd"));
 builder.Services.AddSingleton<ILocalJsonStore>(_ => new LocalJsonStore(LocalPaths.AppDataRoot()));
 builder.Services.AddSingleton<IMicrosoftAuthService, MicrosoftAuthService>();
+builder.Services.AddSingleton<MicrosoftAuthCapabilityService>();
 builder.Services.AddSingleton<IGraphTokenProvider>(provider => provider.GetRequiredService<IMicrosoftAuthService>());
 builder.Services.AddMemoryCache();
 builder.Services.AddPlannerIntegration();
@@ -157,6 +158,11 @@ app.MapPut("/configuration", async (AzureAdOptions configuration, IMicrosoftAuth
 });
 app.MapGet("/auth/status", async (IMicrosoftAuthService auth, CancellationToken ct) =>
     Results.Ok(await auth.GetStatusAsync(ct)));
+app.MapGet("/auth/capabilities", async (MicrosoftAuthCapabilityService capabilities, HttpResponse response, CancellationToken ct) =>
+{
+    response.Headers.CacheControl = "no-store";
+    return Results.Ok(await capabilities.GetAsync(ct));
+});
 app.MapGet("/auth/me", async (IPlannerGraphClient graph, CancellationToken ct) =>
     Results.Ok(new { userId = await graph.GetCurrentUserIdAsync(ct) }));
 app.MapGet("/auth/sign-in", async (IMicrosoftAuthService auth, OutlookAccountState outlookAccount, CancellationToken ct) =>

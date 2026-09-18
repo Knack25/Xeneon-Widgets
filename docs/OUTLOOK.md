@@ -19,6 +19,10 @@ Add all four delegated Microsoft Graph permissions before submitting the organiz
 
 Select **Connect Outlook** in helper setup to request the whole bundle at once. If approval is pending, return and select **Connect Outlook** again after the admin grants it. Loading setup, choosing a calendar, and opening event details never trigger an interactive consent request. Existing Planner consent stays intact, but Outlook can be connected without first enabling Planner.
 
+Setup checks existing access silently. When Outlook is available, it loads calendars automatically and disables the button as **Outlook connected**. Planner's names and board-member buttons similarly show **enabled** once their scopes are available. A failed network check offers **Retry** without opening consent; a sign-in or consent requirement keeps the connection action available. Each new user still signs in on their own PC.
+
+For another user in the same organization, confirm both installations use the same application/client ID and tenant. Tenant-wide admin consent must cover the exact delegated permissions requested by each integration, not only the administrator's own account or an older subset. Configuring a permission on an app registration is not the same as granting it. The helper no longer forces the consent dialog when access has already been granted. Calendar sharing and application-assignment policies still apply independently of consent.
+
 See [Microsoft's permission reference](https://learn.microsoft.com/en-us/graph/permissions-reference) and [group-event permissions](https://learn.microsoft.com/en-us/graph/api/group-get-event?view=graph-rest-1.0).
 
 ## Add the Widget

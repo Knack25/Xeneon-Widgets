@@ -11,7 +11,7 @@
     h1{font-size:28px;margin:0 0 8px} p{color:#52606b} section{border-top:1px solid #ced7d9;padding:24px 0}
     button,select,input[type=text]{font:inherit;padding:10px 12px;border:1px solid #7b9095;border-radius:4px;background:white;color:#18212a}
     button{cursor:pointer;background:#146b5b;color:white;border-color:#146b5b}
-    button:disabled{opacity:.5;cursor:default} label{display:block;margin:14px 0 8px;font-weight:600}
+    button:disabled{background:#e1e5e7;color:#647078;border-color:#bec8cc;cursor:default} label{display:block;margin:14px 0 8px;font-weight:600}
     *{box-sizing:border-box} select,input[type=text]{width:100%} .actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:18px;align-items:center}
     .download{display:inline-block;padding:11px 14px;background:#146b5b;color:white;border-radius:4px;text-decoration:none}.secondary{background:white;color:#146b5b}.install-steps{padding-left:22px;line-height:1.6}.install-steps li{margin-bottom:8px}footer{border-top:1px solid #ced7d9;padding:18px 0 28px;display:flex;flex-wrap:wrap;align-items:center;gap:16px}footer small{color:#52606b}
     .toggle{display:flex;gap:10px;align-items:center;font-weight:400}.toggle input{width:18px;height:18px}
@@ -121,6 +121,35 @@
     const saveConnection = document.querySelector('#save-connection');
     let plans = [];
     let signInRequest = null;
+    let capabilities = {};
+    let signedIn = false;
+    let permissionCheck = 0;
+    let permissionPending = false;
+    let permissionActionPending = false;
+
+    function renderPermissions() {
+      for (const [key, button, available, request, retry] of [
+        ['planner', signIn, 'Planner connected', 'Connect Planner', 'Retry Planner'],
+        ['assigneeNames', enableNames, 'Assignee names enabled', 'Show assignee names', 'Retry assignee names'],
+        ['boardMembers', enableMembers, 'Board members enabled', 'Enable board members', 'Retry board members']
+      ]) {
+        const feature = capabilities[key];
+        button.hidden = key !== 'planner' && !signedIn;
+        button.disabled = !clientId.value || feature?.state === 'available' || permissionActionPending || permissionPending;
+        button.textContent = feature?.state === 'available' ? available
+          : feature?.state === 'unavailable' ? retry : request;
+        button.title = feature?.message || '';
+      }
+    }
+    async function checkPermissions() {
+      const ticket = ++permissionCheck;
+      permissionPending = true;
+      renderPermissions();
+      try { const value = await api('/auth/capabilities'); if (ticket === permissionCheck) capabilities = value; }
+      catch(error) {
+        if (ticket === permissionCheck) capabilities = Object.fromEntries(['planner','assigneeNames','boardMembers'].map(key => [key,{state:'unavailable',message:error.message}]));
+      } finally { if (ticket === permissionCheck) { permissionPending = false; renderPermissions(); } }
+    }
 
     async function loadInstallation() {
       const installation = await api('/installation');
@@ -141,7 +170,7 @@
       const response = await fetch(path, options);
       if (response.status === 204) return null;
       const body = await response.json();
-      if (!response.ok) throw new Error(body.message || 'Request failed');
+      if (!response.ok) throw Object.assign(new Error(body.message || 'Request failed'), {status:response.status,code:body.code});
       return body;
     }
     async function refresh() {
@@ -151,15 +180,22 @@
       tenantId.value = configuration.tenant || '';
       signIn.disabled = !configuration.clientId;
       const status = await api('/auth/status');
+      signedIn = status.isSignedIn;
       account.textContent = status.isSignedIn ? `Signed in as ${status.displayName}` : 'Not signed in';
       if (status.error) message.textContent = status.error.message;
-      signIn.hidden = status.isSignedIn;
+      signIn.hidden = false;
       signOut.hidden = !status.isSignedIn;
       enableNames.hidden = !status.isSignedIn;
       enableMembers.hidden = !status.isSignedIn;
       board.disabled = !status.isSignedIn;
       save.disabled = !status.isSignedIn;
-      if (!status.isSignedIn) return;
+      if (!status.isSignedIn) { ++permissionCheck; permissionPending = false; capabilities = {}; renderPermissions(); board.replaceChildren(new Option('Sign in to load boards', '')); return; }
+      await checkPermissions();
+      if (capabilities.planner?.state !== 'available') {
+        board.disabled = true; save.disabled = true;
+        board.replaceChildren(new Option('Connect Planner to load boards', ''));
+        return;
+      }
       try {
         const [available, settings] = await Promise.all([api('/plans'), api('/settings')]);
         plans = available;
@@ -171,6 +207,8 @@
         board.disabled = true; save.disabled = true;
         board.replaceChildren(new Option('Connect Planner to load boards', ''));
         signIn.hidden = false;
+        capabilities.planner = {state:'unavailable',message:error.message};
+        renderPermissions();
         message.textContent = `Planner: ${error.message}`;
       }
     }
@@ -187,28 +225,38 @@
       finally { saveConnection.disabled = false; }
     });
     signIn.addEventListener('click', async () => {
+      if (signIn.disabled) return;
+      if (capabilities.planner?.state === 'unavailable') { await refresh(); return; }
       signIn.disabled = true;
       cancelSignIn.hidden = false;
       signInRequest = new AbortController();
       message.textContent = 'Complete sign-in in the Microsoft window. If it shows AADSTS900971, open the sign-in help above.';
       try { await api('/auth/sign-in', {method:'POST',signal:signInRequest.signal}); await refresh(); }
       catch(error) { message.textContent = error.name === 'AbortError' ? 'Sign-in cancelled. You can try again.' : error.message; }
-      finally { signInRequest = null; cancelSignIn.hidden = true; signIn.disabled = false; }
+      finally { signInRequest = null; cancelSignIn.hidden = true; renderPermissions(); }
     });
     cancelSignIn.addEventListener('click', () => signInRequest?.abort());
     enableNames.addEventListener('click', async () => {
+      if (enableNames.disabled) return;
+      if (capabilities.assigneeNames?.state === 'unavailable') { await refresh(); return; }
+      permissionActionPending = true;
+      renderPermissions();
       enableNames.disabled = true;
       message.textContent = 'Complete the Microsoft permission prompt to show assignee names.';
-      try { await api('/auth/enable-assignee-names', {method:'POST'}); message.textContent = 'Assignee names are enabled.'; }
+      try { await api('/auth/enable-assignee-names', {method:'POST'}); await refresh(); message.textContent = 'Assignee names are enabled.'; }
       catch(error) { message.textContent = error.message; }
-      finally { enableNames.disabled = false; }
+      finally { permissionActionPending = false; renderPermissions(); }
     });
     enableMembers.addEventListener('click', async () => {
+      if (enableMembers.disabled) return;
+      if (capabilities.boardMembers?.state === 'unavailable') { await refresh(); return; }
+      permissionActionPending = true;
+      renderPermissions();
       enableMembers.disabled = true;
       message.textContent = 'Complete the Microsoft permission prompt to edit task assignees.';
-      try { await api('/auth/enable-board-members', {method:'POST'}); message.textContent = 'Board members are enabled.'; }
+      try { await api('/auth/enable-board-members', {method:'POST'}); await refresh(); message.textContent = 'Board members are enabled.'; }
       catch(error) { message.textContent = error.message; }
-      finally { enableMembers.disabled = false; }
+      finally { permissionActionPending = false; renderPermissions(); }
     });
     signOut.addEventListener('click', async () => {
       try { await api('/auth/sign-out', {method:'POST'}); location.reload(); }
@@ -226,6 +274,12 @@
     });
     refresh().catch(error => { account.textContent = 'Unable to load setup'; message.textContent = error.message; });
     document.addEventListener('microsoft-account-changed', () => refresh().catch(error => { message.textContent = error.message; }));
+    setInterval(async () => {
+      if (document.hidden || !signedIn || signInRequest || permissionPending || permissionActionPending) return;
+      const previous = capabilities.planner?.state;
+      await checkPermissions();
+      if (capabilities.planner?.state === 'signed_out' || previous !== 'available' && capabilities.planner?.state === 'available') await refresh().catch(error => { message.textContent = error.message; });
+    }, 30000);
     loadInstallation().catch(() => { document.querySelector('#widget-package-status').textContent = 'Unable to check the widget package.'; });
   </script>
   <script type="module" src="/updates.js"></script>
