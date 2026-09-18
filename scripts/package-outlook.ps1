@@ -10,6 +10,9 @@ if (-not $SkipBuild) {
     } finally { Pop-Location }
 }
 $built = Join-Path $widgetRoot 'dist'
+# iCUE imports the document through an XML parser, unlike a web browser.
+$document = [xml](Get-Content -Raw -LiteralPath (Join-Path $built 'index.html'))
+if ([string]::IsNullOrWhiteSpace($document.html.head.title)) { throw 'Outlook widget must have an XML-readable title.' }
 $manifest = Get-Content -Raw -LiteralPath (Join-Path $built 'manifest.json') | ConvertFrom-Json
 if ($manifest.version -notmatch '^\d+\.\d+\.\d+$') { throw 'Outlook widget version must use major.minor.patch.' }
 $dist = [IO.Path]::GetFullPath((Join-Path $root 'dist'))
