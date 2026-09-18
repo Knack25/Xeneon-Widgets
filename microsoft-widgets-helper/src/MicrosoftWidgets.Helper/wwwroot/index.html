@@ -71,6 +71,14 @@
       </ol>
       <p class="hint">Keep the helper running while using Microsoft widgets. Open <strong>Microsoft Widgets Setup</strong> from the Start menu to return here.</p>
     </section>
+    <section aria-labelledby="updates-heading">
+      <h2 id="updates-heading">Updates</h2>
+      <p id="update-status" role="status">Checking update status...</p>
+      <p id="update-last-checked" class="hint"></p>
+      <div class="actions"><button id="check-updates" class="secondary">Check for updates</button><button id="install-update" hidden>Update now</button></div>
+      <details id="update-notes" hidden><summary>Release notes</summary><pre id="update-notes-text" style="white-space:pre-wrap;overflow-wrap:anywhere;font:inherit"></pre></details>
+      <p id="update-result" class="hint"></p>
+    </section>
     <p id="message" role="status"></p>
     <footer><small id="helper-version">Microsoft Widgets Helper</small><button id="stop-helper" class="secondary">Stop helper</button></footer>
   </main>
@@ -188,5 +196,6 @@
     refresh().catch(error => { account.textContent = 'Unable to load setup'; message.textContent = error.message; });
     loadInstallation().catch(() => { document.querySelector('#widget-package-status').textContent = 'Unable to check the widget package.'; });
   </script>
+  <script type="module" src="/updates.js"></script>
 </body>
 </html>

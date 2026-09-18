@@ -6,7 +6,8 @@ $helperRoot = Join-Path $root 'microsoft-widgets-helper'
 $manifest = Get-Content -Raw (Join-Path $widgetRoot 'widget\manifest.json') | ConvertFrom-Json
 [xml]$project = Get-Content -Raw (Join-Path $helperRoot 'src\MicrosoftWidgets.Helper\MicrosoftWidgets.Helper.csproj')
 $helperVersion = $project.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
-$releaseVersion = $manifest.version
+$releaseVersion = $project.Project.PropertyGroup.ReleaseVersion | Where-Object { $_ } | Select-Object -First 1
+$widgetVersion = $manifest.version
 $release = Join-Path $root 'dist\release'
 $stage = Join-Path $helperRoot 'dist\release-helper'
 if (-not $InnoCompiler) {
@@ -18,7 +19,7 @@ if (-not $InnoCompiler -or -not (Test-Path -LiteralPath $InnoCompiler)) { throw 
 & (Join-Path $widgetRoot 'scripts\package.ps1')
 & (Join-Path $helperRoot 'scripts\publish.ps1') -OutputDirectory $stage -SkipArchive
 New-Item -ItemType Directory -Force -Path $release, (Join-Path $stage 'widgets') | Out-Null
-$widget = Join-Path $widgetRoot "dist\PlannerEdgeWidget-$releaseVersion.icuewidget"
+$widget = Join-Path $widgetRoot "dist\PlannerEdgeWidget-$widgetVersion.icuewidget"
 Copy-Item -LiteralPath $widget -Destination (Join-Path $stage 'widgets\PlannerEdgeWidget.icuewidget') -Force
 Copy-Item -LiteralPath (Join-Path $root 'docs\INSTALL.md') -Destination $stage -Force
 & $InnoCompiler "/DReleaseVersion=$releaseVersion" "/DHelperSource=$stage" (Join-Path $helperRoot 'installer\MicrosoftWidgets.iss')
@@ -27,7 +28,7 @@ Copy-Item -LiteralPath $widget -Destination $release -Force
 Copy-Item -LiteralPath (Join-Path $root 'docs\INSTALL.md') -Destination $release -Force
 $portable = Join-Path $release "MicrosoftWidgetsHelper-$helperVersion-portable-win-x64.zip"
 Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $portable -Force
-$assets = @("MicrosoftWidgetsSetup-$releaseVersion.exe", "PlannerEdgeWidget-$releaseVersion.icuewidget", "MicrosoftWidgetsHelper-$helperVersion-portable-win-x64.zip", 'INSTALL.md')
+$assets = @("MicrosoftWidgetsSetup-$releaseVersion.exe", "PlannerEdgeWidget-$widgetVersion.icuewidget", "MicrosoftWidgetsHelper-$helperVersion-portable-win-x64.zip", 'INSTALL.md')
 $checksums = foreach ($asset in $assets) {
     $hash = Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $release $asset)
     "$($hash.Hash.ToLowerInvariant())  $asset"

@@ -1,10 +1,12 @@
 # Microsoft Widgets Helper
 
-Shared Windows companion for Microsoft widgets on the XENEON EDGE. Helper version 0.1.1 is included in Microsoft Widgets 0.3.0; Planner widget versions remain separate.
+Shared Windows companion for Microsoft widgets on the XENEON EDGE. Helper version 0.1.2 is included in Microsoft Widgets 0.3.1; Planner widget versions remain separate.
 
 ## Install
 
-Download **MicrosoftWidgetsSetup-0.3.0.exe** from the [latest release](https://github.com/Knack25/Xeneon-Widgets/releases/latest). The per-user installer includes the helper and Planner widget, Start menu shortcuts, and optional startup at Windows sign-in. No terminal commands or separate .NET installation are needed. See the [installation guide](../docs/INSTALL.md).
+Download **MicrosoftWidgetsSetup** from the [latest release](https://github.com/Knack25/Xeneon-Widgets/releases/latest). The per-user installer includes the helper and Planner widget, Start menu shortcuts, and optional startup at Windows sign-in. No terminal commands or separate .NET installation are needed. See the [installation guide](../docs/INSTALL.md).
+
+From suite version 0.3.1, setup checks for updates at startup and daily. **Check for updates** checks immediately; **Update now** requires explicit approval before downloading and installing. In-app installation requires an installed copy, not a portable/development build. New iCUE widget packages still need importing manually.
 
 ## Build and run
 

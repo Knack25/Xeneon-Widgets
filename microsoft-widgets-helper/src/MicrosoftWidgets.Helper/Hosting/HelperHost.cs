@@ -5,6 +5,7 @@ namespace PlannerEdge.Helper.Hosting;
 
 public static class HelperHost
 {
+    public const string InstanceMutexName = "Local\\Knack25.MicrosoftWidgetsHelper";
     public static string Version => typeof(HelperHost).Assembly
         .GetCustomAttribute<AssemblyInformationalVersionAttribute>()!.InformationalVersion.Split('+')[0];
 

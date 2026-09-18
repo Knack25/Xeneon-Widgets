@@ -8,6 +8,13 @@ using PlannerEdge.Helper.Planner;
 using PlannerEdge.Helper.Storage;
 using PlannerEdge.Helper;
 using PlannerEdge.Helper.Hosting;
+using PlannerEdge.Helper.Updates;
+
+if (args.FirstOrDefault() == "--apply-update")
+{
+    await UpdateInstaller.ApplyAsync(args);
+    return;
+}
 
 if (args.Contains("--stop"))
 {
@@ -18,7 +25,7 @@ if (args.Contains("--stop"))
     return;
 }
 
-using var instance = new Mutex(false, "Local\\Knack25.MicrosoftWidgetsHelper", out var firstInstance);
+using var instance = new Mutex(false, HelperHost.InstanceMutexName, out var firstInstance);
 if (!firstInstance)
 {
     if (!args.Contains("--no-browser")) HelperHost.OpenSetup();
@@ -39,6 +46,16 @@ builder.Services.AddSingleton<IMicrosoftAuthService, MicrosoftAuthService>();
 builder.Services.AddSingleton<IGraphTokenProvider>(provider => provider.GetRequiredService<IMicrosoftAuthService>());
 builder.Services.AddMemoryCache();
 builder.Services.AddPlannerIntegration();
+builder.Services.AddHttpClient<IReleaseClient, ReleaseClient>(client =>
+{
+    client.Timeout = TimeSpan.FromMinutes(5);
+    client.DefaultRequestHeaders.UserAgent.ParseAdd("MicrosoftWidgetsHelper/" + HelperHost.Version);
+    client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
+}).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Services.AddSingleton<IUpdateInstaller, UpdateInstaller>();
+builder.Services.AddSingleton(provider => new UpdateService(provider.GetRequiredService<IReleaseClient>(),
+    provider.GetRequiredService<IUpdateInstaller>(), UpdateService.ReleaseVersion));
+builder.Services.AddHostedService<UpdateWorker>();
 
 var app = builder.Build();
 
@@ -102,6 +119,7 @@ app.UseDefaultFiles();
 app.UseStaticFiles();
 app.MapGet("/health", () => Results.Ok(new { status = "ok", version = HelperHost.Version, service = "Microsoft Widgets Helper", integrations = new[] { "planner" } }));
 app.MapHelperHost();
+app.MapUpdates();
 app.MapGet("/configuration", async (IMicrosoftAuthService auth, CancellationToken ct) =>
     Results.Ok(await auth.GetConfigurationAsync(ct)));
 app.MapPut("/configuration", async (AzureAdOptions configuration, IMicrosoftAuthService auth,

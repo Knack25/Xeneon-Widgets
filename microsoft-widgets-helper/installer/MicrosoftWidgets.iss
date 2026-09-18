@@ -1,5 +1,5 @@
 #ifndef ReleaseVersion
-  #define ReleaseVersion "0.3.0"
+  #define ReleaseVersion "0.3.1"
 #endif
 #ifndef HelperSource
   #define HelperSource "..\dist\helper"
@@ -47,12 +47,17 @@ Name: "{autodesktop}\Microsoft Widgets Setup"; Filename: "{app}\MicrosoftWidgets
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "MicrosoftWidgetsHelper"; ValueData: """{app}\MicrosoftWidgets.Helper.exe"" --no-browser"; Tasks: startup; Flags: uninsdeletevalue
 
 [Run]
-Filename: "{app}\MicrosoftWidgets.Helper.exe"; Description: "Open Microsoft Widgets setup"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\MicrosoftWidgets.Helper.exe"; Description: "Open Microsoft Widgets setup"; Flags: nowait postinstall skipifsilent; Check: not IsHelperUpdate
 
 [UninstallRun]
 Filename: "{app}\MicrosoftWidgets.Helper.exe"; Parameters: "--stop"; Flags: runhidden waituntilterminated; RunOnceId: "StopHelper"
 
 [Code]
+function IsHelperUpdate: Boolean;
+begin
+  Result := ExpandConstant('{param:HELPERUPDATE|0}') <> '0';
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
