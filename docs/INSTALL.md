@@ -2,7 +2,7 @@
 
 ## Recommended: Windows installer
 
-1. Download the latest **MicrosoftWidgetsSetup** installer from the GitHub release. Version 0.3.1 contains Microsoft Widgets Helper 0.1.2 and Planner Edge Widget 0.3.0.
+1. Download the latest **MicrosoftWidgetsSetup** installer from the GitHub release. Version 0.3.2 contains Microsoft Widgets Helper 0.1.3 and Planner Edge Widget 0.3.0.
 2. Close any older portable Planner Edge or Microsoft Widgets helper before installing. For the installed helper, upgrades close it automatically.
 3. Run the installer. It installs for your Windows account without requiring administrator access. Optionally select **Start the helper when I sign in to Windows**.
 4. Leave **Open Microsoft Widgets setup** selected on the final page.
@@ -20,6 +20,7 @@ Work-account permissions may require administrator approval. Once approved, retu
 ## Everyday use
 
 - The helper runs in the background. **Microsoft Widgets Setup** in the Start menu opens the setup page without starting another copy.
+- A Microsoft Widgets icon appears in the Windows notification area beside the clock (it may be under the hidden-icons arrow). Left-click it to open setup. Right-click for **Open setup**, **Check for updates**, and **Quit helper**. Hover to see the helper version. Quitting stops widget refresh until you start the helper again.
 - **Stop Microsoft Widgets Helper** in the Start menu, or **Stop helper** on the setup page, stops it.
 - Enable or disable startup in Windows **Settings > Apps > Startup** if you selected it during installation.
 - The helper checks for stable releases at startup and daily. Use **Check for updates** in setup to check immediately. Review the available version and release notes, then choose **Update now** and confirm. Download verification happens before installation; the helper restarts afterward. Account settings and installer preferences are preserved.
@@ -29,9 +30,9 @@ Work-account permissions may require administrator approval. Once approved, retu
 
 ## Downloads explained
 
-- **MicrosoftWidgetsSetup-0.3.1.exe**: recommended; installs the helper and includes the widget.
+- **MicrosoftWidgetsSetup-0.3.2.exe**: recommended; installs the helper and includes the widget.
 - **PlannerEdgeWidget-0.3.0.icuewidget**: widget only, for an existing helper installation.
-- **MicrosoftWidgetsHelper-0.1.2-portable-win-x64.zip**: optional portable helper and widget package. Extract the entire archive before opening `MicrosoftWidgets.Helper.exe`.
+- **MicrosoftWidgetsHelper-0.1.3-portable-win-x64.zip**: optional portable helper and widget package. Extract the entire archive before opening `MicrosoftWidgets.Helper.exe`.
 - **SHA256SUMS.txt**: checksums for the release downloads.
 
 Requires 64-bit Windows 10 22H2 or later and a compatible iCUE installation with XENEON EDGE. The installer is currently unsigned, so Windows may identify the publisher as unknown. Follow your organization's software-installation policy.

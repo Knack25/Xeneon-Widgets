@@ -1,5 +1,5 @@
 #ifndef ReleaseVersion
-  #define ReleaseVersion "0.3.1"
+  #define ReleaseVersion "0.3.2"
 #endif
 #ifndef HelperSource
   #define HelperSource "..\dist\helper"

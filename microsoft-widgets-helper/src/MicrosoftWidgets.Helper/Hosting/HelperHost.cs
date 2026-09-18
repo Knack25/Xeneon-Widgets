@@ -12,6 +12,7 @@ public static class HelperHost
     public static string PlannerPackagePath => Path.Combine(AppContext.BaseDirectory, "widgets", "PlannerEdgeWidget.icuewidget");
 
     public static void OpenSetup() => Process.Start(new ProcessStartInfo("http://localhost:8787") { UseShellExecute = true });
+    public static void OpenUpdates() => Process.Start(new ProcessStartInfo("http://localhost:8787/#updates") { UseShellExecute = true });
 
     public static void MapHelperHost(this WebApplication app)
     {

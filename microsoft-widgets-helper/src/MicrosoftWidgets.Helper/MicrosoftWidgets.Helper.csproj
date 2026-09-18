@@ -1,17 +1,20 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationIcon>Assets/helper.ico</ApplicationIcon>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>PlannerEdge.Helper</RootNamespace>
-    <Version>0.1.2</Version>
-    <ReleaseVersion>0.3.1</ReleaseVersion>
+    <Version>0.1.3</Version>
+    <ReleaseVersion>0.3.2</ReleaseVersion>
     <OutputType>WinExe</OutputType>
     <Product>Microsoft Widgets Helper</Product>
   </PropertyGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="Assets/helper.ico" LogicalName="MicrosoftWidgets.Helper.Icon.ico" />
     <AssemblyMetadata Include="ReleaseVersion" Value="$(ReleaseVersion)" />
     <PackageReference Include="Microsoft.Identity.Client" Version="4.89.0" />
     <PackageReference Include="Microsoft.Identity.Client.Extensions.Msal" Version="4.89.0" />

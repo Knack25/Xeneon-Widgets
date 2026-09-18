@@ -56,6 +56,7 @@ builder.Services.AddSingleton<IUpdateInstaller, UpdateInstaller>();
 builder.Services.AddSingleton(provider => new UpdateService(provider.GetRequiredService<IReleaseClient>(),
     provider.GetRequiredService<IUpdateInstaller>(), UpdateService.ReleaseVersion));
 builder.Services.AddHostedService<UpdateWorker>();
+builder.Services.AddHostedService<TrayService>();
 
 var app = builder.Build();
 
