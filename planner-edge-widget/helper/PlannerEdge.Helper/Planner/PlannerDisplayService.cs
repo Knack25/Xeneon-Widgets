@@ -20,7 +20,11 @@ public sealed class PlannerDisplayService(IPlannerGraphClient graphClient)
 
         var tasksByBucket = visibleTasks
             .GroupBy(task => task.BucketId ?? string.Empty)
-            .ToDictionary(group => group.Key, group => group.Select(ToDisplay).ToList());
+            .ToDictionary(group => group.Key, group => group
+                .OrderBy(task => task.BucketOrderHint is null)
+                .ThenBy(task => task.BucketOrderHint, StringComparer.Ordinal)
+                .ThenBy(task => task.Id, StringComparer.Ordinal)
+                .Select(ToDisplay).ToList());
 
         var bucketDisplays = buckets
             .OrderBy(bucket => bucket.OrderHint is null)

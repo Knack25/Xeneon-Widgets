@@ -23,6 +23,10 @@ public sealed record SelectedPlanRequest(string PlanId);
 
 public sealed record MoveTaskRequest(string BucketId);
 
+public sealed record DueDateRequest(string? Date);
+public sealed record AssignmentsRequest(IReadOnlyList<string> UserIds);
+public sealed record CreateTaskRequest(string Title, string BucketId, string? Date, IReadOnlyList<string> UserIds);
+
 public sealed record BucketDisplay(
     string BucketId,
     string Name,
@@ -58,4 +62,6 @@ public sealed record TaskDetailsResponse(
     string? BucketId,
     DateTimeOffset? DueDateTime,
     IReadOnlyList<string> Assignees,
-    IReadOnlyList<ChecklistItemDisplay> Checklist);
+    IReadOnlyList<ChecklistItemDisplay> Checklist,
+    string? Description = null,
+    IReadOnlyList<string>? AssigneeIds = null);

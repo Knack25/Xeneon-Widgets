@@ -27,6 +27,10 @@ builder.Services.AddSingleton<PlannerCoordinator>();
 builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<TaskDetailsService>();
 builder.Services.AddSingleton<TaskMoveService>();
+builder.Services.AddSingleton<DueDateService>();
+builder.Services.AddSingleton<BoardMemberService>();
+builder.Services.AddSingleton<TaskAssignmentService>();
+builder.Services.AddSingleton<TaskCreationService>();
 builder.Services.AddSingleton<ChecklistCompletionService>();
 
 var app = builder.Build();
@@ -68,6 +72,7 @@ app.Use(async (context, next) =>
         {
             MsalUiRequiredException => (401, "signed_out", "Sign in to your Microsoft work account."),
             MsalException => (401, "auth_required", "Microsoft sign-in needs attention."),
+            BoardMembersUnavailableException error => (403, "board_members_unavailable", error.Message),
             GraphApiException { StatusCode: HttpStatusCode.PreconditionFailed or HttpStatusCode.Conflict } => (409, "task_conflict", "The task changed. Refresh and try again."),
             GraphApiException { StatusCode: HttpStatusCode.Forbidden } => (403, "permission_denied", "This account cannot access the requested Planner board."),
             GraphApiException { StatusCode: HttpStatusCode.Unauthorized } => (401, "auth_required", "Microsoft sign-in needs attention."),
@@ -88,7 +93,7 @@ app.Use(async (context, next) =>
 
 app.UseDefaultFiles();
 app.UseStaticFiles();
-app.MapGet("/health", () => Results.Ok(new { status = "ok", version = "0.2.4" }));
+app.MapGet("/health", () => Results.Ok(new { status = "ok", version = "0.3.0" }));
 app.MapGet("/configuration", async (IMicrosoftAuthService auth, CancellationToken ct) =>
     Results.Ok(await auth.GetConfigurationAsync(ct)));
 app.MapPut("/configuration", async (AzureAdOptions configuration, IMicrosoftAuthService auth,
@@ -105,12 +110,16 @@ app.MapPut("/configuration", async (AzureAdOptions configuration, IMicrosoftAuth
 });
 app.MapGet("/auth/status", async (IMicrosoftAuthService auth, CancellationToken ct) =>
     Results.Ok(await auth.GetStatusAsync(ct)));
+app.MapGet("/auth/me", async (IPlannerGraphClient graph, CancellationToken ct) =>
+    Results.Ok(new { userId = await graph.GetCurrentUserIdAsync(ct) }));
 app.MapGet("/auth/sign-in", async (IMicrosoftAuthService auth, CancellationToken ct) =>
     Results.Ok(await auth.SignInAsync(ct)));
 app.MapPost("/auth/sign-in", async (IMicrosoftAuthService auth, CancellationToken ct) =>
     Results.Ok(await auth.SignInAsync(ct)));
 app.MapPost("/auth/enable-assignee-names", async (IMicrosoftAuthService auth, CancellationToken ct) =>
     Results.Ok(await auth.EnableAssigneeNamesAsync(ct)));
+app.MapPost("/auth/enable-board-members", async (IMicrosoftAuthService auth, CancellationToken ct) =>
+    Results.Ok(await auth.EnableBoardMembersAsync(ct)));
 app.MapPost("/auth/sign-out", async (IMicrosoftAuthService auth, CancellationToken ct) =>
 {
     await auth.SignOutAsync(ct);
@@ -132,6 +141,13 @@ app.MapGet("/display", async (PlannerCoordinator coordinator, CancellationToken 
     var display = await coordinator.GetDisplayAsync(ct);
     return display is null ? Results.NoContent() : Results.Ok(display);
 });
+app.MapGet("/members", async (BoardMemberService members, CancellationToken ct) =>
+    Results.Ok(await members.GetAsync(ct)));
+app.MapPost("/tasks", async (CreateTaskRequest request, TaskCreationService creation, CancellationToken ct) =>
+{
+    await creation.CreateAsync(request.Title, request.BucketId, request.Date, request.UserIds, ct);
+    return Results.NoContent();
+});
 app.MapPost("/tasks/{taskId}/complete", async (string taskId, TaskCompletionService completion, CancellationToken ct) =>
     Results.Ok(await completion.CompleteAsync(taskId, ct)));
 app.MapGet("/tasks/{taskId}/details", async (string taskId, TaskDetailsService details, CancellationToken ct) =>
@@ -139,6 +155,17 @@ app.MapGet("/tasks/{taskId}/details", async (string taskId, TaskDetailsService d
 app.MapPut("/tasks/{taskId}/bucket", async (string taskId, MoveTaskRequest request, TaskMoveService moves, CancellationToken ct) =>
 {
     await moves.MoveAsync(taskId, request.BucketId, ct);
+    return Results.NoContent();
+});
+app.MapPut("/tasks/{taskId}/due-date", async (string taskId, DueDateRequest request, DueDateService dates, CancellationToken ct) =>
+{
+    await dates.SetAsync(taskId, request.Date, ct);
+    return Results.NoContent();
+});
+app.MapPut("/tasks/{taskId}/assignments", async (string taskId, AssignmentsRequest request,
+    TaskAssignmentService assignments, CancellationToken ct) =>
+{
+    await assignments.SetAsync(taskId, request.UserIds, ct);
     return Results.NoContent();
 });
 app.MapPost("/tasks/{taskId}/checklist/{itemId}/complete", async (string taskId, string itemId,

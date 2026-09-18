@@ -38,8 +38,8 @@
     <section>
       <div class="step">2. Sign in</div>
       <div id="account">Checking account...</div>
-      <div class="actions"><button id="sign-in" disabled>Sign in with Microsoft</button><button id="enable-names" hidden>Show assignee names</button><button id="cancel-sign-in" hidden>Cancel sign-in</button><button id="sign-out" hidden>Sign out</button></div>
-      <p class="hint">Showing assignee names requires an additional Microsoft permission. Your work administrator may need to approve it.</p>
+      <div class="actions"><button id="sign-in" disabled>Sign in with Microsoft</button><button id="enable-names" hidden>Show assignee names</button><button id="enable-members" hidden>Enable board members</button><button id="cancel-sign-in" hidden>Cancel sign-in</button><button id="sign-out" hidden>Sign out</button></div>
+      <p class="hint">Showing assignee names requires User.ReadBasic.All. Editing assignees requires GroupMember.ReadBasic.All. Your work administrator may need to approve these permissions.</p>
       <details class="help"><summary>Microsoft sign-in shows an error?</summary>
         <p>If you see <strong>AADSTS900971: No reply address provided</strong>, the Microsoft app registration needs a redirect address:</p>
         <ol>
@@ -67,6 +67,7 @@
     const signIn = document.querySelector('#sign-in');
     const signOut = document.querySelector('#sign-out');
     const enableNames = document.querySelector('#enable-names');
+    const enableMembers = document.querySelector('#enable-members');
     const cancelSignIn = document.querySelector('#cancel-sign-in');
     const save = document.querySelector('#save');
     const hideCompleted = document.querySelector('#hide-completed');
@@ -95,6 +96,7 @@
       signIn.hidden = status.isSignedIn;
       signOut.hidden = !status.isSignedIn;
       enableNames.hidden = !status.isSignedIn;
+      enableMembers.hidden = !status.isSignedIn;
       board.disabled = !status.isSignedIn;
       save.disabled = !status.isSignedIn;
       if (!status.isSignedIn) return;
@@ -132,6 +134,13 @@
       try { await api('/auth/enable-assignee-names', {method:'POST'}); message.textContent = 'Assignee names are enabled.'; }
       catch(error) { message.textContent = error.message; }
       finally { enableNames.disabled = false; }
+    });
+    enableMembers.addEventListener('click', async () => {
+      enableMembers.disabled = true;
+      message.textContent = 'Complete the Microsoft permission prompt to edit task assignees.';
+      try { await api('/auth/enable-board-members', {method:'POST'}); message.textContent = 'Board members are enabled.'; }
+      catch(error) { message.textContent = error.message; }
+      finally { enableMembers.disabled = false; }
     });
     signOut.addEventListener('click', async () => {
       try { await api('/auth/sign-out', {method:'POST'}); location.reload(); }

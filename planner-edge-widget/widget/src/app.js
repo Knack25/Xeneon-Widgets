@@ -10,6 +10,13 @@ let state = flow.createInitialState();
 let plans = null;
 let detailGeneration = 0;
 let taskObserver = null;
+let myTasksOnly = false;
+let currentUserId = null;
+let filterError = null;
+let members = null;
+let memberPlanId = null;
+let memberError = null;
+let createNotice = null;
 
 async function loadDisplay(force = false) {
   if (!force && (state.dialog || state.completing)) return;
@@ -37,6 +44,8 @@ function render() {
     return;
   }
   const board = state.display;
+  const buckets = myTasksOnly && currentUserId ? board.buckets.map(bucket => ({ ...bucket,
+    tasks: bucket.tasks.filter(task => task.assignments?.includes(currentUserId)) })) : board.buckets;
   const previousBoard = app.querySelector?.(".board");
   const sameBoard = previousBoard && previousBoard.dataset.planId === board.planId;
   const boardScrollLeft = sameBoard ? previousBoard.scrollLeft : 0;
@@ -45,8 +54,10 @@ function render() {
   app.innerHTML = `<header class="topbar"><div class="board-heading">
       <button class="board-title" data-open-board-picker title="Choose Planner board">${escapeHtml(board.planTitle)}</button>
       <p>${board.isStale || state.mode === "error" ? "Offline view" : `Synced ${formatTime(board.syncedAt)}`}</p></div>
-      ${state.error ? `<span class="notice">${escapeHtml(state.error.message)}</span>` : ""}</header>
-    <section class="board" data-plan-id="${escapeHtml(board.planId)}">${board.buckets.map(renderBucket).join("")}</section>${renderDialog()}`;
+      <div class="topbar-actions">${state.error || filterError || createNotice ? `<span class="notice">${escapeHtml(state.error?.message || filterError || createNotice)}</span>` : ""}
+      <button class="icon-action my-tasks-action ${myTasksOnly ? "active" : ""}" data-toggle-my-tasks aria-label="My tasks" aria-pressed="${myTasksOnly}" title="My tasks">My tasks</button>
+      <button class="icon-action" data-new-task aria-label="New task" title="New task">+</button></div></header>
+    <section class="board" data-plan-id="${escapeHtml(board.planId)}">${buckets.map(renderBucket).join("")}</section>${renderDialog()}`;
   const renderedBoard = app.querySelector?.(".board");
   if (renderedBoard) renderedBoard.scrollLeft = boardScrollLeft;
   app.querySelectorAll?.(".bucket").forEach(bucket => {
@@ -103,6 +114,32 @@ function renderTaskSupplement(task) {
     ${failures.has(task.taskId) ? '<span class="detail-warning">Checklist unavailable</span>' : ""}`;
 }
 
+function renderCalendar(dialog) {
+  const [year, month] = dialog.calendarMonth.split("-").map(Number);
+  const firstWeekday = new Date(Date.UTC(year, month - 1, 1)).getUTCDay();
+  const days = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  const cells = Array.from({ length: firstWeekday }, () => '<span></span>');
+  for (let day = 1; day <= days; day++) {
+    const date = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    cells.push(`<button type="button" data-select-date="${date}" class="${dialog.dateDraft === date ? "selected" : ""}" aria-pressed="${dialog.dateDraft === date}">${day}</button>`);
+  }
+  return `<div class="calendar"><div class="calendar-nav"><button type="button" data-calendar-month="-1" aria-label="Previous month">&#8249;</button>
+    <strong>${new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric", timeZone: "UTC" }).format(new Date(Date.UTC(year, month - 1, 1)))}</strong>
+    <button type="button" data-calendar-month="1" aria-label="Next month">&#8250;</button></div>
+    <div class="calendar-grid">${["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map(day => `<span>${day}</span>`).join("")}${cells.join("")}</div>
+    <div class="confirm-actions"><button type="button" data-cancel-date>Cancel</button><button type="button" data-clear-date>Clear date</button><button type="button" class="primary" data-save-date>Save</button></div></div>`;
+}
+
+function renderMemberPicker(dialog) {
+  if (!dialog.memberPickerOpen) return "";
+  if (memberError) return `<p class="dialog-error">${escapeHtml(memberError)}</p><div class="confirm-actions"><button type="button" data-cancel-members>Close picker</button></div>`;
+  if (!members) return "<p>Loading board members...</p>";
+  const chosen = dialog.assigneeDraft || [];
+  return `<div class="member-picker"><div class="member-list">${members.map(member =>
+    `<button type="button" data-toggle-member="${escapeHtml(member.id)}" aria-pressed="${chosen.includes(member.id)}"><span class="mini-check ${chosen.includes(member.id) ? "selected" : ""}" aria-hidden="true"></span>${escapeHtml(member.displayName)}</button>`).join("") || '<p>No board members found.</p>'}</div>
+    <div class="confirm-actions"><button type="button" data-cancel-members>Cancel</button><button type="button" class="primary" data-save-members>Save</button></div></div>`;
+}
+
 function renderDialog() {
   const dialog = state.dialog;
   if (!dialog) return "";
@@ -121,17 +158,31 @@ function renderDialog() {
     const selectedBucketName = buckets.find(bucket => bucket.bucketId === selectedBucketId)?.name || "No bucket";
     const movingToDifferentBucket = selectedBucketId && selectedBucketId !== currentBucketId;
     content = `<h2>${escapeHtml(info?.title || task?.title || "Task")}</h2>${info ? `
-      <dl class="task-meta"><dt>Due</dt><dd>${info.dueDateTime ? formatDate(info.dueDateTime) : "No due date"}</dd>
-      <dt>Assigned to</dt><dd>${info.assignees?.length ? info.assignees.map(escapeHtml).join(", ") : "Unassigned"}</dd>
+      <dl class="task-meta"><dt>Due</dt><dd><button type="button" data-open-date-picker ${state.completing ? "disabled" : ""}>${info.dueDateTime ? formatDate(info.dueDateTime) : "No due date"}</button>
+      ${dialog.datePickerOpen ? renderCalendar(dialog) : ""}</dd>
+      <dt>Assigned to</dt><dd><button type="button" data-open-members ${state.completing ? "disabled" : ""}>${info.assignees?.length ? info.assignees.map(escapeHtml).join(", ") : "Unassigned"}</button>
+      ${renderMemberPicker(dialog)}</dd>
       <dt>Bucket</dt><dd><button type="button" class="bucket-picker-trigger" data-open-bucket-picker ${state.completing ? "disabled" : ""}
         aria-expanded="${dialog.bucketPickerOpen ? "true" : "false"}"><span>${escapeHtml(selectedBucketName)}</span><span aria-hidden="true">v</span></button>
         ${dialog.bucketPickerOpen ? `<div class="bucket-option-list" role="listbox" aria-label="Task bucket">${buckets.map(bucket =>
           `<button type="button" data-select-task-bucket="${escapeHtml(bucket.bucketId)}" role="option"
             aria-selected="${bucket.bucketId === selectedBucketId ? "true" : "false"}">${escapeHtml(bucket.name)}</button>`).join("")}</div>` : ""}</dd></dl>
       ${movingToDifferentBucket ? '<div class="confirm-actions move-action"><button class="primary" data-move-task>Move task</button></div>' : ""}
-      <h3>Checklist</h3>${info.checklist?.length ? `<div class="detail-checklist">${info.checklist.map(item => renderChecklistButton(dialog.taskId, item, "detail-item")).join("")}</div>` : '<p>No checklist</p>'}`
+      <h3>Checklist</h3>${info.checklist?.length ? `<div class="detail-checklist">${info.checklist.map(item => renderChecklistButton(dialog.taskId, item, "detail-item")).join("")}</div>` : '<p>No checklist</p>'}
+      ${info.description?.trim() ? `<h3>Notes</h3><p class="task-description">${escapeHtml(info.description)}</p>` : ""}`
       : `<p>${failures.has(dialog.taskId) ? "Task details unavailable." : "Loading task details..."}</p>
       ${failures.has(dialog.taskId) ? `<button data-retry-details="${escapeHtml(dialog.taskId)}">Retry</button>` : ""}`}`;
+  } else if (dialog.type === "createTask") {
+    const buckets = state.display?.buckets.filter(bucket => bucket.bucketId !== "unbucketed") || [];
+    content = `<h2>New task</h2><label class="field-label" for="new-task-title">Title</label>
+      <input id="new-task-title" data-new-task-title maxlength="255" value="${escapeHtml(dialog.title || "")}" placeholder="Task title">
+      <label class="field-label">Bucket</label><button type="button" class="bucket-picker-trigger" data-new-task-bucket-picker>${escapeHtml(buckets.find(bucket => bucket.bucketId === dialog.bucketId)?.name || "Choose a bucket")}</button>
+      ${dialog.bucketPickerOpen ? `<div class="bucket-option-list">${buckets.map(bucket => `<button type="button" data-new-task-bucket="${escapeHtml(bucket.bucketId)}">${escapeHtml(bucket.name)}</button>`).join("")}</div>` : ""}
+      <label class="field-label">Due</label><button type="button" data-open-date-picker>${dialog.dateDraft ? escapeHtml(dialog.dateDraft) : "No due date"}</button>
+      ${dialog.datePickerOpen ? renderCalendar(dialog) : ""}
+      <label class="field-label">Assigned to</label><button type="button" data-open-members>${dialog.selectedAssignees?.length ? `${dialog.selectedAssignees.length} people` : "Unassigned"}</button>
+      ${renderMemberPicker(dialog)}
+      <div class="confirm-actions"><button type="button" data-close-dialog>Cancel</button><button type="button" class="primary" data-submit-new-task ${state.completing ? "disabled" : ""}>Create task</button></div>`;
   } else if (dialog.type === "confirmTask" || dialog.type === "confirmChecklist") {
     content = `<h2>Complete ${dialog.type === "confirmTask" ? "task" : "checklist item"}?</h2><p>${escapeHtml(dialog.title)}</p>
       <div class="confirm-actions"><button data-close-dialog ${state.completing ? "disabled" : ""}>Cancel</button>
@@ -177,8 +228,82 @@ function queueDetails() {
   }
 }
 
+app.addEventListener("input", event => {
+  if (event.target.matches?.("[data-new-task-title]") && state.dialog?.type === "createTask")
+    state.dialog.title = event.target.value;
+});
+
 app.addEventListener("click", async event => {
   const hit = name => event.target.closest(`[${name}]`);
+  if (hit("data-new-task") && !state.dialog) {
+    state.dialog = { type: "createTask", title: "", bucketId: state.display?.buckets.find(bucket => bucket.bucketId !== "unbucketed")?.bucketId || "",
+      dateDraft: null, selectedAssignees: [], assigneeDraft: [] };
+    state.dialogError = null; createNotice = null; render(); return;
+  }
+  if (hit("data-new-task-bucket-picker") && state.dialog?.type === "createTask") {
+    state.dialog.bucketPickerOpen = !state.dialog.bucketPickerOpen; render(); return;
+  }
+  if (hit("data-new-task-bucket") && state.dialog?.type === "createTask") {
+    state.dialog.bucketId = hit("data-new-task-bucket").dataset.newTaskBucket;
+    state.dialog.bucketPickerOpen = false; render(); return;
+  }
+  if (hit("data-open-members") && !state.completing && state.dialog) {
+    const dialog = state.dialog;
+    dialog.memberPickerOpen = true;
+    dialog.assigneeDraft = [...(dialog.type === "createTask" ? dialog.selectedAssignees || [] : details.get(dialog.taskId)?.assigneeIds || [])];
+    state.dialogError = null;
+    if (memberPlanId !== state.display?.planId) { members = null; memberError = null; memberPlanId = state.display?.planId; }
+    if (!members) memberError = null;
+    render();
+    if (!members && !memberError) {
+      try { members = await api.getMembers(); }
+      catch (error) { memberError = normalizeError(error).message; }
+      if (state.dialog === dialog) render();
+    }
+    return;
+  }
+  if (hit("data-toggle-member") && state.dialog?.memberPickerOpen) {
+    const id = hit("data-toggle-member").dataset.toggleMember;
+    const draft = state.dialog.assigneeDraft;
+    state.dialog.assigneeDraft = draft.includes(id) ? draft.filter(value => value !== id) : [...draft, id];
+    render(); return;
+  }
+  if (hit("data-cancel-members") && state.dialog?.memberPickerOpen) {
+    state.dialog.memberPickerOpen = false;
+    if (state.dialog.type === "taskDetails") state.dialog.assigneeDraft = null;
+    render(); return;
+  }
+  if (hit("data-save-members") && !state.completing && state.dialog?.memberPickerOpen) {
+    if (state.dialog.type === "createTask") {
+      state.dialog.selectedAssignees = [...state.dialog.assigneeDraft];
+      state.dialog.memberPickerOpen = false; render(); return;
+    }
+    const taskId = state.dialog.taskId;
+    state.completing = true; render();
+    try { await api.setAssignments(taskId, state.dialog.assigneeDraft); details.delete(taskId); failures.delete(taskId); await loadDisplay(true); }
+    catch (error) { state.completing = false; state.dialogError = normalizeError(error).message; render(); }
+    return;
+  }
+  if (hit("data-submit-new-task") && !state.completing && state.dialog?.type === "createTask") {
+    const { title, bucketId, dateDraft, selectedAssignees } = state.dialog;
+    if (!title?.trim()) { state.dialogError = "Enter a task title."; render(); return; }
+    if (!bucketId) { state.dialogError = "Choose a bucket."; render(); return; }
+    state.completing = true; render();
+    try { await api.createTask({ title: title.trim(), bucketId, date: dateDraft, userIds: selectedAssignees }); }
+    catch (error) { state.completing = false; state.dialogError = normalizeError(error).message; render(); return; }
+    state = flow.closeDialog(state);
+    if (myTasksOnly && !selectedAssignees.includes(currentUserId)) createNotice = "Task created. It is hidden by My tasks.";
+    await loadDisplay(true);
+    return;
+  }
+  if (hit("data-toggle-my-tasks")) {
+    if (!myTasksOnly && !currentUserId) {
+      try { currentUserId = (await api.getCurrentUser()).userId; }
+      catch (error) { filterError = normalizeError(error).message; render(); return; }
+    }
+    filterError = null;
+    myTasksOnly = !myTasksOnly; createNotice = null; visibleTasks.clear(); render(); return;
+  }
   if (event.target.matches?.("[data-dialog-backdrop]")) {
     if (!state.completing) { state = flow.closeDialog(state); render(); }
     return;
@@ -196,13 +321,47 @@ app.addEventListener("click", async event => {
     state.completing = true; render();
     try {
       await api.selectPlan(chosen.dataset.selectPlan);
-      details.clear(); failures.clear(); state = flow.closeDialog(state);
+      details.clear(); failures.clear(); members = null; memberError = null; memberPlanId = null;
+      createNotice = null; filterError = null;
+      state = flow.closeDialog(state);
       await loadDisplay(true);
     } catch (error) { state.completing = false; state.dialogError = normalizeError(error).message; render(); }
     return;
   }
   if (hit("data-open-bucket-picker") && !state.completing && state.dialog?.type === "taskDetails") {
     state = flow.openTaskBucketPicker(state); render(); return;
+  }
+  if (hit("data-open-date-picker") && !state.completing && ["taskDetails", "createTask"].includes(state.dialog?.type)) {
+    const due = state.dialog.type === "taskDetails" ? details.get(state.dialog.taskId)?.dueDateTime : null;
+    const dateDraft = state.dialog.type === "createTask" ? state.dialog.dateDraft : due ? due.slice(0, 10) : null;
+    state.dialog = { ...state.dialog, datePickerOpen: true, dateDraft,
+      originalDate: dateDraft,
+      calendarMonth: (dateDraft || new Date().toISOString().slice(0, 10)).slice(0, 7) };
+    render(); return;
+  }
+  if (hit("data-calendar-month") && state.dialog?.datePickerOpen) {
+    const [year, month] = state.dialog.calendarMonth.split("-").map(Number);
+    const next = new Date(Date.UTC(year, month - 1 + Number(hit("data-calendar-month").dataset.calendarMonth), 1));
+    state.dialog.calendarMonth = next.toISOString().slice(0, 7); render(); return;
+  }
+  if (hit("data-select-date") && state.dialog?.datePickerOpen) {
+    state.dialog.dateDraft = hit("data-select-date").dataset.selectDate; render(); return;
+  }
+  if (hit("data-cancel-date") && state.dialog?.datePickerOpen) {
+    if (state.dialog.type === "createTask") state.dialog.dateDraft = state.dialog.originalDate;
+    state.dialog.datePickerOpen = false; render(); return;
+  }
+  if ((hit("data-save-date") || hit("data-clear-date")) && !state.completing && state.dialog?.datePickerOpen) {
+    const taskId = state.dialog.taskId;
+    const date = hit("data-clear-date") ? null : state.dialog.dateDraft;
+    if (!date && !hit("data-clear-date")) return;
+    if (state.dialog.type === "createTask") {
+      state.dialog.dateDraft = date; state.dialog.datePickerOpen = false; render(); return;
+    }
+    state.completing = true; render();
+    try { await api.setDueDate(taskId, date); details.delete(taskId); failures.delete(taskId); await loadDisplay(true); }
+    catch (error) { state.completing = false; state.dialogError = normalizeError(error).message; render(); }
+    return;
   }
   const selectedBucket = hit("data-select-task-bucket");
   if (selectedBucket && !state.completing && state.dialog?.type === "taskDetails") {

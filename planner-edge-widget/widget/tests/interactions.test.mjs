@@ -231,3 +231,119 @@ test("only visible task cards prefetch details when observation is available", a
   assert.equal(reads.length, 1);
   assert.match(reads[0], /visible/);
 });
+
+test("My tasks filters assignments on the selected board", async () => {
+  const handlers = {};
+  const app = { innerHTML: "", addEventListener: (type, listener) => { handlers[type] = listener; } };
+  const board = { planId: "plan", planTitle: "Work", syncedAt: new Date().toISOString(), buckets: [
+    { bucketId: "b", name: "Doing", tasks: [
+      { taskId: "mine", title: "My work", assignments: ["me"] },
+      { taskId: "other", title: "Other work", assignments: ["other"] }
+    ] }
+  ] };
+  const context = { document: { getElementById: () => app }, setInterval() {}, Intl, Date,
+    fetch: async path => ({ ok: true, status: 200, json: async () => path.endsWith("/display") ? board :
+      path.endsWith("/auth/me") ? { userId: "me" } : { checklist: [] } }) };
+  for (const file of ["state.js", "api.js", "app.js"])
+    runInNewContext(readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"), context);
+  await new Promise(resolve => setTimeout(resolve, 15));
+  await handlers.click({ target: { closest: selector => selector === "[data-toggle-my-tasks]" ? { dataset: {} } : null } });
+  assert.match(app.innerHTML, /My work/);
+  assert.doesNotMatch(app.innerHTML, /Other work/);
+  assert.match(app.innerHTML, /aria-pressed="true"/);
+});
+
+test("new task form submits once and keeps the selected board", async () => {
+  const handlers = {};
+  const calls = [];
+  const app = { innerHTML: "", addEventListener: (type, listener) => { handlers[type] = listener; } };
+  const board = { planId: "plan", planTitle: "Work", syncedAt: new Date().toISOString(), buckets: [
+    { bucketId: "first", name: "First", tasks: [] }
+  ] };
+  const context = { document: { getElementById: () => app }, setInterval() {}, Intl, Date,
+    fetch: async (path, options) => {
+      calls.push([path, options]);
+      return { ok: true, status: options?.method === "POST" ? 204 : 200,
+        json: async () => path.endsWith("/display") ? board : null };
+    } };
+  for (const file of ["state.js", "api.js", "app.js"])
+    runInNewContext(readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"), context);
+  await new Promise(resolve => setTimeout(resolve, 10));
+  const tap = async attribute => handlers.click({ target: {
+    closest: selector => selector === `[${attribute}]` ? { dataset: {} } : null
+  } });
+  await tap("data-new-task");
+  assert.match(app.innerHTML, /New task/);
+  assert.match(app.innerHTML, /First/);
+  handlers.input({ target: { matches: selector => selector === "[data-new-task-title]", value: "Test task" } });
+  await tap("data-submit-new-task");
+  const create = calls.find(([path, options]) => path.endsWith("/tasks") && options?.method === "POST");
+  assert.ok(create);
+  assert.equal(JSON.parse(create[1].body).title, "Test task");
+  assert.equal(JSON.parse(create[1].body).bucketId, "first");
+  assert.match(app.innerHTML, /Work/);
+});
+
+test("details escape notes and calendar saves a chosen due date", async () => {
+  const handlers = {};
+  const calls = [];
+  const app = { innerHTML: "", addEventListener: (type, listener) => { handlers[type] = listener; } };
+  const board = { planId: "plan", planTitle: "Work", syncedAt: new Date().toISOString(), buckets: [
+    { bucketId: "b", name: "Doing", tasks: [{ taskId: "task", title: "Build" }] }
+  ] };
+  const detail = { taskId: "task", title: "Build", bucketId: "b", checklist: [], assignees: [],
+    description: "Line one\n<script>alert(1)</script>" };
+  const context = { document: { getElementById: () => app }, setInterval() {}, Intl, Date,
+    fetch: async (path, options) => {
+      calls.push([path, options]);
+      return { ok: true, status: options?.method === "PUT" ? 204 : 200,
+        json: async () => path.endsWith("/display") ? board : detail };
+    } };
+  for (const file of ["state.js", "api.js", "app.js"])
+    runInNewContext(readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"), context);
+  await new Promise(resolve => setTimeout(resolve, 15));
+  const tap = async (attribute, dataset = {}) => handlers.click({ target: {
+    closest: selector => selector === `[${attribute}]` ? { dataset } : null
+  } });
+  await tap("data-open-task", { openTask: "task" });
+  assert.match(app.innerHTML, /Line one/);
+  assert.match(app.innerHTML, /&lt;script&gt;/);
+  assert.doesNotMatch(app.innerHTML, /<script>alert/);
+  await tap("data-open-date-picker");
+  assert.match(app.innerHTML, /data-select-date=/);
+  await tap("data-select-date", { selectDate: "2026-09-19" });
+  await tap("data-save-date");
+  const update = calls.find(([path, options]) => path.endsWith("/tasks/task/due-date") && options?.method === "PUT");
+  assert.equal(JSON.parse(update[1].body).date, "2026-09-19");
+});
+
+test("assignee picker saves multiple selected board members", async () => {
+  const handlers = {};
+  const calls = [];
+  const app = { innerHTML: "", addEventListener: (type, listener) => { handlers[type] = listener; } };
+  const board = { planId: "plan", planTitle: "Work", syncedAt: new Date().toISOString(), buckets: [
+    { bucketId: "b", name: "Doing", tasks: [{ taskId: "task", title: "Build" }] }
+  ] };
+  const detail = { taskId: "task", title: "Build", bucketId: "b", checklist: [],
+    assignees: ["Alex"], assigneeIds: ["person-a"] };
+  const context = { document: { getElementById: () => app }, setInterval() {}, Intl, Date,
+    fetch: async (path, options) => {
+      calls.push([path, options]);
+      return { ok: true, status: options?.method === "PUT" ? 204 : 200,
+        json: async () => path.endsWith("/display") ? board : path.endsWith("/members") ?
+          [{ id: "person-a", displayName: "Alex" }, { id: "person-b", displayName: "Blair" }] : detail };
+    } };
+  for (const file of ["state.js", "api.js", "app.js"])
+    runInNewContext(readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"), context);
+  await new Promise(resolve => setTimeout(resolve, 15));
+  const tap = async (attribute, dataset = {}) => handlers.click({ target: {
+    closest: selector => selector === `[${attribute}]` ? { dataset } : null
+  } });
+  await tap("data-open-task", { openTask: "task" });
+  await tap("data-open-members");
+  assert.match(app.innerHTML, /Blair/);
+  await tap("data-toggle-member", { toggleMember: "person-b" });
+  await tap("data-save-members");
+  const update = calls.find(([path, options]) => path.endsWith("/tasks/task/assignments") && options?.method === "PUT");
+  assert.deepEqual(JSON.parse(update[1].body).userIds, ["person-a", "person-b"]);
+});

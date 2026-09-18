@@ -10,6 +10,8 @@ Your organization must have a public client app registration with delegated Micr
 
 To show assignee names in task details, the app also needs delegated `User.ReadBasic.All`. Use **Show assignee names** on the setup page to request that optional permission. If your organization has not approved it, the board and checklists still work; names appear as unavailable.
 
+To edit task assignees or assign a new task, the app also needs delegated `GroupMember.ReadBasic.All`. Use **Enable board members** on the setup page and have your administrator approve the request if prompted. Assignee editing is available for group-backed boards whose member list can be loaded; otherwise existing assignees remain visible but editing is disabled.
+
 If Microsoft shows `AADSTS900971: No reply address provided`, open the app registration's **Authentication** page in Microsoft Entra, add **Mobile and desktop applications** with redirect URI `http://localhost`, and save. This registration setting cannot be changed by the helper.
 
 The helper stores your selection and an encrypted Microsoft token cache under your Windows profile. The widget never receives tokens.
@@ -27,7 +29,7 @@ npm --prefix widget install
 .\scripts\package.ps1
 ```
 
-Import `dist/PlannerEdgeWidget-0.2.5.icuewidget` in iCUE and add it to the XENEON EDGE dashboard. Tap the board name to switch boards. The large task checkbox asks to complete the task; the rest of a task opens its details. A task card previews up to three checklist items; checklist items can be completed from the details view. In task details, tap Bucket to open the in-widget bucket list, choose a different bucket, then tap Move task to relocate it. Tap outside a dialog to close it.
+Import `dist/PlannerEdgeWidget-0.3.0.icuewidget` in iCUE and add it to the XENEON EDGE dashboard. Tap the board name to switch boards. Use **My tasks** to show only tasks assigned to you, or **+** to add a task. The large task checkbox asks to complete the task; the rest of a task opens its details. A task card previews up to three checklist items; checklist items can be completed from the details view. In task details, tap Bucket to move a task, Due to change its date, or Assigned to to edit its assignees. Notes appear below the checklist. Tap outside a dialog to close it.
 
 If the imported widget does not load, keep using the same task view with the built-in **iFrame** widget (not **Web URL**, which may try HTTPS for a local HTTP link). Paste this into the iFrame widget's code field:
 

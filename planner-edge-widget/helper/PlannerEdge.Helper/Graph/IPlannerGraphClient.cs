@@ -12,6 +12,11 @@ public interface IPlannerGraphClient
 
     Task<IReadOnlyList<GraphTask>> GetTasksAsync(string planId, CancellationToken cancellationToken);
 
+    Task<string> GetCurrentUserIdAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
+
+    Task<IReadOnlyList<GraphMember>> GetGroupMembersAsync(string groupId, CancellationToken cancellationToken)
+        => throw new NotSupportedException();
+
     Task<GraphTask?> GetTaskAsync(string taskId, CancellationToken cancellationToken);
 
     Task<string?> GetUserDisplayNameAsync(string userId, CancellationToken cancellationToken);
@@ -24,4 +29,13 @@ public interface IPlannerGraphClient
 
     Task MoveTaskAsync(string taskId, string bucketId, string etag, CancellationToken cancellationToken)
         => throw new NotSupportedException();
+
+    Task SetDueDateAsync(string taskId, DateTimeOffset? dueDate, string etag, CancellationToken cancellationToken)
+        => throw new NotSupportedException();
+
+    Task SetAssignmentsAsync(string taskId, IReadOnlyList<string> add, IReadOnlyList<string> remove,
+        string etag, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+    Task CreateTaskAsync(string planId, string bucketId, string title, DateTimeOffset? dueDate,
+        IReadOnlyList<string> assigneeIds, CancellationToken cancellationToken) => throw new NotSupportedException();
 }

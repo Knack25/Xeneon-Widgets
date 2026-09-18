@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Collections.Concurrent;
 
 namespace PlannerEdge.Helper.Graph;
 
@@ -10,10 +11,42 @@ public interface IGraphTokenProvider
     Task<string> GetAccessTokenAsync(CancellationToken cancellationToken);
 
     Task<string> GetBasicUserTokenAsync(CancellationToken cancellationToken) => GetAccessTokenAsync(cancellationToken);
+    Task<string> GetGroupMemberTokenAsync(CancellationToken cancellationToken) => GetAccessTokenAsync(cancellationToken);
 }
 
 public sealed class PlannerGraphClient(HttpClient httpClient, IGraphTokenProvider tokenProvider) : IPlannerGraphClient
 {
+    private readonly ConcurrentDictionary<string, (string? Hint, DateTimeOffset Expires)> orderHints = new();
+    private readonly SemaphoreSlim formatGate = new(4);
+
+    public async Task<string> GetCurrentUserIdAsync(CancellationToken cancellationToken)
+    {
+        using var response = await SendAsync(new HttpRequestMessage(HttpMethod.Get, "me?$select=id"), cancellationToken);
+        using var document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellationToken), cancellationToken: cancellationToken);
+        return document.RootElement.GetProperty("id").GetString()!;
+    }
+
+    public async Task<IReadOnlyList<GraphMember>> GetGroupMembersAsync(string groupId, CancellationToken cancellationToken)
+    {
+        var members = new List<GraphMember>();
+        var token = await tokenProvider.GetGroupMemberTokenAsync(cancellationToken);
+        string? next = $"groups/{Uri.EscapeDataString(groupId)}/members/microsoft.graph.user?$count=true&$select=id,displayName";
+        while (next is not null)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, next);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            request.Headers.TryAddWithoutValidation("ConsistencyLevel", "eventual");
+            using var response = await httpClient.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+                throw new GraphApiException(response.StatusCode, await response.Content.ReadAsStringAsync(cancellationToken));
+            using var document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellationToken), cancellationToken: cancellationToken);
+            foreach (var member in document.RootElement.GetProperty("value").EnumerateArray())
+                members.Add(new GraphMember(member.GetProperty("id").GetString()!, member.GetProperty("displayName").GetString() ?? "Unnamed member"));
+            next = document.RootElement.TryGetProperty("@odata.nextLink", out var link) ? link.GetString() : null;
+        }
+        return members;
+    }
+
     public async Task<IReadOnlyList<GraphPlan>> GetMyPlansAsync(CancellationToken cancellationToken)
     {
         var plans = new List<GraphPlan>();
@@ -53,7 +86,37 @@ public sealed class PlannerGraphClient(HttpClient httpClient, IGraphTokenProvide
         var tasks = new List<GraphTask>();
         await foreach (var item in GetCollectionAsync($"planner/plans/{Uri.EscapeDataString(planId)}/tasks", cancellationToken))
             tasks.Add(ToTask(item));
-        return tasks;
+        return await Task.WhenAll(tasks.Select(async task => task with
+        {
+            BucketOrderHint = await GetBucketOrderHintAsync(task.Id, cancellationToken)
+        }));
+    }
+
+    private async Task<string?> GetBucketOrderHintAsync(string taskId, CancellationToken cancellationToken)
+    {
+        if (orderHints.TryGetValue(taskId, out var cached) && cached.Expires > DateTimeOffset.UtcNow)
+            return cached.Hint;
+        await formatGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (orderHints.TryGetValue(taskId, out cached) && cached.Expires > DateTimeOffset.UtcNow)
+                return cached.Hint;
+            try
+            {
+                using var response = await SendAsync(new HttpRequestMessage(HttpMethod.Get,
+                    $"planner/tasks/{Uri.EscapeDataString(taskId)}/bucketTaskBoardFormat"), cancellationToken);
+                using var document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellationToken), cancellationToken: cancellationToken);
+                var hint = document.RootElement.TryGetProperty("orderHint", out var value) ? value.GetString() : null;
+                orderHints[taskId] = (hint, DateTimeOffset.UtcNow.AddMinutes(5));
+                return hint;
+            }
+            catch (Exception error) when (error is GraphApiException or HttpRequestException or System.Text.Json.JsonException)
+            {
+                orderHints[taskId] = (null, DateTimeOffset.UtcNow.AddMinutes(1));
+                return null;
+            }
+        }
+        finally { formatGate.Release(); }
     }
 
     public async Task<GraphTask?> GetTaskAsync(string taskId, CancellationToken cancellationToken)
@@ -105,7 +168,8 @@ public sealed class PlannerGraphClient(HttpClient httpClient, IGraphTokenProvide
         return new GraphTaskDetails(root.TryGetProperty("@odata.etag", out var etag) ? etag.GetString() ?? string.Empty : string.Empty,
             checklist.OrderBy(item => item.OrderHint is null)
                 .ThenBy(item => item.OrderHint, StringComparer.Ordinal)
-                .ThenBy(item => item.Id, StringComparer.Ordinal).ToList());
+                .ThenBy(item => item.Id, StringComparer.Ordinal).ToList(),
+            root.TryGetProperty("description", out var description) ? description.GetString() : null);
     }
 
     public async Task CompleteChecklistItemAsync(string taskId, string itemId, string etag, CancellationToken cancellationToken)
@@ -141,6 +205,45 @@ public sealed class PlannerGraphClient(HttpClient httpClient, IGraphTokenProvide
         using var request = new HttpRequestMessage(HttpMethod.Patch, $"planner/tasks/{Uri.EscapeDataString(taskId)}");
         request.Headers.IfMatch.ParseAdd(etag);
         request.Content = new StringContent(JsonSerializer.Serialize(new { bucketId }), Encoding.UTF8, "application/json");
+        using var response = await SendAsync(request, cancellationToken);
+        orderHints.TryRemove(taskId, out _);
+    }
+
+    public async Task SetDueDateAsync(string taskId, DateTimeOffset? dueDate, string etag, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Patch, $"planner/tasks/{Uri.EscapeDataString(taskId)}");
+        request.Headers.IfMatch.ParseAdd(etag);
+        request.Content = new StringContent(JsonSerializer.Serialize(new { dueDateTime = dueDate }), Encoding.UTF8, "application/json");
+        using var response = await SendAsync(request, cancellationToken);
+    }
+
+    public async Task SetAssignmentsAsync(string taskId, IReadOnlyList<string> add, IReadOnlyList<string> remove,
+        string etag, CancellationToken cancellationToken)
+    {
+        var changes = new Dictionary<string, object?>();
+        foreach (var userId in remove) changes[userId] = null;
+        foreach (var userId in add) changes[userId] = new Dictionary<string, string>
+        {
+            ["@odata.type"] = "#microsoft.graph.plannerAssignment", ["orderHint"] = " !"
+        };
+        using var request = new HttpRequestMessage(HttpMethod.Patch, $"planner/tasks/{Uri.EscapeDataString(taskId)}");
+        request.Headers.IfMatch.ParseAdd(etag);
+        request.Content = new StringContent(JsonSerializer.Serialize(new { assignments = changes }), Encoding.UTF8, "application/json");
+        using var response = await SendAsync(request, cancellationToken);
+    }
+
+    public async Task CreateTaskAsync(string planId, string bucketId, string title, DateTimeOffset? dueDate,
+        IReadOnlyList<string> assigneeIds, CancellationToken cancellationToken)
+    {
+        var assignments = assigneeIds.ToDictionary(id => id, _ => new Dictionary<string, string>
+        {
+            ["@odata.type"] = "#microsoft.graph.plannerAssignment", ["orderHint"] = " !"
+        });
+        using var request = new HttpRequestMessage(HttpMethod.Post, "planner/tasks");
+        var body = new Dictionary<string, object> { ["planId"] = planId, ["bucketId"] = bucketId, ["title"] = title };
+        if (dueDate is not null) body["dueDateTime"] = dueDate;
+        if (assignments.Count > 0) body["assignments"] = assignments;
+        request.Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
         using var response = await SendAsync(request, cancellationToken);
     }
 
@@ -201,6 +304,7 @@ public sealed class PlannerGraphClient(HttpClient httpClient, IGraphTokenProvide
             item.TryGetProperty("priority", out var priority) && priority.ValueKind != JsonValueKind.Null ? priority.GetInt32() : null,
             item.TryGetProperty("percentComplete", out var percent) ? percent.GetInt32() : 0,
             item.TryGetProperty("@odata.etag", out var etag) ? etag.GetString() ?? string.Empty : string.Empty,
-            assignments);
+            assignments, null,
+            item.TryGetProperty("startDateTime", out var start) && start.ValueKind != JsonValueKind.Null ? start.GetDateTimeOffset() : null);
     }
 }

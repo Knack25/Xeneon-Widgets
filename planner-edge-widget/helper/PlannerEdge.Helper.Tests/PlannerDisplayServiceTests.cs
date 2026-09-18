@@ -53,6 +53,25 @@ public sealed class PlannerDisplayServiceTests
         Assert.Equal("Nathan", board.Buckets[1].Tasks[0].Assignments[0]);
     }
 
+    [Fact]
+    public async Task GetDisplayAsync_OrdersTasksByBucketBoardHintWithStableFallback()
+    {
+        var graph = new FakePlannerGraphClient
+        {
+            Buckets = [new GraphBucket("bucket", "Doing", "plan")],
+            Tasks =
+            [
+                new GraphTask("missing", "Missing", "plan", "bucket", null, null, 0, "e", []),
+                new GraphTask("first", "First", "plan", "bucket", null, null, 0, "e", [], "z"),
+                new GraphTask("second", "Second", "plan", "bucket", null, null, 0, "e", [], "a")
+            ]
+        };
+
+        var board = await new PlannerDisplayService(graph).GetDisplayAsync("plan", "Board", true, CancellationToken.None);
+
+        Assert.Equal(["second", "first", "missing"], board.Buckets[0].Tasks.Select(task => task.TaskId));
+    }
+
     private sealed class FakePlannerGraphClient : IPlannerGraphClient
     {
         public IReadOnlyList<GraphBucket> Buckets { get; init; } = [];

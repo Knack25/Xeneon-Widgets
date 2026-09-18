@@ -8,6 +8,10 @@ async function getDisplay() {
   return parseJsonResponse(response);
 }
 
+async function getCurrentUser() {
+  return parseJsonResponse(await fetch(`${BASE_URL}/auth/me`));
+}
+
 async function completeTask(taskId) {
   const response = await fetch(`${BASE_URL}/tasks/${encodeURIComponent(taskId)}/complete`, { method: "POST" });
   return parseJsonResponse(response);
@@ -38,7 +42,30 @@ async function moveTask(taskId, bucketId) {
   }));
 }
 
-globalThis.PlannerApi = { getDisplay, completeTask, getPlans, selectPlan, getTaskDetails, completeChecklistItem, moveTask };
+async function setDueDate(taskId, date) {
+  return parseJsonResponse(await fetch(`${BASE_URL}/tasks/${encodeURIComponent(taskId)}/due-date`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ date })
+  }));
+}
+
+async function getMembers() {
+  return parseJsonResponse(await fetch(`${BASE_URL}/members`));
+}
+
+async function setAssignments(taskId, userIds) {
+  return parseJsonResponse(await fetch(`${BASE_URL}/tasks/${encodeURIComponent(taskId)}/assignments`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ userIds })
+  }));
+}
+
+async function createTask(task) {
+  return parseJsonResponse(await fetch(`${BASE_URL}/tasks`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(task)
+  }));
+}
+
+globalThis.PlannerApi = { getDisplay, getCurrentUser, completeTask, getPlans, selectPlan, getTaskDetails,
+  completeChecklistItem, moveTask, setDueDate, getMembers, setAssignments, createTask };
 
 async function parseJsonResponse(response) {
   if (response.status === 204) return null;
