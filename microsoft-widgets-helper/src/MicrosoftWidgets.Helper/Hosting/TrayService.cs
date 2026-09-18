@@ -1,4 +1,5 @@
 using System.Drawing;
+using Microsoft.Win32;
 using System.Windows.Forms;
 using PlannerEdge.Helper.Updates;
 
@@ -42,9 +43,12 @@ public sealed class TrayService(UpdateService updates, IHostApplicationLifetime 
             using var stream = typeof(TrayService).Assembly.GetManifestResourceStream("MicrosoftWidgets.Helper.Icon.ico")
                 ?? throw new InvalidOperationException("The helper icon is missing.");
             using var icon = new Icon(stream, SystemInformation.SmallIconSize);
+            using var lightStream = typeof(TrayService).Assembly.GetManifestResourceStream("MicrosoftWidgets.Helper.IconLight.ico")
+                ?? throw new InvalidOperationException("The light helper icon is missing.");
+            using var lightIcon = new Icon(lightStream, SystemInformation.SmallIconSize);
             using var tray = new NotifyIcon
             {
-                Icon = icon,
+                Icon = TrayIconTheme.IsLightForeground() ? lightIcon : icon,
                 Text = $"Microsoft Widgets Helper {HelperHost.Version}",
                 ContextMenuStrip = menu,
                 Visible = true
@@ -84,10 +88,30 @@ public sealed class TrayService(UpdateService updates, IHostApplicationLifetime 
             menu.Items.Add("Quit helper", null, (_, _) => commands.Quit());
             tray.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left) OpenSetup(); };
             using var registration = lifetime.ApplicationStopping.Register(RequestExit);
-            ready.TrySetResult();
-            // A dedicated STA message loop keeps Windows UI work off the web server threads.
-            Application.Run(context);
-            tray.Visible = false;
+            void ThemeChanged(object sender, UserPreferenceChangedEventArgs e)
+            {
+                try
+                {
+                    control.BeginInvoke((Action)(() =>
+                    {
+                        if (!lifetime.ApplicationStopping.IsCancellationRequested)
+                            tray.Icon = TrayIconTheme.IsLightForeground() ? lightIcon : icon;
+                    }));
+                }
+                catch (InvalidOperationException) { /* Shutdown has already destroyed the dispatcher. */ }
+            }
+            SystemEvents.UserPreferenceChanged += ThemeChanged;
+            try
+            {
+                ready.TrySetResult();
+                // A dedicated STA message loop keeps Windows UI work off the web server threads.
+                Application.Run(context);
+            }
+            finally
+            {
+                SystemEvents.UserPreferenceChanged -= ThemeChanged;
+                tray.Visible = false;
+            }
         }
         catch (Exception error)
         {

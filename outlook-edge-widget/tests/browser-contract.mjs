@@ -60,7 +60,7 @@ export async function runContractChecks(browser,base) {
   await native.getByRole('heading',{name:'Description',exact:true}).waitFor();
   sourceAuthFailure=true;
   await native.evaluate(()=>document.querySelector('button[aria-label="Refresh"]').click());
-  await native.getByRole('button',{name:'Pair again',exact:true}).waitFor({state:'attached'});
+  await native.getByRole('button',{name:'Pair again',exact:true,includeHidden:true}).waitFor({state:'attached'});
   assert.equal(await native.locator('[data-event-id]').count(),0);
   assert.equal(await native.locator('#dialog-title').textContent(),'Event details');
   assert.equal(await native.getByRole('button',{name:'Join meeting',exact:true}).count(),0);

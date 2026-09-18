@@ -6,9 +6,13 @@ export class Dialogs {
     this.overlay=el('div',{class:'overlay',hidden:''});
     this.panel=el('section',{class:'dialog',role:'dialog','aria-modal':'true','aria-labelledby':'dialog-title',tabindex:'-1'});
     this.overlay.append(this.panel);root.append(this.overlay);
-    this.overlay.addEventListener('pointerdown',e=>{this.backdropStart=e.target===this.overlay;});
+    this.root.addEventListener('focusin',e=>{
+      if(!this.overlay.hidden && !this.panel.contains(e.target))this.panel.focus({preventScroll:true});
+    });
+    this.overlay.addEventListener('pointerdown',e=>{this.touchDismiss=e.pointerType==='touch' || e.pointerType==='pen';this.backdropStart=e.target===this.overlay;});
     this.overlay.addEventListener('click',e=>{if(this.backdropStart && e.target===this.overlay)this.close();this.backdropStart=false;});
     this.overlay.addEventListener('keydown',e=>{
+      this.touchDismiss=false;
       if(e.key==='Escape'){e.preventDefault();this.close();}
       if(e.key==='Tab') {
         const all=[...this.panel.querySelectorAll('button:not(:disabled),input:not(:disabled),[tabindex="0"]')].filter(n=>!n.hidden && n.getClientRects().length);
@@ -21,13 +25,23 @@ export class Dialogs {
     });
   }
   open(title,origin=document.activeElement) {
+    this.touchDismiss=false;
     if(this.overlay.hidden) this.origin=origin;
     this.abort?.abort();this.generation++;this.kind='other';this.detail=null;
     this.panel.replaceChildren(el('div',{class:'dialog-head'},el('h2',{id:'dialog-title'},title),button('Close',()=>this.close(),'X')));
-    this.overlay.hidden=false;this.root.querySelector('.shell').inert=true;
-    this.panel.querySelector('button').focus();return this.generation;
+    this.overlay.hidden=false;
+    this.panel.querySelector('button').focus({preventScroll:true});
+    // The overlay and focus trap isolate the modal without changing calendar hit testing.
+    this.root.querySelector('.shell').setAttribute('aria-hidden','true');return this.generation;
   }
-  close(){this.abort?.abort();this.generation++;this.detail=null;this.kind=null;this.overlay.hidden=true;this.panel.replaceChildren();this.root.querySelector('.shell').inert=false;(this.origin?.isConnected?this.origin:this.fallback)?.focus();this.onClose?.();}
+  close(){
+    this.abort?.abort();this.generation++;this.detail=null;this.kind=null;
+    // Do not transfer focus into the calendar after a touch dismissal in embedded browsers.
+    if(this.overlay.contains(document.activeElement))document.activeElement.blur();
+    this.overlay.hidden=true;this.panel.replaceChildren();this.root.querySelector('.shell').removeAttribute('aria-hidden');
+    if(!this.touchDismiss)(this.origin?.isConnected?this.origin:this.fallback)?.focus({preventScroll:true});
+    this.touchDismiss=false;this.backdropStart=false;this.onClose?.();
+  }
   async details(summary,calendar,api,zone,canUse,origin) {
     const generation=this.open(summary.isPrivate?'Private event':summary.title,origin);this.kind='details';
     this.abort=new AbortController();const signal=this.abort.signal;

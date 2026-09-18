@@ -1,6 +1,7 @@
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
-$destination = Join-Path $PSScriptRoot '../src/MicrosoftWidgets.Helper/Assets/helper.ico'
+foreach ($variant in @('helper', 'helper-light')) {
+$destination = Join-Path $PSScriptRoot "../src/MicrosoftWidgets.Helper/Assets/$variant.ico"
 New-Item -ItemType Directory -Force -Path (Split-Path $destination) | Out-Null
 $frames = foreach ($size in @(16, 24, 32, 48, 64, 256)) {
     $bitmap = New-Object System.Drawing.Bitmap($size, $size)
@@ -8,13 +9,27 @@ $frames = foreach ($size in @(16, 24, 32, 48, 64, 256)) {
     $memory = New-Object IO.MemoryStream
     try {
         $graphics.Clear([System.Drawing.Color]::Transparent)
-        $scale = $size / 16.0
-        foreach ($tile in @(@(1,2,6,12,'#20B8A6'), @(9,2,6,5,'#F2B84B'), @(9,9,6,5,'#E8F2F4'))) {
-            $brush = New-Object System.Drawing.SolidBrush([System.Drawing.ColorTranslator]::FromHtml($tile[4]))
-            try { $graphics.FillRectangle($brush, [single]($tile[0]*$scale), [single]($tile[1]*$scale), [single]($tile[2]*$scale), [single]($tile[3]*$scale)) }
+        $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+        $scale = $size / 100.0
+        $foreground = if ($variant -eq 'helper-light') { '#F4F5F7' } else { '#30383D' }
+        foreach ($stroke in @(
+            @{Color=$foreground;Points=@(4,20,25,20,44,60,32,79,29,79)},
+            @{Color=$foreground;Points=@(51,20,54,20,76,62,65,79,57,79,39,40)},
+            @{Color='#9254DE';Points=@(77,20,96,20,79,56,68,36)}
+        )) {
+            $points = [System.Drawing.PointF[]]@(for ($i=0; $i -lt $stroke.Points.Count; $i+=2) {
+                [System.Drawing.PointF]::new([single]($stroke.Points[$i]*$scale), [single]($stroke.Points[$i+1]*$scale))
+            })
+            $brush = New-Object System.Drawing.SolidBrush([System.Drawing.ColorTranslator]::FromHtml($stroke.Color))
+            try { $graphics.FillPolygon($brush, $points) }
             finally { $brush.Dispose() }
         }
         $bitmap.Save($memory, [System.Drawing.Imaging.ImageFormat]::Png)
+        if ($size -eq 256) {
+            $preview = Join-Path $PSScriptRoot "../dist/$variant-preview.png"
+            New-Item -ItemType Directory -Force -Path (Split-Path $preview) | Out-Null
+            $bitmap.Save($preview, [System.Drawing.Imaging.ImageFormat]::Png)
+        }
         [pscustomobject]@{Size=$size;Bytes=$memory.ToArray()}
     } finally { $memory.Dispose(); $graphics.Dispose(); $bitmap.Dispose() }
 }
@@ -33,3 +48,4 @@ try {
     }
     foreach ($frame in $frames) { $writer.Write([byte[]]$frame.Bytes) }
 } finally { $writer.Dispose(); $file.Dispose() }
+}

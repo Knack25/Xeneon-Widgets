@@ -3,7 +3,7 @@
   settings.append(document.querySelector('#updates'), document.querySelector('footer'));
   const links = [...document.querySelectorAll('.sidebar a')];
   function navigate() {
-    const name = location.hash.slice(1);
+    const name = location.hash === '#updates' ? 'settings' : location.hash.slice(1);
     const active = ['overview', 'planner', 'outlook', 'settings'].includes(name) ? name : 'overview';
     for (const view of document.querySelectorAll('.view')) view.hidden = view.id !== `view-${active}`;
     for (const link of links) {

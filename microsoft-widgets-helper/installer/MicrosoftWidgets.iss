@@ -24,6 +24,7 @@ OutputBaseFilename=MicrosoftWidgetsSetup-{#ReleaseVersion}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=..\src\MicrosoftWidgets.Helper\Assets\helper.ico
 UninstallDisplayIcon={app}\MicrosoftWidgets.Helper.exe
 CloseApplications=yes
 RestartApplications=no

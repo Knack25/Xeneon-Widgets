@@ -51,6 +51,8 @@ try {
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
   await page.getByRole('navigation', {name:'Helper sections'}).waitFor({timeout:3000});
   assert.equal(await page.locator('#view-overview').isVisible(), true);
+  await page.goto(`http://127.0.0.1:${server.address().port}/#updates`);
+  assert.equal(await page.locator('#updates').isVisible(), true,'Tray update link opens Settings');
   await page.getByRole('link', {name:'Planner',exact:true}).click();
   await page.getByRole('button', { name: 'Assignee names enabled', exact: true }).waitFor();
   assert.equal(await page.locator('#enable-names').isDisabled(), true);
