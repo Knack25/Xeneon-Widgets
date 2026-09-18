@@ -20,14 +20,41 @@
     details{margin-top:14px;color:#52606b;font-size:14px} summary{cursor:pointer;color:#146b5b}
     .outlook-list{list-style:none;padding:0}.outlook-list li{display:flex;gap:12px;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #ced7d9;overflow-wrap:anywhere}.outlook-list li span{min-width:0}.outlook-list button{flex-shrink:0}#outlook-message{color:#9a3b2d;min-height:24px}#outlook-status{font-weight:600;color:#18212a}main a,main code{overflow-wrap:anywhere}
     .help{line-height:1.45}.help ol{padding-left:20px}.help li{margin:7px 0}.help code{font-family:Consolas,monospace}
+    :root{background:#f5f6f8;letter-spacing:0}
+    .sidebar{position:fixed;inset:0 auto 0 0;width:220px;background:#fff;border-right:1px solid #dce0e5;padding:28px 16px;display:flex;flex-direction:column;gap:8px}
+    .brand{font-weight:700;padding:4px 12px 28px;color:#633ca6;display:flex;align-items:center;gap:10px}.brand img{width:28px;height:28px}
+    .sidebar a{padding:12px;text-decoration:none;color:#46515d;border-radius:4px}
+    .sidebar a[aria-current=page]{background:#eee8f7;color:#59318f;font-weight:600}
+    main{max-width:1000px;margin:0 0 0 220px;padding:32px 40px;min-width:0}
+    h1{font-size:18px;color:#647078;margin-bottom:32px;font-weight:500}h2{font-size:26px;margin:0 0 24px}h3{font-size:18px;margin:0 0 12px}
+    section{padding:22px 0}.view>section:first-of-type{border-top:0}.overview-row{display:flex;align-items:center;justify-content:space-between;gap:24px}.overview-row p{margin:8px 0}
+    a{color:#59318f}button:focus-visible,a:focus-visible,summary:focus-visible{outline:3px solid #9864d2;outline-offset:3px}
+    #outlook{padding-top:0;border:0}.view{min-width:0}#overview-approvals:empty{display:none}
+    @media(max-width:700px){.sidebar{position:static;width:100%;border-right:0;border-bottom:1px solid #dce0e5;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));padding:12px 8px;gap:2px}.brand{grid-column:1/-1;padding:4px 8px 12px}.sidebar a{font-size:14px;text-align:center;padding:10px 2px}main{margin:0;padding:24px 18px}h1{margin-bottom:24px}.overview-row{align-items:flex-start;flex-direction:column;gap:8px}}
   </style>
 </head>
 <body>
+  <nav aria-label="Helper sections" class="sidebar">
+    <div class="brand"><img src="/helper.ico" alt="">Microsoft Widgets</div>
+    <a href="#overview">Overview</a><a href="#planner">Planner</a><a href="#outlook">Outlook</a><a href="#settings">Settings</a>
+  </nav>
   <main>
     <h1>Microsoft Widgets Helper</h1>
-    <p>Microsoft work account</p>
-    <section>
-      <div class="step">1. Connect your work account</div>
+    <div id="view-overview" class="view">
+      <h2>Overview</h2>
+      <p id="overview-account">Checking account...</p>
+      <section class="overview-row"><div><h3>Planner</h3><p id="overview-planner" role="status">Checking connection...</p></div><a href="#planner">Manage Planner</a></section>
+      <section class="overview-row"><div><h3>Outlook</h3><p id="overview-outlook" role="status">Checking connection...</p><p id="overview-approvals"></p></div><a href="#outlook">Manage Outlook</a></section>
+      <div class="actions"><a href="/board/index.html" target="_blank" rel="noopener">Preview board</a><a href="/outlook/index.html?instance=preview" target="_blank" rel="noopener">Preview calendar</a></div>
+      <p id="overview-update" class="hint"></p>
+    </div>
+    <div id="view-settings" class="view" hidden>
+    <h2>Settings</h2>
+    <section id="connection-settings">
+      <h3>Microsoft account</h3>
+      <div id="account">Checking account...</div>
+      <div class="actions"><button id="sign-out" hidden>Sign out</button></div>
+      <details id="app-configuration"><summary>Application configuration</summary>
       <label for="client-id">Application (client) ID</label>
       <input id="client-id" type="text" inputmode="text" autocomplete="off" placeholder="00000000-0000-0000-0000-000000000000">
       <p class="hint">Paste the ID from your organization's Microsoft Entra app registration. This is not a password or client secret.</p>
@@ -37,12 +64,17 @@
       <details><summary>Where do I find these IDs?</summary>
         <p>In the <a href="https://entra.microsoft.com/" target="_blank" rel="noopener noreferrer">Microsoft Entra admin center</a>, open <strong>App registrations</strong> and select your public client app. Copy its Application (client) ID from Overview. You may also copy the Directory (tenant) ID. Configure a mobile/desktop redirect URI of http://localhost. Planner uses User.Read and Tasks.ReadWrite; Outlook's complete permission list is below. Your IT administrator may need to create or approve the registration.</p>
       </details>
+      </details>
     </section>
+    </div>
+    <div id="view-planner" class="view" hidden>
+    <h2>Planner</h2>
     <section>
-      <div class="step">2. Planner connection</div>
-      <div id="account">Checking account...</div>
-      <div class="actions"><button id="sign-in" disabled>Connect Planner</button><button id="enable-names" hidden>Show assignee names</button><button id="enable-members" hidden>Enable board members</button><button id="cancel-sign-in" hidden>Cancel sign-in</button><button id="sign-out" hidden>Sign out</button></div>
+      <h3>Connection</h3>
+      <div class="actions"><button id="sign-in" disabled>Connect Planner</button><button id="enable-names" hidden>Show assignee names</button><button id="enable-members" hidden>Enable board members</button><button id="cancel-sign-in" hidden>Cancel sign-in</button></div>
+      <details><summary>Permissions</summary>
       <p class="hint">Showing assignee names requires User.ReadBasic.All. Editing assignees requires GroupMember.ReadBasic.All. Your work administrator may need to approve these permissions.</p>
+      </details>
       <details class="help"><summary>Microsoft sign-in shows an error?</summary>
         <p>If you see <strong>AADSTS900971: No reply address provided</strong>, the Microsoft app registration needs a redirect address:</p>
         <ol>
@@ -55,23 +87,27 @@
       </details>
     </section>
     <section>
-      <div class="step">3. Planner board</div>
+      <h3>Board settings</h3>
       <label for="board">Planner board</label>
       <select id="board" disabled><option value="">Sign in to load boards</option></select>
       <label class="toggle"><input id="hide-completed" type="checkbox" checked> Hide completed tasks</label>
       <div class="actions"><button id="save" disabled>Save board</button></div>
     </section>
     <section>
-      <div class="step">4. Add Planner to iCUE</div>
+      <h3>Widget</h3>
       <div class="actions"><a id="download-widget" class="download" href="/downloads/planner" download hidden>Download Planner widget</a><a class="secondary" href="/board/index.html" target="_blank" rel="noopener">Preview board</a></div>
       <p id="widget-package-status" class="hint">Checking widget package...</p>
-      <ol class="install-steps">
+      <details><summary>Installation instructions</summary><ol class="install-steps">
         <li>Download the Planner widget above.</li>
         <li>In iCUE, select your XENEON EDGE, open <strong>Widgets</strong>, and choose <strong>+</strong> to import the downloaded <strong>.icuewidget</strong> file.</li>
         <li>Add Planner Edge to a display page and choose your preferred size. Allow access to <strong>localhost:8787</strong> if iCUE asks.</li>
       </ol>
       <p class="hint">Keep the helper running while using Microsoft widgets. Open <strong>Microsoft Widgets Setup</strong> from the Start menu to return here.</p>
+      </details>
     </section>
+    <p id="message" role="status"></p>
+    </div>
+    <div id="view-outlook" class="view" hidden>
     <section id="outlook" aria-labelledby="outlook-heading">
       <h2 id="outlook-heading">Outlook calendar</h2>
       <p id="outlook-status" role="status">Checking Outlook connection...</p>
@@ -91,9 +127,10 @@
       <ul id="outlook-pairings" class="outlook-list"></ul><p id="outlook-pairing-empty" class="hint">No widgets waiting for approval.</p><ul id="outlook-paired" class="outlook-list"></ul>
       <div class="actions"><a id="outlook-download" class="download" href="/downloads/outlook" download hidden>Download Outlook widget</a><a href="/outlook/index.html?instance=preview" target="_blank" rel="noopener">Preview calendar</a><a href="/outlook/index.html?demo=1" target="_blank" rel="noopener">Sample calendar</a></div>
       <p id="outlook-package-status" class="hint">Checking widget package...</p>
-      <ol class="install-steps"><li>Import the Outlook <strong>.icuewidget</strong> file using <strong>+</strong> in iCUE Widgets.</li><li>Allow access to <strong>localhost:8787</strong> and match the widget's connection code with the approval shown here.</li><li>Choose your calendars on the display. Each widget saves its own selections and view.</li></ol>
+      <details><summary>Installation instructions</summary><ol class="install-steps"><li>Import the Outlook <strong>.icuewidget</strong> file using <strong>+</strong> in iCUE Widgets.</li><li>Allow access to <strong>localhost:8787</strong> and match the widget's connection code with the approval shown here.</li><li>Choose your calendars on the display. Each widget saves its own selections and view.</li></ol></details>
       <p id="outlook-message" role="status"></p>
     </section>
+    </div>
     <section id="updates" aria-labelledby="updates-heading">
       <h2 id="updates-heading">Updates</h2>
       <p id="update-status" role="status">Checking update status...</p>
@@ -102,9 +139,9 @@
       <details id="update-notes" hidden><summary>Release notes</summary><pre id="update-notes-text" style="white-space:pre-wrap;overflow-wrap:anywhere;font:inherit"></pre></details>
       <p id="update-result" class="hint"></p>
     </section>
-    <p id="message" role="status"></p>
     <footer><small id="helper-version">Microsoft Widgets Helper</small><button id="stop-helper" class="secondary">Stop helper</button></footer>
   </main>
+  <script src="/navigation.js"></script>
   <script type="module">
     const account = document.querySelector('#account');
     const board = document.querySelector('#board');
@@ -177,6 +214,10 @@
       message.textContent = '';
       const configuration = await api('/configuration');
       clientId.value = configuration.clientId || '';
+      if (!clientId.value) {
+        document.querySelector('#app-configuration').open = true;
+        if (!location.hash || location.hash === '#overview') location.hash = 'settings';
+      }
       tenantId.value = configuration.tenant || '';
       signIn.disabled = !configuration.clientId;
       const status = await api('/auth/status');

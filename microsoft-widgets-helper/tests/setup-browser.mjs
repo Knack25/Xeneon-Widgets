@@ -12,8 +12,9 @@ const output = fileURLToPath(new URL('../dist/setup-browser/', import.meta.url))
 const calls = [];
 let connected = false;
 let permissionState = 'available';
+let configured = true;
 const api = pathname => {
-  if (pathname === '/configuration') return { clientId: '11111111-1111-1111-1111-111111111111', tenant: 'organizations' };
+  if (pathname === '/configuration') return { clientId: configured ? '11111111-1111-1111-1111-111111111111' : '', tenant: 'organizations' };
   if (pathname === '/auth/status') return { isSignedIn: true, displayName: 'Example account' };
   if (pathname === '/auth/capabilities') return Object.fromEntries(['planner', 'assigneeNames', 'boardMembers'].map(key => [key, { state: permissionState }]));
   if (pathname === '/auth/enable-assignee-names') { permissionState = 'available'; return {isSignedIn:true}; }
@@ -48,15 +49,18 @@ try {
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
-  await page.getByRole('button', { name: 'Connect Outlook', exact: true }).waitFor();
+  await page.getByRole('navigation', {name:'Helper sections'}).waitFor({timeout:3000});
+  assert.equal(await page.locator('#view-overview').isVisible(), true);
+  await page.getByRole('link', {name:'Planner',exact:true}).click();
   await page.getByRole('button', { name: 'Assignee names enabled', exact: true }).waitFor();
   assert.equal(await page.locator('#enable-names').isDisabled(), true);
   assert.equal(await page.locator('#enable-members').isDisabled(), true);
   assert.equal(await page.locator('#sign-in').isDisabled(), true);
   assert.equal(await page.locator('#board').inputValue(), 'fixture');
   assert.equal(calls.some(c => c.method === 'POST'), false);
+  await page.getByRole('link', {name:'Outlook',exact:true}).click();
   await page.getByRole('button', { name: 'Connect Outlook', exact: true }).click();
-  await page.getByText('Outlook is connected.', { exact: true }).waitFor();
+  await page.locator('#outlook-status').filter({hasText:'Outlook is connected.'}).waitFor();
   assert.equal(await page.locator('#outlook-connect').isDisabled(), true);
   await page.getByText('Available calendars', { exact: true }).click();
   assert.match(await page.locator('#outlook-calendars').textContent(), /<script>Calendar label<\/script>/);
@@ -66,9 +70,21 @@ try {
     await page.locator('#outlook').scrollIntoViewIfNeeded();
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
     await page.screenshot({ path: path.join(output, `${width}.png`), fullPage: true });
+    await page.getByRole('link', {name:'Settings',exact:true}).click();
+    assert.equal(await page.locator('#updates').isVisible(), true);
+    assert.equal(await page.locator('#client-id').isVisible(), false);
+    await page.getByText('Application configuration', {exact:true}).click();
+    assert.equal(await page.locator('#client-id').isVisible(), true);
+    await page.getByText('Application configuration', {exact:true}).click();
+    await page.getByRole('link', {name:'Overview',exact:true}).click();
+    assert.match(await page.locator('#overview-approvals').textContent(), /awaiting approval/);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+    await page.screenshot({ path: path.join(output, `overview-${width}.png`), fullPage: true });
+    await page.getByRole('link', {name:'Outlook',exact:true}).click();
   }
   assert.equal(calls.filter(c => c.pathname.endsWith('/connect')).length, 1);
   permissionState = 'unavailable';
+  await page.getByRole('link', {name:'Planner',exact:true}).click();
   await page.reload();
   await page.getByRole('button', {name:'Retry assignee names',exact:true}).waitFor();
   const postsBefore = calls.filter(c => c.method === 'POST').length;
@@ -84,6 +100,11 @@ try {
   await page.getByRole('button', {name:'Assignee names enabled',exact:true}).waitFor();
   assert.equal(await page.locator('#enable-names').isDisabled(), true);
   assert.equal(calls.filter(c => c.pathname === '/auth/enable-assignee-names').length, 1);
+  configured = false;
+  await page.goto(`http://127.0.0.1:${server.address().port}/`);
+  await page.locator('#client-id').waitFor();
+  assert.equal(await page.locator('#view-settings').isVisible(), true);
+  assert.equal(await page.locator('#client-id').inputValue(), '');
   assert.deepEqual(errors, []);
   console.log('Setup browser checks passed: automatic permission states/data load, disabled available actions, retry without consent, explicit missing-permission flow, literal calendar text, desktop/mobile layout, no runtime errors.');
 } finally {
