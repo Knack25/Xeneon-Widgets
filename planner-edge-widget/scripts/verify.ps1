@@ -2,7 +2,7 @@ $ErrorActionPreference = "Stop"
 
 Push-Location (Join-Path $PSScriptRoot "..")
 try {
-    dotnet test helper/PlannerEdge.Helper.Tests/PlannerEdge.Helper.Tests.csproj
+    dotnet test ../microsoft-widgets-helper/tests/MicrosoftWidgets.Helper.Tests/MicrosoftWidgets.Helper.Tests.csproj
     if ($LASTEXITCODE -ne 0) { throw "Helper tests failed." }
     Push-Location widget
     try {

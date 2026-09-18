@@ -5,9 +5,9 @@ VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "helper", "helper", "{6E3B80E4-E889-6BA4-2A7C-AE44FC211B39}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PlannerEdge.Helper.Tests", "helper\PlannerEdge.Helper.Tests\PlannerEdge.Helper.Tests.csproj", "{E41D19EB-375E-4B49-A367-B0A39A820C1E}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MicrosoftWidgets.Helper.Tests", "..\microsoft-widgets-helper\tests\MicrosoftWidgets.Helper.Tests\MicrosoftWidgets.Helper.Tests.csproj", "{E41D19EB-375E-4B49-A367-B0A39A820C1E}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PlannerEdge.Helper", "helper\PlannerEdge.Helper\PlannerEdge.Helper.csproj", "{B6537D63-A898-4A5A-A7A2-E513540A5D34}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MicrosoftWidgets.Helper", "..\microsoft-widgets-helper\src\MicrosoftWidgets.Helper\MicrosoftWidgets.Helper.csproj", "{B6537D63-A898-4A5A-A7A2-E513540A5D34}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

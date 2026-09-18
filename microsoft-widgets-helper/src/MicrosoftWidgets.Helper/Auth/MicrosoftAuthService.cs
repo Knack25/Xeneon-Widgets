@@ -15,6 +15,7 @@ public sealed record AzureAdOptions
 
 public interface IMicrosoftAuthService : IGraphTokenProvider
 {
+    Task<string> GetTokenForScopesAsync(IEnumerable<string> scopes, CancellationToken cancellationToken);
     Task<AzureAdOptions> GetConfigurationAsync(CancellationToken cancellationToken);
     Task<AzureAdOptions> SaveConfigurationAsync(AzureAdOptions configuration, CancellationToken cancellationToken);
     Task<AuthStatusResponse> GetStatusAsync(CancellationToken cancellationToken);
@@ -102,28 +103,18 @@ public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILoc
         helper.RegisterCache(app.UserTokenCache);
     }
 
-    public async Task<string> GetAccessTokenAsync(CancellationToken cancellationToken)
-    {
-        var client = await RequireAppAsync(cancellationToken);
-        var account = (await client.GetAccountsAsync()).FirstOrDefault()
-            ?? throw new MsalUiRequiredException("no_account", "No Microsoft account is signed in.");
-        return (await client.AcquireTokenSilent(Scopes, account).ExecuteAsync(cancellationToken)).AccessToken;
-    }
+    public Task<string> GetAccessTokenAsync(CancellationToken cancellationToken) => GetTokenForScopesAsync(Scopes, cancellationToken);
 
-    public async Task<string> GetBasicUserTokenAsync(CancellationToken cancellationToken)
-    {
-        var client = await RequireAppAsync(cancellationToken);
-        var account = (await client.GetAccountsAsync()).FirstOrDefault()
-            ?? throw new MsalUiRequiredException("no_account", "No Microsoft account is signed in.");
-        return (await client.AcquireTokenSilent(BasicUserScopes, account).ExecuteAsync(cancellationToken)).AccessToken;
-    }
+    public Task<string> GetBasicUserTokenAsync(CancellationToken cancellationToken) => GetTokenForScopesAsync(BasicUserScopes, cancellationToken);
 
-    public async Task<string> GetGroupMemberTokenAsync(CancellationToken cancellationToken)
+    public Task<string> GetGroupMemberTokenAsync(CancellationToken cancellationToken) => GetTokenForScopesAsync(GroupMemberScopes, cancellationToken);
+
+    public async Task<string> GetTokenForScopesAsync(IEnumerable<string> scopes, CancellationToken cancellationToken)
     {
         var client = await RequireAppAsync(cancellationToken);
         var account = (await client.GetAccountsAsync()).FirstOrDefault()
             ?? throw new MsalUiRequiredException("no_account", "No Microsoft account is signed in.");
-        return (await client.AcquireTokenSilent(GroupMemberScopes, account).ExecuteAsync(cancellationToken)).AccessToken;
+        return (await client.AcquireTokenSilent(scopes, account).ExecuteAsync(cancellationToken)).AccessToken;
     }
 
     public async Task<AuthStatusResponse> GetStatusAsync(CancellationToken cancellationToken)

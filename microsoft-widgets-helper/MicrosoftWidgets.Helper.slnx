@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="src/MicrosoftWidgets.Helper/MicrosoftWidgets.Helper.csproj" />
+  <Project Path="tests/MicrosoftWidgets.Helper.Tests/MicrosoftWidgets.Helper.Tests.csproj" />
+</Solution>

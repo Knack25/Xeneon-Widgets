@@ -2,7 +2,7 @@
 
 ## Start the helper
 
-Double-click `dist/helper/PlannerEdge.Helper.exe`. It opens the Planner Edge setup page in your browser. Leave the helper window open while using the widget.
+Double-click `../microsoft-widgets-helper/dist/helper/MicrosoftWidgets.Helper.exe`. It opens the shared Microsoft Widgets Helper setup page in your browser. Leave the helper running while using the widget. Stop any old Planner Edge helper first; both use the same port. Existing saved sign-in and board settings are reused.
 
 On the page, paste your organization's Microsoft Entra **Application (client) ID**, save the connection, sign in with your work account, and choose a board. You can change the app ID later on the same page without restarting the helper.
 

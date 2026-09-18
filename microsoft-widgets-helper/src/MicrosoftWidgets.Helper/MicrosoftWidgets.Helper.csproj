@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>PlannerEdge.Helper</RootNamespace>
+    <Version>0.1.0</Version>
+    <Product>Microsoft Widgets Helper</Product>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Identity.Client" Version="4.89.0" />
+    <PackageReference Include="Microsoft.Identity.Client.Extensions.Msal" Version="4.89.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="..\..\..\planner-edge-widget\widget\board.html" Link="wwwroot\board\index.html" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="..\..\..\planner-edge-widget\widget\styles.css" Link="wwwroot\board\styles.css" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="..\..\..\planner-edge-widget\widget\src\*.js" Link="wwwroot\board\src\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="..\..\..\planner-edge-widget\widget\resources\*.svg" Link="wwwroot\board\resources\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

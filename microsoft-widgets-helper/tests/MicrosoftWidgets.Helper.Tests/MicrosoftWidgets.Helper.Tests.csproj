@@ -19,7 +19,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\PlannerEdge.Helper\PlannerEdge.Helper.csproj" />
+    <ProjectReference Include="..\..\src\MicrosoftWidgets.Helper\MicrosoftWidgets.Helper.csproj" />
   </ItemGroup>
 
 </Project>
