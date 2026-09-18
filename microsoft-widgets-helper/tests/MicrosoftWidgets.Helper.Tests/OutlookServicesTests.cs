@@ -189,7 +189,7 @@ public sealed class OutlookServicesTests
             _ => throw new OutlookException(statusCode == 401 ? "sign_in_required" : "preferences_unavailable", "Working hours unavailable.", statusCode)
         });
         var preferences = new OutlookPreferencesService(new OutlookGraphClient(new HttpClient(fixture.Handler), fixture.Tokens), fixture.State, fixture.Clock);
-        var status = new OutlookStatusService(new OutlookFakeAuth { SignedIn = true }, fixture.State, fixture.Catalog, preferences, fixture.Clock);
+        var status = new OutlookStatusService(new OutlookFakeAuth { SignedIn = true }, fixture.State, fixture.Catalog, preferences, fixture.Clock, fixture.Tokens);
         var response = await status.GetAsync(default);
         Assert.Equal(ready, response.Ready);
         if (ready)

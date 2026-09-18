@@ -138,3 +138,10 @@ The task checklists above are the original execution recipe. Current delivery st
 - Fixture preview is running at `http://127.0.0.1:8788/outlook/?demo=1`; it does not read Microsoft data or launch real meetings. Existing helper on 8787 is untouched.
 - Prior purple-W logo changes are preserved separately, not folded into the Outlook commit. Build output includes the current worktree's logo, but is not a release.
 - Still required: install the development helper with user approval, grant the one Outlook scope bundle, verify personal/shared/delegated/group calendars against the tenant, then test native iCUE pairing, two-instance persistence, touch interaction, and deliberate meeting handoff. No live Graph reads, consent, installation, merge, push, or publication occurred.
+
+### Installation Follow-Up (2026-09-18)
+
+- User approved proceeding with installation and tenant setup. Installed the local development installer and restarted the helper; Planner account and board selection remained available.
+- Live first-time setup exposed missing-consent status invalidating its own session and leaving Connect disabled. Added a failing endpoint regression, then preflighted silent token availability before data-service reads; added a failing setup regression and kept explicit reconnect available after status failures.
+- Rebuilt successfully with 145 helper tests, seven Outlook setup tests, and unchanged remaining suites (195 total); setup browser smoke test passed. Installed the corrected build and verified an enabled Connect Outlook button with the expected consent-required message.
+- Started the bundled interactive sign-in through setup. User must complete Microsoft's approval flow. Native pairing and actual calendar acceptance remain pending; no publication or push performed.

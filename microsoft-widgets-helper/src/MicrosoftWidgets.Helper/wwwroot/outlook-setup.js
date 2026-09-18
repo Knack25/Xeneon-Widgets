@@ -96,7 +96,7 @@
       }
       if (value.ready && loadCatalog) await loadCalendars();
       if (!value.ready) $('#outlook-calendars').replaceChildren();
-    } catch (error) { status.textContent = error.message; }
+    } catch (error) { status.textContent = error.message; connect.disabled = false; }
     finally { refreshPending = false; }
   }
 

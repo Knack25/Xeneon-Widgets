@@ -12,7 +12,7 @@ class Element {
   append(...children) { this.children.push(...children); }
   setAttribute(name, value) { this[name] = value; }
 }
-function setup({ approval = true, error = null, discoveryErrors = [] } = {}) {
+function setup({ approval = true, error = null, discoveryErrors = [], statusError = null } = {}) {
   const elements = new Map();
   const calls = [];
   const doc = { querySelector(id) { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); },
@@ -22,6 +22,7 @@ function setup({ approval = true, error = null, discoveryErrors = [] } = {}) {
     confirm: () => approval,
     fetch: async (path, options = {}) => {
       calls.push({ path, options });
+      if (statusError && path.endsWith('/status')) return { ok: false, status: 401, json: async () => ({ error: { message: statusError } }) };
       if (error && path.endsWith('/connect')) return { ok: false, status: 403, json: async () => ({ message: error }) };
       const value = path.endsWith('/session') ? { token: 'local-session' }
         : path.endsWith('/status') ? { configured: true, signedIn: true, ready: true, discoveryErrors }
@@ -40,6 +41,12 @@ test('setup loads status without interactive consent or meeting launch', async (
   assert.equal(app.calls.some(c => c.path.endsWith('/connect') || c.path.endsWith('/join')), false);
   const status = app.calls.find(c => c.path.endsWith('/status'));
   assert.equal(status.options.headers['X-Outlook-Session'], 'local-session');
+});
+test('a failed status check leaves explicit reconnect available without auto consent', async () => {
+  const app = setup({ statusError: 'Reconnect Outlook.' }); await settle();
+  assert.equal(app.elements.get('#outlook-connect').disabled, false);
+  assert.equal(app.elements.get('#outlook-status').textContent, 'Reconnect Outlook.');
+  assert.equal(app.calls.some(c => c.options.method === 'POST'), false);
 });
 test('Connect Outlook sends one bundled connection request only after clicking', async () => {
   const app = setup(); await settle();
