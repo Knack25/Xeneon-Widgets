@@ -14,6 +14,8 @@ Follow the setup page to connect your work account, choose a board, and download
 - [Planner Edge Widget](planner-edge-widget/README.md): board display, task details, checklists, filtering, assignments, dates, and task creation.
 - [Outlook Edge Widget](docs/OUTLOOK.md): read-only calendars, Week/Month/Agenda views, event details, and meeting launch.
 
+The Foundry VTT module, connector and character dashboard now live in [Xeneon-Foundry](https://github.com/Knack25/Xeneon-Foundry), with their own development history and releases.
+
 ## Screenshots
 
 All previews use fictional demo data. Dark-mode controls shown here are in development and are not included in release 0.3.2.
