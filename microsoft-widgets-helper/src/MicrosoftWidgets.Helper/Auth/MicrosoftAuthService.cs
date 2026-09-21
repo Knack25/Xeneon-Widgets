@@ -43,8 +43,19 @@ public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILoc
     private const string RedirectUri = "http://localhost";
     private readonly string cacheRoot = cacheDirectory ?? LocalPaths.AppDataRoot();
     private readonly SemaphoreSlim configurationGate = new(1, 1);
+    private readonly Func<IEnumerable<string>, CancellationToken, Task<string>>? acquireToken;
+    private readonly Func<IEnumerable<string>, bool, CancellationToken, Task<AuthStatusResponse>>? connect;
     private IPublicClientApplication? app;
     private AzureAdOptions? currentConfiguration;
+
+    internal MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILocalJsonStore jsonStore,
+        Func<IEnumerable<string>, CancellationToken, Task<string>> acquireToken,
+        Func<IEnumerable<string>, bool, CancellationToken, Task<AuthStatusResponse>> connect,
+        string? cacheDirectory = null) : this(defaults, jsonStore, cacheDirectory)
+    {
+        this.acquireToken = acquireToken;
+        this.connect = connect;
+    }
 
     public async Task<AzureAdOptions> GetConfigurationAsync(CancellationToken cancellationToken)
     {
@@ -124,6 +135,7 @@ public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILoc
 
     public async Task<string> GetTokenForScopesAsync(IEnumerable<string> scopes, CancellationToken cancellationToken)
     {
+        if (acquireToken is not null) return await acquireToken(scopes, cancellationToken);
         var client = await RequireAppAsync(cancellationToken);
         var account = (await client.GetAccountsAsync()).FirstOrDefault()
             ?? throw new MsalUiRequiredException("no_account", "No Microsoft account is signed in.");
@@ -142,20 +154,35 @@ public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILoc
             : new AuthStatusResponse(true, account.Username, account.Username);
     }
 
-    public Task<AuthStatusResponse> SignInAsync(CancellationToken cancellationToken) =>
-        ConnectAsync(PlannerConnectScopes, requireExistingAccount: false, cancellationToken);
+    public async Task<AuthStatusResponse> SignInAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await ConnectForScopesAsync(PlannerConnectScopes, requireExistingAccount: false, cancellationToken);
+        }
+        catch (MsalException)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return await ConnectForScopesAsync(PlannerScopes, requireExistingAccount: false, cancellationToken);
+        }
+    }
 
     public Task<AuthStatusResponse> ConnectOutlookAsync(CancellationToken cancellationToken) =>
-        ConnectAsync(OutlookScopes.All, requireExistingAccount: false, cancellationToken);
+        ConnectForScopesAsync(OutlookScopes.All, requireExistingAccount: false, cancellationToken);
 
     public Task<AuthStatusResponse> EnableTaskChatAsync(CancellationToken cancellationToken) =>
-        ConnectAsync(ConversationScopes, requireExistingAccount: true, cancellationToken);
+        ConnectForScopesAsync(ConversationScopes, requireExistingAccount: true, cancellationToken);
 
     public Task<AuthStatusResponse> EnableAssigneeNamesAsync(CancellationToken cancellationToken) =>
-        ConnectAsync(AssigneeNamesScopes, requireExistingAccount: true, cancellationToken);
+        ConnectForScopesAsync(AssigneeNamesScopes, requireExistingAccount: true, cancellationToken);
 
     public Task<AuthStatusResponse> EnableBoardMembersAsync(CancellationToken cancellationToken) =>
-        ConnectAsync(BoardMembersScopes, requireExistingAccount: true, cancellationToken);
+        ConnectForScopesAsync(BoardMembersScopes, requireExistingAccount: true, cancellationToken);
+
+    private Task<AuthStatusResponse> ConnectForScopesAsync(IEnumerable<string> scopes, bool requireExistingAccount,
+        CancellationToken cancellationToken) => connect is null
+            ? ConnectAsync(scopes, requireExistingAccount, cancellationToken)
+            : connect(scopes, requireExistingAccount, cancellationToken);
 
     private async Task<AuthStatusResponse> ConnectAsync(IEnumerable<string> scopes, bool requireExistingAccount, CancellationToken cancellationToken)
     {
