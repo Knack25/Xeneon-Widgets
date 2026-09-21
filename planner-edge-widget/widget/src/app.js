@@ -2,6 +2,7 @@
 const api = globalThis.PlannerApi;
 const flow = globalThis.PlannerState;
 const filterEngine = globalThis.PlannerFilters;
+const viewState = globalThis.PlannerViewState;
 const app = document.getElementById("app");
 const details = new Map();
 const failures = new Set();
@@ -9,12 +10,14 @@ const pending = new Set();
 const visibleTasks = new Set();
 let state = flow.createInitialState();
 let plans = null;
+let displayGeneration = 0;
 let detailGeneration = 0;
 let dialogGeneration = 0;
 let taskObserver = null;
 let preferences = filterEngine?.createDefaultPreferences() || { myTasks: false, filters: {} };
 let preferencesPlanId = null;
 let activePreferencesPlanId = null;
+let preferenceRequestPlanId = null;
 let preferenceLoadGeneration = 0;
 let searchText = "";
 let searchOpen = false;
@@ -26,17 +29,96 @@ let memberError = null;
 let memberRequest = null;
 let memberRequestGeneration = 0;
 let createNotice = null;
+let scrollSaveScheduled = false;
 
 async function loadDisplay(force = false) {
-  if (!force && (state.dialog || state.completing)) return;
+  if (!force && state.completing) return;
+  const generation = ++displayGeneration;
+  const cachedRequest = state.mode === "loading" && !state.display ? api.getCachedDisplay() : null;
+  const liveRequest = api.getDisplay();
+  let liveStatus = "pending";
+  let liveError = null;
+
+  cachedRequest?.then(cached => {
+    if (displayGeneration !== generation || liveStatus === "succeeded" || !cached?.planId) return;
+    applyIncomingDisplay({ ...cached, isStale: true });
+    if (liveStatus === "failed") {
+      applyDisplayError(liveError);
+      render();
+    }
+  }).catch(() => {});
+
   try {
-    const board = await api.getDisplay();
-    detailGeneration++;
-    details.clear(); failures.clear(); visibleTasks.clear();
-    state = flow.applyDisplayLoaded(state, board);
-    if (board && filterEngine && preferencesPlanId !== board.planId) await loadPreferences(board);
-  } catch (error) { state = flow.applyError(state, normalizeError(error)); }
+    const board = await liveRequest;
+    liveStatus = "succeeded";
+    if (displayGeneration !== generation || !force && state.completing) return;
+    if (board) await applyIncomingDisplay(board);
+    else {
+      reconcileTaskDetails(state.display, null);
+      state = flow.applyDisplayLoaded(state, null);
+      render();
+    }
+  } catch (error) {
+    liveStatus = "failed";
+    liveError = normalizeError(error);
+    if (displayGeneration !== generation || !force && state.completing) return;
+    applyDisplayError(liveError);
+    render();
+  }
+}
+
+function applyDisplayError(error) {
+  state = flow.applyError(state, error);
+  if (state.display) state = { ...state, mode: "error" };
+}
+
+function applyIncomingDisplay(board) {
+  const previous = state.display;
+  const samePlan = previous?.planId === board.planId;
+  reconcileTaskDetails(previous, board);
+  state = samePlan ? flow.applyDisplayRefresh(state, board) : flow.applyDisplayLoaded(state, board);
   render();
+  return ensurePreferences(board);
+}
+
+function reconcileTaskDetails(previous, next) {
+  detailGeneration++;
+  visibleTasks.clear();
+  if (!previous || !next || previous.planId !== next.planId) {
+    details.clear();
+    failures.clear();
+    return;
+  }
+
+  const previousTasks = taskMap(previous);
+  const nextTasks = taskMap(next);
+  for (const taskId of new Set([...details.keys(), ...failures])) {
+    const before = previousTasks.get(taskId);
+    const after = nextTasks.get(taskId);
+    if (!after || taskETag(before) !== taskETag(after)) {
+      details.delete(taskId);
+      failures.delete(taskId);
+    }
+  }
+}
+
+function taskMap(board) {
+  return new Map((board?.buckets || []).flatMap(bucket => bucket.tasks || []).map(task => [task.taskId, task]));
+}
+
+function taskETag(task) {
+  return task?.eTag ?? task?.etag ?? task?.ETag ?? null;
+}
+
+async function ensurePreferences(board) {
+  if (!filterEngine || preferencesPlanId === board.planId || preferenceRequestPlanId === board.planId) return;
+  const planId = board.planId;
+  preferenceRequestPlanId = planId;
+  try { await loadPreferences(board); }
+  finally {
+    if (preferenceRequestPlanId === planId) preferenceRequestPlanId = null;
+  }
+  if (state.display?.planId === planId) render();
 }
 
 async function loadPreferences(board) {
@@ -125,6 +207,8 @@ async function savePreferences() {
 }
 
 function render() {
+  const previousScroll = captureScrollSnapshot();
+  persistScrollSnapshot(previousScroll);
   if (state.mode === "loading") return;
   if (state.mode === "signedOut") {
     app.innerHTML = '<section class="status"><h1>Sign in to Planner</h1><p>Open the Planner Edge setup page on your computer.</p></section>';
@@ -143,9 +227,10 @@ function render() {
   const buckets = filteredBoard.buckets;
   const previousBoard = app.querySelector?.(".board");
   const sameBoard = previousBoard && previousBoard.dataset.planId === board.planId;
-  const boardScrollLeft = sameBoard ? previousBoard.scrollLeft : 0;
-  const bucketScrollTops = new Map(Array.from(sameBoard ? app.querySelectorAll?.(".bucket") || [] : [],
-    bucket => [bucket.dataset.bucketId, bucket.scrollTop]));
+  const savedScroll = sameBoard && previousScroll ? previousScroll : viewState?.load(board.planId) ||
+    { boardScrollLeft: 0, bucketScrollTops: {} };
+  const boardScrollLeft = savedScroll.boardScrollLeft;
+  const bucketScrollTops = savedScroll.bucketScrollTops;
   const detailScrollTop = state.dialog?.type === "taskDetails"
     ? app.querySelector?.(".confirm-panel")?.scrollTop ?? 0 : 0;
   app.innerHTML = `<header class="topbar"><div class="board-heading">
@@ -161,11 +246,30 @@ function render() {
   const renderedBoard = app.querySelector?.(".board");
   if (renderedBoard) renderedBoard.scrollLeft = boardScrollLeft;
   app.querySelectorAll?.(".bucket").forEach(bucket => {
-    bucket.scrollTop = bucketScrollTops.get(bucket.dataset.bucketId) ?? 0;
+    bucket.scrollTop = bucketScrollTops[bucket.dataset.bucketId] ?? 0;
   });
   const detailPanel = state.dialog?.type === "taskDetails" ? app.querySelector?.(".confirm-panel") : null;
   if (detailPanel) detailPanel.scrollTop = detailScrollTop;
   observeTasks();
+}
+
+function captureScrollSnapshot() {
+  const board = app.querySelector?.(".board");
+  const planId = board?.dataset?.planId;
+  if (!planId) return null;
+  const bucketScrollTops = {};
+  app.querySelectorAll?.(".bucket").forEach(bucket => {
+    bucketScrollTops[bucket.dataset.bucketId] = bucket.scrollTop;
+  });
+  return { planId, boardScrollLeft: board.scrollLeft, bucketScrollTops };
+}
+
+function persistScrollSnapshot(snapshot = captureScrollSnapshot()) {
+  if (!snapshot || !viewState) return;
+  viewState.save(snapshot.planId, {
+    boardScrollLeft: snapshot.boardScrollLeft,
+    bucketScrollTops: snapshot.bucketScrollTops
+  });
 }
 
 function getFilteredBoard() {
@@ -183,6 +287,7 @@ function renderBoardOnly() {
   const boardScrollLeft = boardElement.scrollLeft;
   const bucketScrollTops = new Map(Array.from(app.querySelectorAll?.(".bucket") || [],
     bucket => [bucket.dataset.bucketId, bucket.scrollTop]));
+  persistScrollSnapshot();
   boardElement.innerHTML = filteredBoard.buckets.map(renderBucket).join("");
   boardElement.scrollLeft = boardScrollLeft;
   app.querySelectorAll?.(".bucket").forEach(bucket => {
@@ -487,6 +592,17 @@ function queueDetails() {
   }
 }
 
+app.addEventListener("scroll", () => {
+  if (scrollSaveScheduled) return;
+  scrollSaveScheduled = true;
+  const save = () => {
+    scrollSaveScheduled = false;
+    persistScrollSnapshot();
+  };
+  if (typeof globalThis.requestAnimationFrame === "function") globalThis.requestAnimationFrame(save);
+  else Promise.resolve().then(save);
+}, true);
+
 app.addEventListener("input", event => {
   if (event.target.matches?.("[data-search-tasks]")) {
     searchText = event.target.value; visibleTasks.clear(); renderBoardOnly(); return;
@@ -671,12 +787,14 @@ app.addEventListener("click", async event => {
   const chosen = hit("data-select-plan");
   if (chosen) {
     if (state.completing) return;
+    displayGeneration++;
     state.completing = true; render();
     try {
       await api.selectPlan(chosen.dataset.selectPlan);
       details.clear(); failures.clear(); members = null; memberError = null; memberPlanId = null;
       memberRequest = null; memberRequestGeneration++; preferenceLoadGeneration++;
-      createNotice = null; filterError = null; preferencesPlanId = null; activePreferencesPlanId = null; searchText = "";
+      createNotice = null; filterError = null; preferencesPlanId = null; activePreferencesPlanId = null;
+      preferenceRequestPlanId = null; searchText = "";
       state = flow.closeDialog(state);
       await loadDisplay(true);
     } catch (error) { state.completing = false; state.dialogError = normalizeError(error).message; render(); }

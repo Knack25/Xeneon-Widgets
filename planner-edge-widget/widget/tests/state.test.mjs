@@ -5,7 +5,7 @@ import { runInNewContext } from "node:vm";
 
 const context = {};
 runInNewContext(readFileSync(new URL("../src/state.js", import.meta.url), "utf8"), context);
-const { applyDisplayLoaded, applyError, beginConfirmComplete, cancelConfirmComplete, createInitialState,
+const { applyDisplayLoaded, applyDisplayRefresh, applyError, beginConfirmComplete, cancelConfirmComplete, createInitialState,
   openBoardPicker, openTaskDetails, beginConfirmChecklist, closeDialog, openTaskBucketPicker } = context.PlannerState;
 
 test("display load selects board or no-board state", () => {
@@ -47,6 +47,23 @@ test("task details track a pending bucket choice", () => {
   assert.equal(selected.dialog.selectedBucketId, "target");
   assert.equal(selected.dialog.bucketPickerOpen, false);
   assert.equal(closeDialog(selected).dialog, null);
+});
+
+test("display refresh replaces board data without discarding interaction state", () => {
+  const dialog = { type: "taskDetails", taskId: "task", titleDraft: "Draft title", notesDraft: "Draft notes" };
+  const current = { ...applyDisplayLoaded(createInitialState(), { planId: "plan", planTitle: "Cached", buckets: [] }),
+    dialog, dialogError: "Keep this context", pendingTask: { taskId: "task" }, completing: true };
+
+  const refreshed = applyDisplayRefresh(current, { planId: "plan", planTitle: "Live", buckets: [] });
+
+  assert.equal(refreshed.mode, "board");
+  assert.equal(refreshed.display.planTitle, "Live");
+  assert.equal(refreshed.dialog, dialog);
+  assert.equal(refreshed.dialog.titleDraft, "Draft title");
+  assert.equal(refreshed.dialog.notesDraft, "Draft notes");
+  assert.equal(refreshed.error, null);
+  assert.equal(refreshed.pendingTask, null);
+  assert.equal(refreshed.completing, false);
 });
 
 test("checklist deletion confirmation preserves the task details dialog", () => {

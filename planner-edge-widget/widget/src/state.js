@@ -6,6 +6,10 @@ function applyDisplayLoaded(state, display) {
   return { ...state, mode: display ? "board" : "noBoardSelected", display, error: null, pendingTask: null, completing: false, dialog: null, dialogError: null };
 }
 
+function applyDisplayRefresh(state, display) {
+  return { ...state, mode: "board", display, error: null, pendingTask: null, completing: false };
+}
+
 function beginConfirmComplete(state, task) {
   return { ...state, mode: "confirmComplete", pendingTask: task, dialog: { type: "confirmTask", taskId: task.taskId, title: task.title }, dialogError: null };
 }
@@ -61,6 +65,6 @@ function applyError(state, error) {
   return { ...state, mode: error.code === "signed_out" ? "signedOut" : "error", error, pendingTask: null, completing: false };
 }
 
-globalThis.PlannerState = { createInitialState, applyDisplayLoaded, beginConfirmComplete, cancelConfirmComplete,
+globalThis.PlannerState = { createInitialState, applyDisplayLoaded, applyDisplayRefresh, beginConfirmComplete, cancelConfirmComplete,
   openBoardPicker, openTaskDetails, openTaskBucketPicker, selectTaskBucket, beginConfirmChecklist,
   beginConfirmChecklistDelete, beginConfirmProgress, closeActiveDialog, closeDialog, applyError };

@@ -20,7 +20,7 @@ The helper stores your selection and an encrypted Microsoft token cache under yo
 
 For development, `scripts/publish-helper.ps1` builds the Windows executable. Once built, normal setup needs no terminal commands.
 
-The helper uses [http://localhost:8787](http://localhost:8787). The widget updates once per minute. A network failure can show the last cached board, labeled as an offline view.
+The helper uses [http://localhost:8787](http://localhost:8787). At startup, the widget shows the helper's saved Planner board immediately, restores that board's saved filters, My tasks setting, and scroll positions, then refreshes from Microsoft in the background. It continues to update once per minute. If a refresh fails, the saved board stays visible and is labeled **Offline view**. Cache-first resume currently applies only to Planner; equivalent Outlook fast resume remains future work.
 
 ## Widget
 
@@ -33,7 +33,11 @@ npm --prefix widget install
 .\scripts\package.ps1
 ```
 
-Import `dist/PlannerEdgeWidget-0.3.0.icuewidget` in iCUE and add it to the XENEON EDGE dashboard. Tap the board name to switch boards. Use **My tasks** to show only tasks assigned to you, or **+** to add a task. The large task checkbox asks to complete the task; the rest of a task opens its details. A task card previews up to three checklist items; checklist items can be completed from the details view. In task details, tap Bucket to move a task, Due to change its date, or Assigned to to edit its assignees. Notes below the checklist can be edited and saved explicitly. Task chat shows Planner comments, loads earlier comments on demand, and can post a first comment or reply. Tap outside a dialog to close it.
+Import `dist/PlannerEdgeWidget-0.3.0.icuewidget` in iCUE and add it to the XENEON EDGE dashboard. Tap the board name to switch boards. **My tasks** shows tasks assigned to you, the search button filters task titles for the current session, and the filter button offers assignee, label, priority, bucket, progress, and due-date filters. Structured filters and My tasks are saved separately for each board. Board horizontal position and each bucket's vertical position are restored for that board; search text is not saved.
+
+Use **+** to add a task with a bucket and optional assignees, start date, due date, priority, and existing Planner labels. The large task checkbox asks for confirmation before completing the task; tapping the rest of a card opens details. Cards show urgent or important priority, labels, in-progress state, due date, and up to three checklist items. Details let you edit the title, progress, priority, start and due dates, assignees, bucket, and existing labels. Checklist controls add, rename, delete with confirmation, complete, and move items up or down. Notes are saved explicitly. Task chat shows Planner comments, loads earlier comments on demand, and can post a first comment or reply. Tap outside the active dialog to close it.
+
+The organization controls continue to use `Tasks.ReadWrite` and do not require a new Microsoft Graph permission. Existing optional permissions for assignee names, board-member selection, and task chat remain as described above.
 
 If the imported widget does not load, keep using the same task view with the built-in **iFrame** widget (not **Web URL**, which may try HTTPS for a local HTTP link). Paste this into the iFrame widget's code field:
 

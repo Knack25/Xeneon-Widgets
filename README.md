@@ -11,10 +11,12 @@ Follow the setup page to connect your work account, choose a board, and download
 ## Projects
 
 - [Microsoft Widgets Helper](microsoft-widgets-helper/README.md): shared sign-in, setup, local service, and integration modules.
-- [Planner Edge Widget](planner-edge-widget/README.md): board display, task details, checklists, filtering, assignments, dates, and task creation.
+- [Planner Edge Widget](planner-edge-widget/README.md): cache-first board display; per-board filters, My tasks, and scroll restoration; title search; task title, progress, priority, dates, assignees, bucket, labels, notes, and checklist editing; and task creation.
 - [Outlook Edge Widget](docs/OUTLOOK.md): read-only calendars, Week/Month/Agenda views, event details, and meeting launch.
 
 The Foundry VTT module, connector and character dashboard now live in [Xeneon-Foundry](https://github.com/Knack25/Xeneon-Foundry), with their own development history and releases.
+
+Planner organization and cache-first resume continue to use the existing Planner permissions; no new Microsoft Graph permission or organizational consent is introduced. Outlook keeps its current startup behavior, with equivalent fast resume left as future work.
 
 ## Screenshots
 

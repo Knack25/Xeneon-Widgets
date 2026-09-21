@@ -5,13 +5,13 @@ import { runInNewContext } from "node:vm";
 
 const settle = (milliseconds = 15) => new Promise(resolve => setTimeout(resolve, milliseconds));
 
-function createDetailFixture(fetch, appOverrides = {}) {
+function createDetailFixture(fetch, appOverrides = {}, contextOverrides = {}) {
   const handlers = {};
   const app = { innerHTML: "", addEventListener: (type, listener) => { handlers[type] = listener; } };
   Object.defineProperties(app, Object.getOwnPropertyDescriptors(appOverrides));
   const context = { document: { getElementById: () => app }, setInterval() {}, Intl, Date, URLSearchParams,
     IntersectionObserver: class { observe() {} disconnect() {} }, fetch,
-    localStorage: { getItem: () => null, setItem() {} } };
+    localStorage: { getItem: () => null, setItem() {} }, ...contextOverrides };
   for (const file of ["state.js", "api.js", "filters.js", "view-state.js", "app.js"])
     runInNewContext(readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"), context);
   const tap = (attribute, dataset = {}) => handlers.click({ target: {
@@ -140,16 +140,17 @@ test("outside tap closes the board picker", async () => {
   assert.doesNotMatch(app.innerHTML, /Choose board/);
 });
 
-test("scheduled board refresh reloads checklist previews", async () => {
+test("scheduled board refresh reuses task details until the task ETag changes", async () => {
   let refresh;
   let detailReads = 0;
   const app = { innerHTML: "", addEventListener() {} };
-  const board = { planId: "plan", planTitle: "Work", syncedAt: new Date().toISOString(), buckets: [
-    { bucketId: "bucket", name: "Doing", tasks: [{ taskId: "task", title: "Build" }] }
-  ] };
+  let taskETag = "v1";
   const context = { document: { getElementById: () => app }, setInterval: callback => { refresh = callback; }, Intl, Date,
     fetch: async path => ({ ok: true, status: 200, json: async () => {
-      if (path.endsWith("/display")) return board;
+      if (path.endsWith("/display/cached")) return null;
+      if (path.endsWith("/display")) return { planId: "plan", planTitle: "Work", syncedAt: new Date().toISOString(), buckets: [
+        { bucketId: "bucket", name: "Doing", tasks: [{ taskId: "task", title: "Build", eTag: taskETag }] }
+      ] };
       detailReads++;
       return { taskId: "task", checklist: [], assignees: [] };
     } }) };
@@ -157,6 +158,10 @@ test("scheduled board refresh reloads checklist previews", async () => {
     runInNewContext(readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"), context);
   await new Promise(resolve => setTimeout(resolve, 15));
   assert.equal(detailReads, 1);
+  await refresh();
+  await new Promise(resolve => setTimeout(resolve, 15));
+  assert.equal(detailReads, 1);
+  taskETag = "v2";
   await refresh();
   await new Promise(resolve => setTimeout(resolve, 15));
   assert.equal(detailReads, 2);
@@ -242,6 +247,7 @@ test("only visible task cards prefetch details when observation is available", a
   const context = { document: { getElementById: () => app }, setInterval() {}, Intl, Date,
     IntersectionObserver: Observer,
     fetch: async path => ({ ok: true, status: 200, json: async () => {
+      if (path.endsWith("/display/cached")) return null;
       if (path.endsWith("/display")) return board;
       reads.push(path);
       return { checklist: [], assignees: [] };
@@ -1232,6 +1238,57 @@ test("metadata completion cannot release an active progress confirmation request
   assert.doesNotMatch(app.innerHTML, /Complete task\?/);
 });
 
+test("background display completion cannot release an active progress confirmation request", async () => {
+  let refresh;
+  let displayReads = 0;
+  let resolveRefresh;
+  const progressRequests = [];
+  const board = organizationBoard();
+  const detail = { ...organizationDetail(), percentComplete: 0 };
+  const { app, tap, change } = createDetailFixture(async (path, options = {}) => {
+    if (path.endsWith("/display/cached")) return response(null, 204);
+    if (path.endsWith("/display")) {
+      displayReads++;
+      if (displayReads === 1) return response(board);
+      return new Promise(resolve => { resolveRefresh = resolve; });
+    }
+    if (path.includes("view-preferences")) return response(defaultPreferences());
+    if (path.endsWith("/chat")) return response({ state: "available", messages: [] });
+    if (path.endsWith("/details")) return response(detail);
+    if (path.endsWith("/progress") && options.method === "PUT")
+      return new Promise(resolve => progressRequests.push(resolve));
+    return response(null, 204);
+  }, {}, { setInterval: callback => { refresh = callback; } });
+  await settle();
+  await tap("data-open-task", { openTask: "task" });
+  await settle();
+
+  const refreshing = refresh();
+  await settle();
+  await change("data-task-progress", "100");
+  const completion = tap("data-confirm-progress");
+  assert.equal(progressRequests.length, 1);
+  assert.match(app.innerHTML, /data-confirm-progress\s+disabled/);
+
+  resolveRefresh(response(board));
+  await refreshing;
+  await settle();
+  const stayedDisabled = /data-confirm-progress\s+disabled/.test(app.innerHTML);
+  const duplicate = tap("data-confirm-progress");
+  const progressWriteCount = progressRequests.length;
+
+  progressRequests[0](response(null, 204));
+  await completion;
+  if (progressRequests[1]) {
+    progressRequests[1](response(null, 204));
+    await duplicate;
+  }
+
+  assert.equal(stayedDisabled, true);
+  assert.equal(progressWriteCount, 1);
+  assert.doesNotMatch(app.innerHTML, /Complete task\?/);
+});
+
 test("new task sends start date priority and labels without progress", async () => {
   const calls = [];
   const board = organizationBoard();
@@ -1345,6 +1402,162 @@ test("checklist supports add rename delete confirmation and button reordering", 
 
   await tap("data-checklist-item", { checklistTask: "task", checklistItem: "first" });
   assert.match(app.innerHTML, /Complete checklist item\?/);
+});
+
+test("live refresh preserves open dialog drafts filters search and scroll", async () => {
+  let refresh;
+  let resolveRefresh;
+  let displayReads = 0;
+  let markup = "";
+  let boardElement = { dataset: { planId: "plan" }, scrollLeft: 0 };
+  let bucketElement = { dataset: { bucketId: "b" }, scrollTop: 0 };
+  let detailPanel = { scrollTop: 0 };
+  const appOverrides = {
+    get innerHTML() { return markup; },
+    set innerHTML(value) {
+      markup = value;
+      boardElement = { dataset: { planId: "plan" }, scrollLeft: 0 };
+      bucketElement = { dataset: { bucketId: "b" }, scrollTop: 0 };
+      detailPanel = { scrollTop: 0 };
+    },
+    querySelector(selector) {
+      if (selector === ".board") return boardElement;
+      if (selector === ".confirm-panel") return markup.includes("confirm-panel") ? detailPanel : null;
+      return null;
+    },
+    querySelectorAll(selector) { return selector === ".bucket" ? [bucketElement] : []; }
+  };
+  const makeBoard = title => ({ planId: "plan", planTitle: title, syncedAt: "2026-09-21T12:00:00Z", labels: [], buckets: [
+    { bucketId: "b", name: "Doing", tasks: [{ taskId: "task", title: "Build", priority: 1,
+      percentComplete: 0, assignments: ["me"], labelIds: [], eTag: "v1" }] }
+  ] });
+  const detail = { taskId: "task", title: "Build", checklist: [], assignees: ["Me"], assigneeIds: ["me"],
+    description: "Original notes", priority: 1, percentComplete: 0, startDateTime: null, labelIds: [] };
+  const { app, tap, input } = createDetailFixture(async path => {
+    if (path.endsWith("/display/cached")) return response(null, 204);
+    if (path.endsWith("/display")) {
+      displayReads++;
+      if (displayReads === 1) return response(makeBoard("Cached Board"));
+      return new Promise(resolve => { resolveRefresh = resolve; });
+    }
+    if (path.includes("view-preferences")) return response({ myTasks: true, filters: { assigneeIds: [], labelIds: [],
+      priorities: [1], bucketIds: [], progressValues: [], dueDateRange: null } });
+    if (path.endsWith("/auth/me")) return response({ userId: "me" });
+    if (path.endsWith("/details")) return response(detail);
+    if (path.endsWith("/chat")) return response({ state: "available", messages: [] });
+    throw new Error(`Unexpected request: ${path}`);
+  }, appOverrides, { setInterval: callback => { refresh = callback; } });
+
+  await settle(30);
+  await tap("data-toggle-search");
+  input("data-search-tasks", "Build");
+  await tap("data-open-task", { openTask: "task" });
+  await settle(30);
+  input("data-title-draft", "Draft title");
+  input("data-notes-draft", "Draft notes");
+  input("data-checklist-add-draft", "Draft checklist item");
+  input("data-start-date-draft", "2026-09-30");
+  boardElement.scrollLeft = 420;
+  bucketElement.scrollTop = 180;
+
+  const refreshing = refresh();
+  await settle();
+  assert.equal(typeof resolveRefresh, "function");
+  resolveRefresh(response(makeBoard("Live Board")));
+  await refreshing;
+  await settle();
+
+  assert.match(app.innerHTML, /Live Board/);
+  assert.match(app.innerHTML, /data-title-draft[^>]*value="Draft title"/);
+  assert.match(app.innerHTML, /data-notes-draft[^>]*>Draft notes<\/textarea>/);
+  assert.match(app.innerHTML, /data-checklist-add-draft[^>]*value="Draft checklist item"/);
+  assert.match(app.innerHTML, /data-start-date-draft[^>]*value="2026-09-30"/);
+  assert.match(app.innerHTML, /filter-action active/);
+  assert.match(app.innerHTML, /my-tasks-action active/);
+  assert.match(app.innerHTML, /data-search-tasks[^>]*value="Build"/);
+  assert.match(app.innerHTML, /data-checklist-task="task"|Task chat/);
+  assert.equal(boardElement.scrollLeft, 420);
+  assert.equal(bucketElement.scrollTop, 180);
+});
+
+test("late live response from an old plan generation is ignored", async () => {
+  let selectedPlan = "plan-a";
+  let liveReads = 0;
+  let resolveOldLive;
+  const boards = {
+    "plan-a": { planId: "plan-a", planTitle: "Alpha cached", syncedAt: "2026-09-21T12:00:00Z", labels: [], buckets: [] },
+    "plan-b": { planId: "plan-b", planTitle: "Beta live", syncedAt: "2026-09-21T12:01:00Z", labels: [], buckets: [] }
+  };
+  const { app, tap } = createDetailFixture(async (path, options = {}) => {
+    if (path.endsWith("/display/cached")) return response(boards[selectedPlan]);
+    if (path.endsWith("/display")) {
+      liveReads++;
+      if (liveReads === 1) return new Promise(resolve => { resolveOldLive = resolve; });
+      return response(boards[selectedPlan]);
+    }
+    if (path.endsWith("/plans")) return response([{ planId: "plan-b", title: "Beta", groupName: "Team" }]);
+    if (path.endsWith("/selected-plan")) {
+      selectedPlan = JSON.parse(options.body).planId;
+      return response(null, 204);
+    }
+    if (path.includes("view-preferences")) return response(defaultPreferences());
+    throw new Error(`Unexpected request: ${path}`);
+  });
+
+  await settle();
+  assert.match(app.innerHTML, /Alpha cached/);
+  await tap("data-open-board-picker");
+  await tap("data-select-plan", { selectPlan: "plan-b" });
+  await settle();
+  assert.match(app.innerHTML, /Beta live/);
+
+  resolveOldLive(response({ ...boards["plan-a"], planTitle: "Alpha late" }));
+  await settle();
+  assert.match(app.innerHTML, /Beta live/);
+  assert.doesNotMatch(app.innerHTML, /Alpha late/);
+});
+
+test("saved board and bucket offsets restore after reload and scroll events persist updates", async () => {
+  let markup = "";
+  let boardElement = { dataset: { planId: "plan" }, scrollLeft: 0 };
+  let bucketElement = { dataset: { bucketId: "b" }, scrollTop: 0 };
+  const writes = [];
+  const appOverrides = {
+    get innerHTML() { return markup; },
+    set innerHTML(value) {
+      markup = value;
+      boardElement = { dataset: { planId: "plan" }, scrollLeft: 0 };
+      bucketElement = { dataset: { bucketId: "b" }, scrollTop: 0 };
+    },
+    querySelector: selector => selector === ".board" && markup.includes('class="board"') ? boardElement : null,
+    querySelectorAll: selector => selector === ".bucket" && markup.includes('class="board"') ? [bucketElement] : []
+  };
+  const stored = JSON.stringify({ boardScrollLeft: 315, bucketScrollTops: { b: 125 } });
+  const localStorage = {
+    getItem: key => key === "planner-edge:view:plan" ? stored : null,
+    setItem: (key, value) => writes.push([key, value])
+  };
+  const board = { planId: "plan", planTitle: "Work", syncedAt: "2026-09-21T12:00:00Z", labels: [], buckets: [
+    { bucketId: "b", name: "Doing", tasks: [] }
+  ] };
+  const { handlers } = createDetailFixture(async path => {
+    if (path.endsWith("/display/cached")) return response(null, 204);
+    if (path.endsWith("/display")) return response(board);
+    if (path.includes("view-preferences")) return response(defaultPreferences());
+    throw new Error(`Unexpected request: ${path}`);
+  }, appOverrides, { localStorage });
+
+  await settle(30);
+  assert.equal(boardElement.scrollLeft, 315);
+  assert.equal(bucketElement.scrollTop, 125);
+
+  boardElement.scrollLeft = 460;
+  bucketElement.scrollTop = 190;
+  handlers.scroll({ target: bucketElement });
+  await settle();
+  const [key, value] = writes.at(-1);
+  assert.equal(key, "planner-edge:view:plan");
+  assert.deepEqual(JSON.parse(value), { boardScrollLeft: 460, bucketScrollTops: { b: 190 } });
 });
 
 function response(body, status = 200) {

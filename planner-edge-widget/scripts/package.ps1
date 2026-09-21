@@ -12,7 +12,7 @@ New-Item -ItemType Directory -Path (Join-Path $stage "resources"), (Join-Path $s
 
 Copy-Item -LiteralPath (Join-Path $projectRoot "widget\index.html"), (Join-Path $projectRoot "widget\manifest.json"), (Join-Path $projectRoot "widget\styles.css") -Destination $stage
 Copy-Item -LiteralPath (Join-Path $projectRoot "widget\resources\icon.svg") -Destination (Join-Path $stage "resources")
-Copy-Item -LiteralPath (Join-Path $projectRoot "widget\src\api.js"), (Join-Path $projectRoot "widget\src\app.js"), (Join-Path $projectRoot "widget\src\state.js") -Destination (Join-Path $stage "src")
+Copy-Item -LiteralPath (Join-Path $projectRoot "widget\src\api.js"), (Join-Path $projectRoot "widget\src\app.js"), (Join-Path $projectRoot "widget\src\filters.js"), (Join-Path $projectRoot "widget\src\state.js"), (Join-Path $projectRoot "widget\src\view-state.js") -Destination (Join-Path $stage "src")
 
 $cli = Join-Path $projectRoot "widget\node_modules\icuewidget-cli\node-bin\icuewidget.js"
 if (-not (Test-Path -LiteralPath $cli)) { throw "Run npm install in widget first." }

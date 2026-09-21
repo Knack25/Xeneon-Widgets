@@ -8,6 +8,12 @@ async function getDisplay() {
   return parseJsonResponse(response);
 }
 
+async function getCachedDisplay() {
+  const response = await fetch(`${BASE_URL}/display/cached`);
+  if (response.status === 204) return null;
+  return parseJsonResponse(response);
+}
+
 async function getViewPreferences(planId) {
   return parseJsonResponse(await fetch(`${BASE_URL}/view-preferences/${encodeURIComponent(planId)}`));
 }
@@ -142,7 +148,7 @@ async function postTaskChat(taskId, message) {
   }));
 }
 
-globalThis.PlannerApi = { getDisplay, getViewPreferences, saveViewPreferences, getCurrentUser, completeTask,
+globalThis.PlannerApi = { getDisplay, getCachedDisplay, getViewPreferences, saveViewPreferences, getCurrentUser, completeTask,
   getPlans, selectPlan, getTaskDetails, completeChecklistItem, moveTask, setDueDate, setTitle, setProgress,
   setPriority, setStartDate, setLabels, addChecklistItem, renameChecklistItem, deleteChecklistItem,
   moveChecklistItem, getMembers, setAssignments, createTask, updateNotes, getTaskChat, postTaskChat };
