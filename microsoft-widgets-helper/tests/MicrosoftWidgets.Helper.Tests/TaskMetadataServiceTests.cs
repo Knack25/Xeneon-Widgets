@@ -194,7 +194,8 @@ public sealed class TaskMetadataServiceTests
             "latest-etag", [], AppliedCategories: appliedCategories ?? []));
         var settings = new FakeSettings();
         var cache = new MemoryCache(new MemoryCacheOptions());
-        return new Fixture(new TaskMetadataService(graph, settings, cache), graph, settings, cache);
+        return new Fixture(new TaskMetadataService(graph, new SelectedPlanTaskService(graph, settings), cache),
+            graph, settings, cache);
     }
 
     private sealed record Fixture(TaskMetadataService Service, FakeGraph Graph, FakeSettings Settings, IMemoryCache Cache);

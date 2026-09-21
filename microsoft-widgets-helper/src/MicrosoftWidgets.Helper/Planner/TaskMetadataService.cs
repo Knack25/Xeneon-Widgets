@@ -7,7 +7,7 @@ namespace PlannerEdge.Helper.Planner;
 
 public sealed class TaskMetadataService(
     IPlannerGraphClient graphClient,
-    IPlannerSettingsStore settingsStore,
+    SelectedPlanTaskService selectedPlanTasks,
     IMemoryCache cache)
 {
     public async Task SetTitleAsync(string taskId, string title, CancellationToken cancellationToken)
@@ -46,7 +46,7 @@ public sealed class TaskMetadataService(
     public async Task SetLabelsAsync(string taskId, IReadOnlyList<string> labelIds,
         CancellationToken cancellationToken)
     {
-        var task = await LoadOwnedTaskAsync(taskId, cancellationToken);
+        var task = await selectedPlanTasks.GetAsync(taskId, cancellationToken);
         var labels = await graphClient.GetPlanLabelsAsync(task.PlanId, cancellationToken);
         var namedIds = labels.Select(label => label.Id).ToHashSet(StringComparer.Ordinal);
         var selectedIds = labelIds.ToHashSet(StringComparer.Ordinal);
@@ -68,19 +68,9 @@ public sealed class TaskMetadataService(
     private async Task UpdateAsync(string taskId, Func<GraphTask, GraphTaskUpdate> createUpdate,
         CancellationToken cancellationToken)
     {
-        var task = await LoadOwnedTaskAsync(taskId, cancellationToken);
+        var task = await selectedPlanTasks.GetAsync(taskId, cancellationToken);
         await graphClient.UpdateTaskAsync(taskId, createUpdate(task), task.ETag, cancellationToken);
         cache.Remove(taskId);
-    }
-
-    private async Task<GraphTask> LoadOwnedTaskAsync(string taskId, CancellationToken cancellationToken)
-    {
-        var settings = await settingsStore.LoadSettingsAsync(cancellationToken);
-        var task = await graphClient.GetTaskAsync(taskId, cancellationToken)
-            ?? throw new InvalidOperationException("Planner task was not found.");
-        if (string.IsNullOrWhiteSpace(settings.SelectedPlanId) || task.PlanId != settings.SelectedPlanId)
-            throw new ArgumentException("This task is not on the selected board.");
-        return task;
     }
 
     private static DateTimeOffset? ParseDate(string? date)

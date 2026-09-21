@@ -45,9 +45,19 @@ public sealed class GraphClientTests
         var details = await CreateClient(handler).GetTaskDetailsAsync("task", CancellationToken.None);
 
         Assert.Equal("W/\"details\"", details.ETag);
-        Assert.Equal(["second", "first"], details.Checklist.Select(item => item.Id));
-        Assert.True(details.Checklist[0].IsChecked);
+        Assert.Equal(["first", "second"], details.Checklist.Select(item => item.Id));
+        Assert.False(details.Checklist[0].IsChecked);
         Assert.Equal("Line one\nLine two", details.Description);
+    }
+
+    [Fact]
+    public async Task GetTaskDetailsAsync_PreservesGraphSourceOrderForEqualHints()
+    {
+        var handler = new StubHandler(_ => """{"checklist":{"second":{"title":"Second","orderHint":"a"},"first":{"title":"First","orderHint":"a"}}}""");
+
+        var details = await CreateClient(handler).GetTaskDetailsAsync("task", CancellationToken.None);
+
+        Assert.Equal(["second", "first"], details.Checklist.Select(item => item.Id));
     }
 
     [Fact]

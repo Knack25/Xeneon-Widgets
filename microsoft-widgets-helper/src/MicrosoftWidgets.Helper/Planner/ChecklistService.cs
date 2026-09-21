@@ -3,11 +3,15 @@ using PlannerEdge.Helper.Graph;
 
 namespace PlannerEdge.Helper.Planner;
 
-public sealed class ChecklistService(IPlannerGraphClient graphClient, IMemoryCache cache)
+public sealed class ChecklistService(
+    IPlannerGraphClient graphClient,
+    SelectedPlanTaskService selectedPlanTasks,
+    IMemoryCache cache)
 {
     public async Task AddAsync(string taskId, string title, CancellationToken cancellationToken)
     {
         title = ValidateTitle(title);
+        await selectedPlanTasks.GetAsync(taskId, cancellationToken);
         var details = await graphClient.GetTaskDetailsAsync(taskId, cancellationToken);
         var hint = $"{details.Checklist.LastOrDefault()?.OrderHint ?? string.Empty} !";
         await PatchAsync(taskId, Guid.NewGuid().ToString("D"), new GraphChecklistPatch(title, hint),
@@ -17,6 +21,7 @@ public sealed class ChecklistService(IPlannerGraphClient graphClient, IMemoryCac
     public async Task RenameAsync(string taskId, string itemId, string title, CancellationToken cancellationToken)
     {
         title = ValidateTitle(title);
+        await selectedPlanTasks.GetAsync(taskId, cancellationToken);
         var details = await graphClient.GetTaskDetailsAsync(taskId, cancellationToken);
         FindItem(details, itemId);
         await PatchAsync(taskId, itemId, new GraphChecklistPatch(Title: title), details.ETag, cancellationToken);
@@ -24,6 +29,7 @@ public sealed class ChecklistService(IPlannerGraphClient graphClient, IMemoryCac
 
     public async Task DeleteAsync(string taskId, string itemId, CancellationToken cancellationToken)
     {
+        await selectedPlanTasks.GetAsync(taskId, cancellationToken);
         var details = await graphClient.GetTaskDetailsAsync(taskId, cancellationToken);
         FindItem(details, itemId);
         await PatchAsync(taskId, itemId, null, details.ETag, cancellationToken);
@@ -34,8 +40,9 @@ public sealed class ChecklistService(IPlannerGraphClient graphClient, IMemoryCac
         if (direction is not ("up" or "down"))
             throw new ArgumentException("Choose up or down.");
 
+        await selectedPlanTasks.GetAsync(taskId, cancellationToken);
         var details = await graphClient.GetTaskDetailsAsync(taskId, cancellationToken);
-        var reordered = details.Checklist.ToList();
+        var reordered = PlannerOrderHints.InCanonicalOrder(details.Checklist);
         var current = reordered.FindIndex(item => item.Id == itemId);
         if (current < 0) throw new InvalidOperationException("Checklist item was not found.");
 

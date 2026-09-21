@@ -3,10 +3,14 @@ using Microsoft.Extensions.Caching.Memory;
 
 namespace PlannerEdge.Helper.Planner;
 
-public sealed class ChecklistCompletionService(IPlannerGraphClient graphClient, IMemoryCache cache)
+public sealed class ChecklistCompletionService(
+    IPlannerGraphClient graphClient,
+    SelectedPlanTaskService selectedPlanTasks,
+    IMemoryCache cache)
 {
     public async Task CompleteAsync(string taskId, string itemId, CancellationToken cancellationToken)
     {
+        await selectedPlanTasks.GetAsync(taskId, cancellationToken);
         var details = await graphClient.GetTaskDetailsAsync(taskId, cancellationToken);
         var item = details.Checklist.SingleOrDefault(value => value.Id == itemId)
             ?? throw new InvalidOperationException("Checklist item was not found.");

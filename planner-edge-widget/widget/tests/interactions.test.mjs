@@ -759,7 +759,7 @@ test("chat updates preserve detail panel, board, and bucket scroll positions", a
   assert.equal(detailPanel.scrollTop, 240);
 });
 
-test("returning from checklist completion reinitializes notes and chat", async () => {
+test("returning from checklist completion preserves the notes and chat session", async () => {
   let chatReads = 0;
   const board = { planId: "plan", planTitle: "Work", syncedAt: "2026-09-21T12:00:00Z", buckets: [
     { bucketId: "b", name: "Doing", tasks: [{ taskId: "task", title: "Build" }] }
@@ -783,7 +783,7 @@ test("returning from checklist completion reinitializes notes and chat", async (
   await tap("data-checklist-item", { checklistTask: "task", checklistItem: "item" });
   await tap("data-confirm-checklist");
   await settle();
-  assert.equal(chatReads, 2);
+  assert.equal(chatReads, 1);
   assert.match(app.innerHTML, /data-notes-draft/);
   assert.match(app.innerHTML, /data-chat-draft/);
 });
@@ -1558,6 +1558,217 @@ test("saved board and bucket offsets restore after reload and scroll events pers
   const [key, value] = writes.at(-1);
   assert.equal(key, "planner-edge:view:plan");
   assert.deepEqual(JSON.parse(value), { boardScrollLeft: 460, bucketScrollTops: { b: 190 } });
+});
+
+test("rapid preference writes are serialized and the newest failed snapshot stays active", async () => {
+  const writes = [];
+  const { app, tap } = createDetailFixture(async (path, options = {}) => {
+    if (path.endsWith("/display")) return response(organizationBoard());
+    if (path.endsWith("/auth/me")) return response({ userId: "me" });
+    if (path.includes("view-preferences") && options.method === "PUT")
+      return new Promise(resolve => writes.push({ body: JSON.parse(options.body), resolve }));
+    if (path.includes("view-preferences")) return response(defaultPreferences());
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  await settle();
+
+  const first = tap("data-toggle-my-tasks");
+  await settle();
+  const second = tap("data-toggle-my-tasks");
+  await settle();
+
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].body.myTasks, true);
+  writes[0].resolve(response(null, 204));
+  await settle();
+  assert.equal(writes.length, 2);
+  assert.equal(writes[1].body.myTasks, false);
+  writes[1].resolve(response({ code: "disk_error", message: "Preferences were not saved." }, 500));
+  await Promise.all([first, second]);
+  await settle();
+
+  assert.match(app.innerHTML, /aria-label="My tasks" aria-pressed="false"/);
+  assert.match(app.innerHTML, /Preferences were not saved/);
+});
+
+test("checklist completion refreshes server detail without discarding distinct drafts", async () => {
+  let detailReads = 0;
+  let completed = false;
+  const initial = { ...organizationDetail(), priority: 1, percentComplete: 0 };
+  const refreshed = { ...initial, title: "Server refreshed", description: "Server notes",
+    checklist: initial.checklist.map(item => item.itemId === "first" ? { ...item, isChecked: true } : item) };
+  const { app, tap, input, change } = createDetailFixture(async (path, options = {}) => {
+    if (path.endsWith("/display")) return response(organizationBoard());
+    if (path.includes("view-preferences")) return response(defaultPreferences());
+    if (path.endsWith("/chat")) return response({ state: "available", messages: [] });
+    if (path.endsWith("/details")) { detailReads++; return response(completed ? refreshed : initial); }
+    if (path.endsWith("/priority") || path.endsWith("/progress"))
+      return response({ code: "save_failed", message: "Keep the draft." }, 503);
+    if (path.endsWith("/checklist/first/complete") && options.method === "POST") {
+      completed = true;
+      return response(null, 204);
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  await settle();
+  await tap("data-open-task", { openTask: "task" });
+  await settle();
+
+  input("data-title-draft", "Draft title");
+  input("data-notes-draft", "Draft notes");
+  input("data-start-date-draft", "2026-10-03");
+  input("data-checklist-add-draft", "Draft addition");
+  await tap("data-toggle-task-label", { toggleTaskLabel: "category2" });
+  await tap("data-edit-checklist", { editChecklist: "second" });
+  input("data-checklist-edit-draft", "Draft rename");
+  await change("data-task-priority", "9");
+  await change("data-task-progress", "50");
+  const readsBeforeCompletion = detailReads;
+  await tap("data-checklist-item", { checklistTask: "task", checklistItem: "first" });
+  await tap("data-confirm-checklist");
+  await settle();
+
+  assert.equal(detailReads, readsBeforeCompletion + 1);
+  assert.match(app.innerHTML, /<h2>Server refreshed<\/h2>/);
+  assert.match(app.innerHTML, /data-title-draft[^>]*value="Draft title"/);
+  assert.match(app.innerHTML, /data-notes-draft[^>]*>Draft notes<\/textarea>/);
+  assert.match(app.innerHTML, /data-start-date-draft[^>]*value="2026-10-03"/);
+  assert.match(app.innerHTML, /data-checklist-add-draft[^>]*value="Draft addition"/);
+  assert.match(app.innerHTML, /data-checklist-edit-draft[^>]*value="Draft rename"/);
+  assert.match(app.innerHTML, /value="9" selected>Low/);
+  assert.match(app.innerHTML, /value="50" selected>In progress/);
+  assert.match(app.innerHTML, /data-toggle-task-label="category2"[^>]*aria-pressed="true"/);
+});
+
+test("metadata and checklist conflicts refresh server detail while retaining retryable drafts", async () => {
+  let detailReads = 0;
+  let titleWrites = 0;
+  let checklistWrites = 0;
+  let serverTitle = "Urgent task";
+  const { app, tap, input } = createDetailFixture(async (path, options = {}) => {
+    if (path.endsWith("/display")) return response(organizationBoard());
+    if (path.includes("view-preferences")) return response(defaultPreferences());
+    if (path.endsWith("/chat")) return response({ state: "available", messages: [] });
+    if (path.endsWith("/details")) {
+      detailReads++;
+      return response({ ...organizationDetail(), title: serverTitle });
+    }
+    if (path.endsWith("/title") && options.method === "PUT") {
+      titleWrites++;
+      serverTitle = "Server title after conflict";
+      return response({ code: "task_conflict", message: "Task changed. Refreshed details." }, 409);
+    }
+    if (path.endsWith("/checklist") && options.method === "POST") {
+      checklistWrites++;
+      serverTitle = "Server title after checklist conflict";
+      return response({ code: "task_conflict", message: "Checklist changed. Refreshed details." }, 409);
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  await settle();
+  await tap("data-open-task", { openTask: "task" });
+  await settle();
+  input("data-notes-draft", "Keep notes");
+  input("data-title-draft", "Retry title");
+  const readsBeforeTitle = detailReads;
+  await tap("data-save-title");
+  assert.equal(titleWrites, 1);
+  assert.equal(detailReads, readsBeforeTitle + 1);
+  assert.match(app.innerHTML, /<h2>Server title after conflict<\/h2>/);
+  assert.match(app.innerHTML, /data-title-draft[^>]*value="Retry title"/);
+  assert.match(app.innerHTML, /data-notes-draft[^>]*>Keep notes<\/textarea>/);
+  assert.match(app.innerHTML, /Task changed\. Refreshed details\./);
+
+  input("data-checklist-add-draft", "Retry checklist item");
+  const readsBeforeChecklist = detailReads;
+  await tap("data-add-checklist");
+  assert.equal(checklistWrites, 1);
+  assert.equal(detailReads, readsBeforeChecklist + 1);
+  assert.match(app.innerHTML, /<h2>Server title after checklist conflict<\/h2>/);
+  assert.match(app.innerHTML, /data-checklist-add-draft[^>]*value="Retry checklist item"/);
+  assert.match(app.innerHTML, /Checklist changed\. Refreshed details\./);
+});
+
+test("not found checklist write refreshes the board and removes the deleted task", async () => {
+  let displayReads = 0;
+  const present = organizationBoard();
+  const removed = { ...present, buckets: present.buckets.map(bucket => ({ ...bucket,
+    tasks: bucket.tasks.filter(task => task.taskId !== "task") })) };
+  const { app, tap } = createDetailFixture(async (path, options = {}) => {
+    if (path.endsWith("/display")) return response(displayReads++ ? removed : present);
+    if (path.includes("view-preferences")) return response(defaultPreferences());
+    if (path.endsWith("/chat")) return response({ state: "available", messages: [] });
+    if (path.endsWith("/details")) return response(organizationDetail());
+    if (path.endsWith("/checklist/first") && options.method === "DELETE")
+      return response({ code: "not_found", message: "Task was deleted. Board refreshed." }, 404);
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  await settle();
+  await tap("data-open-task", { openTask: "task" });
+  await settle();
+  await tap("data-delete-checklist", { deleteChecklist: "first" });
+  const readsBeforeDelete = displayReads;
+  await tap("data-confirm-checklist-delete");
+  await settle();
+
+  assert.equal(displayReads, readsBeforeDelete + 1);
+  assert.doesNotMatch(app.innerHTML, /data-open-task="task"/);
+  assert.match(app.innerHTML, /Task was deleted\. Board refreshed\./);
+});
+
+test("nested detail confirmations preserve owner scroll on cancel and successful writes", async () => {
+  let markup = "";
+  let detailPanel = { scrollTop: 0 };
+  const appOverrides = {
+    get innerHTML() { return markup; },
+    set innerHTML(value) { markup = value; detailPanel = { scrollTop: 0 }; },
+    querySelector(selector) {
+      if (selector === ".confirm-panel") return markup.includes("confirm-panel") ? detailPanel : null;
+      return null;
+    },
+    querySelectorAll() { return []; }
+  };
+  const { tap, change } = createDetailFixture(async (path, options = {}) => {
+    if (path.endsWith("/display")) return response(organizationBoard());
+    if (path.includes("view-preferences")) return response(defaultPreferences());
+    if (path.endsWith("/chat")) return response({ state: "available", messages: [] });
+    if (path.endsWith("/details")) return response(organizationDetail());
+    if (path.includes("/checklist") || path.endsWith("/progress")) return response(null, 204);
+    throw new Error(`Unexpected request: ${path} ${options.method || "GET"}`);
+  }, appOverrides);
+  await settle();
+  await tap("data-open-task", { openTask: "task" });
+  await settle();
+
+  detailPanel.scrollTop = 210;
+  await tap("data-checklist-item", { checklistTask: "task", checklistItem: "first" });
+  await tap("data-close-dialog");
+  assert.equal(detailPanel.scrollTop, 210);
+
+  detailPanel.scrollTop = 220;
+  await tap("data-delete-checklist", { deleteChecklist: "first" });
+  await tap("data-close-dialog");
+  assert.equal(detailPanel.scrollTop, 220);
+
+  detailPanel.scrollTop = 230;
+  await change("data-task-progress", "100");
+  await tap("data-close-dialog");
+  assert.equal(detailPanel.scrollTop, 230);
+
+  detailPanel.scrollTop = 310;
+  await tap("data-checklist-item", { checklistTask: "task", checklistItem: "first" });
+  await tap("data-confirm-checklist");
+  assert.equal(detailPanel.scrollTop, 310);
+
+  detailPanel.scrollTop = 320;
+  await tap("data-delete-checklist", { deleteChecklist: "first" });
+  await tap("data-confirm-checklist-delete");
+  assert.equal(detailPanel.scrollTop, 320);
+
+  detailPanel.scrollTop = 330;
+  await change("data-task-progress", "100");
+  await tap("data-confirm-progress");
+  assert.equal(detailPanel.scrollTop, 330);
 });
 
 function response(body, status = 200) {

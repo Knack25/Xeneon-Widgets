@@ -32,6 +32,8 @@ let memberRequest = null;
 let memberRequestGeneration = 0;
 let createNotice = null;
 let scrollSaveScheduled = false;
+const preferenceWriteQueues = new Map();
+let renderedDialog = null;
 
 async function loadDisplay(force = false) {
   if (!force && state.completing) return;
@@ -146,7 +148,7 @@ async function loadPreferences(board) {
       const displayRevision = acceptedDisplayRevision;
       const sanitized = filterEngine.sanitizePreferences(saved, currentBoard, planMembers);
       if (!currentBoard.isStale && JSON.stringify(sanitized) !== JSON.stringify(persisted)) {
-        await api.saveViewPreferences(planId, sanitized);
+        await persistPreferences(planId, sanitized);
         if (!isCurrentPreferenceLoad(planId, generation)) return;
         persisted = sanitized;
       }
@@ -209,7 +211,7 @@ async function savePreferences() {
   const generation = ++preferenceLoadGeneration;
   activePreferencesPlanId = planId;
   try {
-    await api.saveViewPreferences(planId, savedPreferences);
+    await persistPreferences(planId, savedPreferences);
     if (state.display?.planId !== planId || preferenceLoadGeneration !== generation) return;
     filterError = null;
   } catch (error) {
@@ -219,7 +221,20 @@ async function savePreferences() {
   render();
 }
 
+function persistPreferences(planId, snapshot) {
+  const previous = preferenceWriteQueues.get(planId) || Promise.resolve();
+  const request = previous.then(() => api.saveViewPreferences(planId, snapshot));
+  const tail = request.catch(() => {}).finally(() => {
+    if (preferenceWriteQueues.get(planId) === tail) preferenceWriteQueues.delete(planId);
+  });
+  preferenceWriteQueues.set(planId, tail);
+  return request;
+}
+
 function render() {
+  const currentPanel = app.querySelector?.(".confirm-panel");
+  if (renderedDialog?.type === "taskDetails" && currentPanel)
+    renderedDialog.detailScrollTop = currentPanel.scrollTop;
   const previousScroll = captureScrollSnapshot();
   persistScrollSnapshot(previousScroll);
   if (state.mode === "loading") return;
@@ -244,8 +259,7 @@ function render() {
     { boardScrollLeft: 0, bucketScrollTops: {} };
   const boardScrollLeft = savedScroll.boardScrollLeft;
   const bucketScrollTops = savedScroll.bucketScrollTops;
-  const detailScrollTop = state.dialog?.type === "taskDetails"
-    ? app.querySelector?.(".confirm-panel")?.scrollTop ?? 0 : 0;
+  const detailScrollTop = state.dialog?.type === "taskDetails" ? state.dialog.detailScrollTop || 0 : 0;
   app.innerHTML = `<header class="topbar"><div class="board-heading">
       <button class="board-title" data-open-board-picker title="Choose Planner board">${escapeHtml(board.planTitle)}</button>
       <p>${board.isStale || state.mode === "error" ? "Offline view" : `Synced ${formatTime(board.syncedAt)}`}</p></div>
@@ -263,6 +277,7 @@ function render() {
   });
   const detailPanel = state.dialog?.type === "taskDetails" ? app.querySelector?.(".confirm-panel") : null;
   if (detailPanel) detailPanel.scrollTop = detailScrollTop;
+  renderedDialog = state.dialog;
   observeTasks();
 }
 
@@ -1016,6 +1031,7 @@ app.addEventListener("click", async event => {
   }
   if (hit("data-confirm-checklist-delete") && !state.completing && state.dialog?.type === "confirmChecklistDelete") {
     const confirmation = state.dialog;
+    const owner = confirmation.returnDialog;
     state.completing = true; render();
     try {
       await api.deleteChecklistItem(confirmation.taskId, confirmation.itemId);
@@ -1026,20 +1042,30 @@ app.addEventListener("click", async event => {
         await reloadTaskDetails(confirmation.taskId, dialog);
       } else render();
     } catch (error) {
+      if (await refreshAfterWriteError(error, confirmation.taskId, owner, "checklistStatus")) return;
       state.completing = false; state.dialogError = normalizeError(error).message; render();
     }
     return;
   }
   if (hit("data-confirm-checklist") && !state.completing) {
-    const { taskId, itemId, returnTo } = state.dialog;
+    const confirmation = state.dialog;
+    const { taskId, itemId, returnTo } = confirmation;
+    const owner = confirmation.returnDialog;
     state.completing = true; render();
     try {
       await api.completeChecklistItem(taskId, itemId);
-      details.delete(taskId); failures.delete(taskId);
-      state = flow.closeDialog(state);
-      if (returnTo === "taskDetails") showTaskDetails(taskId);
-      else render();
-    } catch (error) { state.completing = false; state.dialogError = normalizeError(error).message; render(); }
+      if (returnTo === "taskDetails" && owner) {
+        state = flow.closeActiveDialog(state);
+        owner.checklistStatus = "Checklist saved.";
+        await reloadTaskDetails(taskId, owner);
+      } else {
+        details.delete(taskId); failures.delete(taskId);
+        state = flow.closeDialog(state); render();
+      }
+    } catch (error) {
+      if (await refreshAfterWriteError(error, taskId, owner, "checklistStatus")) return;
+      state.completing = false; state.dialogError = normalizeError(error).message; render();
+    }
   }
 });
 
@@ -1070,6 +1096,7 @@ async function saveDetailMetadata(field, value) {
     dialog.metadataStatus = "Changes saved."; render();
   } catch (error) {
     if (!isCurrentMetadataRequest(dialog, field, generation)) return;
+    if (await refreshAfterWriteError(error, taskId, dialog, "metadataStatus")) return;
     if (state.dialog === dialog) state.completing = false;
     dialog.metadataStatus = normalizeError(error).message; render();
   }
@@ -1107,8 +1134,38 @@ async function runChecklistMutation(dialog, operation, onSuccess = () => {}) {
     await reloadTaskDetails(dialog.taskId, dialog);
   } catch (error) {
     if (state.dialog !== dialog) return;
+    if (await refreshAfterWriteError(error, dialog.taskId, dialog, "checklistStatus")) return;
     state.completing = false; dialog.checklistStatus = normalizeError(error).message; render();
   }
+}
+
+async function refreshAfterWriteError(error, taskId, ownerDialog, statusProperty) {
+  const normalized = normalizeError(error);
+  if (normalized.code !== "task_conflict" && normalized.code !== "not_found") return false;
+
+  if (normalized.code === "task_conflict") {
+    try {
+      const info = await api.getTaskDetails(taskId);
+      details.set(taskId, info);
+      failures.delete(taskId);
+    } catch (refreshError) {
+      if (normalizeError(refreshError).code === "not_found")
+        return refreshAfterWriteError(refreshError, taskId, ownerDialog, statusProperty);
+    }
+  } else {
+    await loadDisplay(true);
+    createNotice = normalized.message;
+  }
+
+  if (state.dialog?.returnDialog === ownerDialog) state = flow.closeActiveDialog(state);
+  state.completing = false;
+  if (normalized.code === "not_found" && !findTask(taskId)) {
+    state = flow.closeDialog(state);
+  } else if (ownerDialog && (state.dialog === ownerDialog || state.dialog?.returnDialog === ownerDialog)) {
+    ownerDialog[statusProperty] = normalized.message;
+  }
+  render();
+  return true;
 }
 
 async function reloadTaskDetails(taskId, dialog) {

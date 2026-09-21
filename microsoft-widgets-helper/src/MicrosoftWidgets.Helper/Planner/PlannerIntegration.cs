@@ -26,6 +26,7 @@ public static class PlannerIntegration
         services.AddSingleton<TaskAssignmentService>();
         services.AddSingleton<TaskCreationService>();
         services.AddSingleton<TaskMetadataService>();
+        services.AddSingleton<SelectedPlanTaskService>();
         services.AddSingleton<ChecklistService>();
         services.AddSingleton<ChecklistCompletionService>();
         return services;

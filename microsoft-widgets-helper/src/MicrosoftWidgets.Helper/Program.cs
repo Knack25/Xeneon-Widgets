@@ -74,23 +74,11 @@ app.Use(async (context, next) =>
             context.Request.Headers["Access-Control-Request-Private-Network"].ToString(),
             context.Request.Headers["Sec-Fetch-Site"].ToString());
     }
-    if (!string.IsNullOrEmpty(origin) && !WidgetOriginPolicy.IsAllowed(origin))
-    {
-        context.Response.StatusCode = StatusCodes.Status403Forbidden;
-        return;
-    }
-    if (WidgetOriginPolicy.IsAllowed(origin))
-    {
-        context.Response.Headers.AccessControlAllowOrigin = origin;
-        context.Response.Headers.Vary = "Origin";
-        context.Response.Headers.AccessControlAllowMethods = "GET, POST, PUT, OPTIONS";
-        context.Response.Headers.AccessControlAllowHeaders = "Content-Type, Authorization, X-Outlook-Session";
-    }
-    if (context.Request.Method == "OPTIONS")
-    {
-        context.Response.StatusCode = StatusCodes.Status204NoContent;
-        return;
-    }
+    await next(context);
+});
+app.UseWidgetCors();
+app.Use(async (context, next) =>
+{
     try
     {
         await next(context);
