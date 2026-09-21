@@ -255,6 +255,57 @@ public sealed class GraphClientTests
     }
 
     [Fact]
+    public async Task UpdateTaskAsync_PatchesOnlyRequestedPropertiesWithEtag()
+    {
+        var requests = new List<string>();
+        var handler = new StubHandler(request =>
+        {
+            Assert.Equal(HttpMethod.Patch, request.Method);
+            Assert.Equal("/v1.0/planner/tasks/task", request.RequestUri!.AbsolutePath);
+            Assert.Equal("W/\"latest\"", request.Headers.IfMatch.Single().ToString());
+            requests.Add(request.Content!.ReadAsStringAsync().Result);
+            return "{}";
+        });
+        var client = (IPlannerGraphClient)CreateClient(handler);
+
+        await client.UpdateTaskAsync("task", new GraphTaskUpdate(Title: "Renamed"), "W/\"latest\"", default);
+        await client.UpdateTaskAsync("task", new GraphTaskUpdate(PercentComplete: 50), "W/\"latest\"", default);
+        await client.UpdateTaskAsync("task", new GraphTaskUpdate(Priority: 3), "W/\"latest\"", default);
+        await client.UpdateTaskAsync("task", new GraphTaskUpdate(
+            StartDateTime: new DateTimeOffset(2026, 9, 21, 12, 0, 0, TimeSpan.Zero)), "W/\"latest\"", default);
+        await client.UpdateTaskAsync("task", new GraphTaskUpdate(ClearStartDate: true), "W/\"latest\"", default);
+        await client.UpdateTaskAsync("task", new GraphTaskUpdate(
+            AppliedCategories: new Dictionary<string, bool?> { ["category1"] = false, ["category2"] = true }),
+            "W/\"latest\"", default);
+
+        Assert.Equal([
+            "{\"title\":\"Renamed\"}",
+            "{\"percentComplete\":50}",
+            "{\"priority\":3}",
+            "{\"startDateTime\":\"2026-09-21T12:00:00+00:00\"}",
+            "{\"startDateTime\":null}",
+            "{\"appliedCategories\":{\"category1\":false,\"category2\":true}}"
+        ], requests);
+    }
+
+    [Fact]
+    public async Task CreateTaskAsync_IncludesOptionalMetadataAndOmitsProgress()
+    {
+        var handler = new StubHandler(request =>
+        {
+            using var body = JsonDocument.Parse(request.Content!.ReadAsStringAsync().Result);
+            Assert.Equal("2026-09-21T12:00:00+00:00", body.RootElement.GetProperty("startDateTime").GetString());
+            Assert.Equal(5, body.RootElement.GetProperty("priority").GetInt32());
+            Assert.True(body.RootElement.GetProperty("appliedCategories").GetProperty("category2").GetBoolean());
+            Assert.False(body.RootElement.TryGetProperty("percentComplete", out _));
+            return "{}";
+        });
+
+        await CreateClient(handler).CreateTaskAsync("plan", "bucket", "New task", null, [],
+            new DateTimeOffset(2026, 9, 21, 12, 0, 0, TimeSpan.Zero), 5, ["category2"], CancellationToken.None);
+    }
+
+    [Fact]
     public async Task GetConversationPostsAsync_UsesConversationTokenAndMapsPostsAndContinuation()
     {
         var next = "https://graph.microsoft.com/v1.0/groups/group/threads/thread/posts?$skiptoken=older";

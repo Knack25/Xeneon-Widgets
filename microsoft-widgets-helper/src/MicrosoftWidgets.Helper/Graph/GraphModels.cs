@@ -7,6 +7,10 @@ public sealed record GraphPlan(string Id, string Title, string GroupId, string? 
 
 public sealed record GraphPlanLabel(string Id, string Name);
 
+internal sealed record GraphTaskUpdate(string? Title = null, int? PercentComplete = null,
+    int? Priority = null, DateTimeOffset? StartDateTime = null, bool ClearStartDate = false,
+    IReadOnlyDictionary<string, bool?>? AppliedCategories = null);
+
 public sealed record GraphBucket(string Id, string Name, string PlanId, string? OrderHint = null);
 
 public sealed record GraphChecklistItem(string Id, string Title, bool IsChecked, string? OrderHint);

@@ -7,7 +7,8 @@ namespace PlannerEdge.Helper.Planner;
 public sealed class TaskCreationService(IPlannerGraphClient graphClient, IPlannerSettingsStore settingsStore, BoardMemberService members)
 {
     public async Task CreateAsync(string title, string bucketId, string? date, IReadOnlyList<string> assigneeIds,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, string? startDate = null, int? priority = null,
+        IReadOnlyList<string>? labelIds = null)
     {
         title = title.Trim();
         if (title.Length is < 1 or > 255) throw new ArgumentException("Enter a task title (up to 255 characters).");
@@ -20,6 +21,18 @@ public sealed class TaskCreationService(IPlannerGraphClient graphClient, IPlanne
                 throw new ArgumentException("Choose a valid due date.");
             due = new DateTimeOffset(day.Year, day.Month, day.Day, 12, 0, 0, TimeSpan.Zero);
         }
+        DateTimeOffset? start = null;
+        if (startDate is not null)
+        {
+            if (!DateOnly.TryParseExact(startDate, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var day))
+                throw new ArgumentException("Choose a valid start date.");
+            start = new DateTimeOffset(day.Year, day.Month, day.Day, 12, 0, 0, TimeSpan.Zero);
+        }
+        if (start is not null && due is not null && start > due)
+            throw new ArgumentException("Start date cannot be after the due date.");
+        var resolvedPriority = priority ?? 5;
+        if (resolvedPriority is not (1 or 3 or 5 or 9))
+            throw new ArgumentException("Choose a valid priority.");
         var settings = await settingsStore.LoadSettingsAsync(cancellationToken);
         if (string.IsNullOrWhiteSpace(settings.SelectedPlanId)) throw new ArgumentException("Choose a board first.");
         var buckets = await graphClient.GetBucketsAsync(settings.SelectedPlanId, cancellationToken);
@@ -27,6 +40,15 @@ public sealed class TaskCreationService(IPlannerGraphClient graphClient, IPlanne
             throw new ArgumentException("Choose a bucket on the selected board.");
         var distinctAssignees = assigneeIds.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         await members.ValidateAsync(distinctAssignees, cancellationToken);
-        await graphClient.CreateTaskAsync(settings.SelectedPlanId, bucketId, title, due, distinctAssignees, cancellationToken);
+        var distinctLabels = (labelIds ?? []).Distinct(StringComparer.Ordinal).ToArray();
+        if (distinctLabels.Length > 0)
+        {
+            var validLabels = (await graphClient.GetPlanLabelsAsync(settings.SelectedPlanId, cancellationToken))
+                .Select(label => label.Id).ToHashSet(StringComparer.Ordinal);
+            if (distinctLabels.Any(labelId => !validLabels.Contains(labelId)))
+                throw new ArgumentException("Choose labels from the selected board.");
+        }
+        await graphClient.CreateTaskAsync(settings.SelectedPlanId, bucketId, title, due, distinctAssignees,
+            start, resolvedPriority, distinctLabels, cancellationToken);
     }
 }

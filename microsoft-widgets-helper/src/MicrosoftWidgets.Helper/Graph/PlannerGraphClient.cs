@@ -260,8 +260,31 @@ public sealed class PlannerGraphClient(HttpClient httpClient, IGraphTokenProvide
         using var response = await SendAsync(request, cancellationToken);
     }
 
+    async Task IPlannerGraphClient.UpdateTaskAsync(string taskId, GraphTaskUpdate update, string etag,
+        CancellationToken cancellationToken)
+    {
+        var body = new Dictionary<string, object?>();
+        if (update.Title is not null) body["title"] = update.Title;
+        if (update.PercentComplete is not null) body["percentComplete"] = update.PercentComplete;
+        if (update.Priority is not null) body["priority"] = update.Priority;
+        if (update.ClearStartDate) body["startDateTime"] = null;
+        else if (update.StartDateTime is not null) body["startDateTime"] = update.StartDateTime;
+        if (update.AppliedCategories is not null) body["appliedCategories"] = update.AppliedCategories;
+
+        using var request = new HttpRequestMessage(HttpMethod.Patch,
+            $"planner/tasks/{Uri.EscapeDataString(taskId)}");
+        request.Headers.IfMatch.ParseAdd(etag);
+        request.Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
+        using var response = await SendAsync(request, cancellationToken);
+    }
+
     public async Task CreateTaskAsync(string planId, string bucketId, string title, DateTimeOffset? dueDate,
         IReadOnlyList<string> assigneeIds, CancellationToken cancellationToken)
+        => await CreateTaskAsync(planId, bucketId, title, dueDate, assigneeIds, null, 5, [], cancellationToken);
+
+    public async Task CreateTaskAsync(string planId, string bucketId, string title, DateTimeOffset? dueDate,
+        IReadOnlyList<string> assigneeIds, DateTimeOffset? startDate, int priority,
+        IReadOnlyList<string> labelIds, CancellationToken cancellationToken)
     {
         var assignments = assigneeIds.ToDictionary(id => id, _ => new Dictionary<string, string>
         {
@@ -270,6 +293,9 @@ public sealed class PlannerGraphClient(HttpClient httpClient, IGraphTokenProvide
         using var request = new HttpRequestMessage(HttpMethod.Post, "planner/tasks");
         var body = new Dictionary<string, object> { ["planId"] = planId, ["bucketId"] = bucketId, ["title"] = title };
         if (dueDate is not null) body["dueDateTime"] = dueDate;
+        if (startDate is not null) body["startDateTime"] = startDate;
+        body["priority"] = priority;
+        if (labelIds.Count > 0) body["appliedCategories"] = labelIds.ToDictionary(id => id, _ => true);
         if (assignments.Count > 0) body["assignments"] = assignments;
         request.Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
         using var response = await SendAsync(request, cancellationToken);

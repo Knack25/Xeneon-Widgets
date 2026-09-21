@@ -24,6 +24,7 @@ public static class PlannerIntegration
         services.AddSingleton<BoardMemberService>();
         services.AddSingleton<TaskAssignmentService>();
         services.AddSingleton<TaskCreationService>();
+        services.AddSingleton<TaskMetadataService>();
         services.AddSingleton<ChecklistCompletionService>();
         return services;
     }
@@ -57,7 +58,8 @@ public static class PlannerIntegration
             Results.Ok(await members.GetAsync(ct)));
         app.MapPost("/tasks", async (CreateTaskRequest request, TaskCreationService creation, CancellationToken ct) =>
         {
-            await creation.CreateAsync(request.Title, request.BucketId, request.Date, request.UserIds, ct);
+            await creation.CreateAsync(request.Title, request.BucketId, request.Date, request.UserIds, ct,
+                request.StartDate, request.Priority, request.LabelIds);
             return Results.NoContent();
         });
         app.MapPost("/tasks/{taskId}/complete", async (string taskId, TaskCompletionService completion, CancellationToken ct) =>
@@ -84,6 +86,36 @@ public static class PlannerIntegration
         app.MapPut("/tasks/{taskId}/due-date", async (string taskId, DueDateRequest request, DueDateService dates, CancellationToken ct) =>
         {
             await dates.SetAsync(taskId, request.Date, ct);
+            return Results.NoContent();
+        });
+        app.MapPut("/tasks/{taskId}/title", async (string taskId, TitleRequest request,
+            TaskMetadataService metadata, CancellationToken ct) =>
+        {
+            await metadata.SetTitleAsync(taskId, request.Title, ct);
+            return Results.NoContent();
+        });
+        app.MapPut("/tasks/{taskId}/progress", async (string taskId, ProgressRequest request,
+            TaskMetadataService metadata, CancellationToken ct) =>
+        {
+            await metadata.SetProgressAsync(taskId, request.Progress, ct);
+            return Results.NoContent();
+        });
+        app.MapPut("/tasks/{taskId}/priority", async (string taskId, PriorityRequest request,
+            TaskMetadataService metadata, CancellationToken ct) =>
+        {
+            await metadata.SetPriorityAsync(taskId, request.Priority, ct);
+            return Results.NoContent();
+        });
+        app.MapPut("/tasks/{taskId}/start-date", async (string taskId, StartDateRequest request,
+            TaskMetadataService metadata, CancellationToken ct) =>
+        {
+            await metadata.SetStartDateAsync(taskId, request.Date, ct);
+            return Results.NoContent();
+        });
+        app.MapPut("/tasks/{taskId}/labels", async (string taskId, LabelsRequest request,
+            TaskMetadataService metadata, CancellationToken ct) =>
+        {
+            await metadata.SetLabelsAsync(taskId, request.LabelIds, ct);
             return Results.NoContent();
         });
         app.MapPut("/tasks/{taskId}/assignments", async (string taskId, AssignmentsRequest request,

@@ -21,7 +21,8 @@ public sealed class PlannerIntegrationTests
         foreach (var path in new[] { "/plans", "/settings", "/display", "/selected-plan", "/members", "/tasks",
             "/tasks/{taskId}/details", "/tasks/{taskId}/complete", "/tasks/{taskId}/bucket",
             "/tasks/{taskId}/due-date", "/tasks/{taskId}/assignments", "/tasks/{taskId}/notes",
-            "/tasks/{taskId}/chat",
+            "/tasks/{taskId}/chat", "/tasks/{taskId}/title", "/tasks/{taskId}/progress",
+            "/tasks/{taskId}/priority", "/tasks/{taskId}/start-date", "/tasks/{taskId}/labels",
             "/tasks/{taskId}/checklist/{itemId}/complete" })
         {
             Assert.Contains(path, routes);

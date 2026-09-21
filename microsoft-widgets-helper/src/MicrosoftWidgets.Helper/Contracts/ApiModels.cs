@@ -24,8 +24,14 @@ public sealed record SelectedPlanRequest(string PlanId);
 public sealed record MoveTaskRequest(string BucketId);
 
 public sealed record DueDateRequest(string? Date);
+public sealed record TitleRequest(string Title);
+public sealed record ProgressRequest(int Progress);
+public sealed record PriorityRequest(int Priority);
+public sealed record StartDateRequest(string? Date);
+public sealed record LabelsRequest(IReadOnlyList<string> LabelIds);
 public sealed record AssignmentsRequest(IReadOnlyList<string> UserIds);
-public sealed record CreateTaskRequest(string Title, string BucketId, string? Date, IReadOnlyList<string> UserIds);
+public sealed record CreateTaskRequest(string Title, string BucketId, string? Date, IReadOnlyList<string> UserIds,
+    string? StartDate = null, int? Priority = null, IReadOnlyList<string>? LabelIds = null);
 public sealed record UpdateNotesRequest(string? Description);
 
 public sealed record TaskChatMessage(string Id, string Author, DateTimeOffset? CreatedAt, string Body);

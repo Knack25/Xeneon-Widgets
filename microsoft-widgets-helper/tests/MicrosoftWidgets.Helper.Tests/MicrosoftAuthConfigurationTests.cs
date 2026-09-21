@@ -7,6 +7,12 @@ namespace PlannerEdge.Helper.Tests;
 public sealed class MicrosoftAuthConfigurationTests
 {
     [Fact]
+    public void PlannerScopes_RemainFocusedOnCorePlannerAccess()
+    {
+        Assert.Equal(["User.Read", "Tasks.ReadWrite"], MicrosoftAuthService.PlannerScopes);
+    }
+
+    [Fact]
     public async Task OutlookConnectRequiresConfigurationBeforeOpeningInteractiveSignIn()
     {
         var service = new MicrosoftAuthService(Options.Create(new AzureAdOptions()),
