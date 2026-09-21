@@ -74,6 +74,93 @@ test("startup renders cache before the unresolved live request", async () => {
   assert.doesNotMatch(app.innerHTML, /Cached Board/);
 });
 
+test("live board preserves saved filters that are absent from the cached board", async () => {
+  let resolveLive;
+  let resolvePreferences;
+  const writes = [];
+  const liveResponse = new Promise(resolve => { resolveLive = resolve; });
+  const preferencesResponse = new Promise(resolve => { resolvePreferences = resolve; });
+  const cached = { ...board("Cached Board"), buckets: [], labels: [] };
+  const live = { ...board("Live Board"),
+    labels: [{ labelId: "release", name: "Release" }],
+    buckets: [
+      { bucketId: "selected", name: "Selected", tasks: [
+        { taskId: "matching", title: "Matching task", labelIds: ["release"] }
+      ] },
+      { bucketId: "other", name: "Other", tasks: [
+        { taskId: "other", title: "Other task", labelIds: [] }
+      ] }
+    ]
+  };
+  const saved = { myTasks: false, filters: { assigneeIds: [], labelIds: ["release"], priorities: [],
+    bucketIds: ["selected"], progressValues: [], dueDateRange: null } };
+  const { app } = startWidget(async (path, options = {}) => {
+    if (path.endsWith("/display/cached")) return response(cached);
+    if (path.endsWith("/display")) return liveResponse;
+    if (path.endsWith("/view-preferences/plan") && options.method === "PUT") {
+      writes.push(JSON.parse(options.body));
+      return response(JSON.parse(options.body));
+    }
+    if (path.endsWith("/view-preferences/plan")) return preferencesResponse;
+    throw new Error(`Unexpected request: ${path}`);
+  });
+
+  await settle();
+  assert.match(app.innerHTML, /Cached Board/);
+  resolveLive(response(live));
+  await settle();
+  resolvePreferences(response(saved));
+  await settle();
+  await settle();
+
+  assert.match(app.innerHTML, /Matching task/);
+  assert.doesNotMatch(app.innerHTML, /Other task/);
+  assert.deepEqual(writes, []);
+});
+
+test("live board repairs saved filters removed since the cached board exactly once", async () => {
+  let resolveLive;
+  let resolvePreferences;
+  const writes = [];
+  const liveResponse = new Promise(resolve => { resolveLive = resolve; });
+  const preferencesResponse = new Promise(resolve => { resolvePreferences = resolve; });
+  const cached = { ...board("Cached Board"),
+    labels: [{ labelId: "removed-label", name: "Removed" }],
+    buckets: [{ bucketId: "removed-bucket", name: "Removed", tasks: [] }]
+  };
+  const live = { ...board("Live Board"),
+    labels: [{ labelId: "current-label", name: "Current" }],
+    buckets: [{ bucketId: "current-bucket", name: "Current", tasks: [
+      { taskId: "current", title: "Current task", labelIds: ["current-label"] }
+    ] }]
+  };
+  const saved = { myTasks: false, filters: { assigneeIds: [], labelIds: ["removed-label"], priorities: [],
+    bucketIds: ["removed-bucket"], progressValues: [], dueDateRange: null } };
+  const { app } = startWidget(async (path, options = {}) => {
+    if (path.endsWith("/display/cached")) return response(cached);
+    if (path.endsWith("/display")) return liveResponse;
+    if (path.endsWith("/view-preferences/plan") && options.method === "PUT") {
+      writes.push(JSON.parse(options.body));
+      return response(JSON.parse(options.body));
+    }
+    if (path.endsWith("/view-preferences/plan")) return preferencesResponse;
+    throw new Error(`Unexpected request: ${path}`);
+  });
+
+  await settle();
+  assert.match(app.innerHTML, /Cached Board/);
+  resolveLive(response(live));
+  await settle();
+  resolvePreferences(response(saved));
+  await settle();
+  await settle();
+
+  assert.match(app.innerHTML, /Current task/);
+  assert.equal(writes.length, 1);
+  assert.deepEqual(writes[0].filters.labelIds, []);
+  assert.deepEqual(writes[0].filters.bucketIds, []);
+});
+
 test("startup continues with live data when no cache exists", async () => {
   const paths = [];
   const { app } = startWidget(async path => {

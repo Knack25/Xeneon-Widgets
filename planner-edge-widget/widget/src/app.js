@@ -11,11 +11,13 @@ const visibleTasks = new Set();
 let state = flow.createInitialState();
 let plans = null;
 let displayGeneration = 0;
+let acceptedDisplayRevision = 0;
 let detailGeneration = 0;
 let dialogGeneration = 0;
 let taskObserver = null;
 let preferences = filterEngine?.createDefaultPreferences() || { myTasks: false, filters: {} };
 let preferencesPlanId = null;
+let preferencesDisplayRevision = -1;
 let activePreferencesPlanId = null;
 let preferenceRequestPlanId = null;
 let preferenceLoadGeneration = 0;
@@ -77,6 +79,7 @@ function applyIncomingDisplay(board) {
   const samePlan = previous?.planId === board.planId;
   reconcileTaskDetails(previous, board);
   state = samePlan ? flow.applyDisplayRefresh(state, board) : flow.applyDisplayLoaded(state, board);
+  acceptedDisplayRevision++;
   render();
   return ensurePreferences(board);
 }
@@ -111,7 +114,8 @@ function taskETag(task) {
 }
 
 async function ensurePreferences(board) {
-  if (!filterEngine || preferencesPlanId === board.planId || preferenceRequestPlanId === board.planId) return;
+  if (!filterEngine || preferencesPlanId === board.planId && preferencesDisplayRevision === acceptedDisplayRevision ||
+    preferenceRequestPlanId === board.planId) return;
   const planId = board.planId;
   preferenceRequestPlanId = planId;
   try { await loadPreferences(board); }
@@ -136,19 +140,28 @@ async function loadPreferences(board) {
     const hasAssigneeFilters = Array.isArray(saved?.filters?.assigneeIds) && saved.filters.assigneeIds.length > 0;
     const planMembers = hasAssigneeFilters ? await loadMembersForPlan(planId) : null;
     if (!isCurrentPreferenceLoad(planId, generation) || hasAssigneeFilters && !planMembers) return;
-    const sanitized = filterEngine.sanitizePreferences(saved, board, planMembers);
-    if (JSON.stringify(sanitized) !== JSON.stringify(saved)) {
-      await api.saveViewPreferences(planId, sanitized);
-      if (!isCurrentPreferenceLoad(planId, generation)) return;
+    let persisted = saved;
+    while (isCurrentPreferenceLoad(planId, generation)) {
+      const currentBoard = state.display;
+      const displayRevision = acceptedDisplayRevision;
+      const sanitized = filterEngine.sanitizePreferences(saved, currentBoard, planMembers);
+      if (!currentBoard.isStale && JSON.stringify(sanitized) !== JSON.stringify(persisted)) {
+        await api.saveViewPreferences(planId, sanitized);
+        if (!isCurrentPreferenceLoad(planId, generation)) return;
+        persisted = sanitized;
+      }
+      if (sanitized.myTasks && !currentUserId) {
+        currentUserId = (await api.getCurrentUser()).userId;
+        if (!isCurrentPreferenceLoad(planId, generation)) return;
+      }
+      if (acceptedDisplayRevision !== displayRevision) continue;
+      preferences = sanitized;
+      activePreferencesPlanId = planId;
+      preferencesPlanId = planId;
+      preferencesDisplayRevision = displayRevision;
+      filterError = null;
+      return;
     }
-    if (sanitized.myTasks && !currentUserId) {
-      currentUserId = (await api.getCurrentUser()).userId;
-      if (!isCurrentPreferenceLoad(planId, generation)) return;
-    }
-    preferences = sanitized;
-    activePreferencesPlanId = planId;
-    preferencesPlanId = planId;
-    filterError = null;
   } catch (error) {
     if (!isCurrentPreferenceLoad(planId, generation)) return;
     if (activePreferencesPlanId !== planId) {
@@ -794,6 +807,7 @@ app.addEventListener("click", async event => {
       details.clear(); failures.clear(); members = null; memberError = null; memberPlanId = null;
       memberRequest = null; memberRequestGeneration++; preferenceLoadGeneration++;
       createNotice = null; filterError = null; preferencesPlanId = null; activePreferencesPlanId = null;
+      preferencesDisplayRevision = -1;
       preferenceRequestPlanId = null; searchText = "";
       state = flow.closeDialog(state);
       await loadDisplay(true);
