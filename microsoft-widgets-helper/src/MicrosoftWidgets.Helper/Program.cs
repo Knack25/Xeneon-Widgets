@@ -151,8 +151,8 @@ app.MapPut("/configuration", async (AzureAdOptions configuration, IMicrosoftAuth
     var saved = await outlookAccount.TransitionAsync(() => auth.SaveConfigurationAsync(configuration, ct), ct);
     if (previous != saved)
     {
-        var selection = await settings.LoadSettingsAsync(ct);
-        await settings.SaveSettingsAsync(selection with { SelectedPlanId = null, SelectedPlanTitle = null }, ct);
+        await settings.UpdateSettingsAsync(selection =>
+            selection with { SelectedPlanId = null, SelectedPlanTitle = null }, ct);
     }
     return Results.Ok(saved);
 });

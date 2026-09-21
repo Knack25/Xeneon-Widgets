@@ -23,26 +23,33 @@ public sealed class PlannerViewPreferenceService(IPlannerSettingsStore settingsS
     public async Task<PlanViewPreferences> SaveAsync(string planId, PlanViewPreferences preferences,
         CancellationToken cancellationToken)
     {
-        var settings = await GetSelectedPlanSettingsAsync(planId, cancellationToken);
         var normalized = Normalize(preferences);
-        var planViews = settings.PlanViews is null
-            ? new Dictionary<string, PlanViewPreferences>(StringComparer.Ordinal)
-            : new Dictionary<string, PlanViewPreferences>(settings.PlanViews, StringComparer.Ordinal);
-        planViews[planId] = normalized;
-        await settingsStore.SaveSettingsAsync(settings with { PlanViews = planViews }, cancellationToken);
+        await settingsStore.UpdateSettingsAsync(settings =>
+        {
+            EnsureSelectedPlan(settings, planId);
+            var planViews = settings.PlanViews is null
+                ? new Dictionary<string, PlanViewPreferences>(StringComparer.Ordinal)
+                : new Dictionary<string, PlanViewPreferences>(settings.PlanViews, StringComparer.Ordinal);
+            planViews[planId] = normalized;
+            return settings with { PlanViews = planViews };
+        }, cancellationToken);
         return normalized;
     }
 
     private async Task<SettingsDto> GetSelectedPlanSettingsAsync(string planId, CancellationToken cancellationToken)
     {
         var settings = await settingsStore.LoadSettingsAsync(cancellationToken);
+        EnsureSelectedPlan(settings, planId);
+        return settings;
+    }
+
+    private static void EnsureSelectedPlan(SettingsDto settings, string planId)
+    {
         if (string.IsNullOrWhiteSpace(planId) ||
             !string.Equals(settings.SelectedPlanId, planId, StringComparison.Ordinal))
         {
             throw new ArgumentException("View preferences are available only for the selected board.");
         }
-
-        return settings;
     }
 
     private static PlanViewPreferences DefaultPreferences() =>

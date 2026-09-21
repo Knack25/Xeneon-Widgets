@@ -74,6 +74,27 @@ public sealed class PlannerViewPreferenceServiceTests
             service.SaveAsync("plan-b", Preferences(myTasks: true), CancellationToken.None));
     }
 
+    [Fact]
+    public async Task SaveAsync_InterleavedWithGeneralSettingsWriteLosesNeitherUpdate()
+    {
+        var planB = Preferences(myTasks: true);
+        var store = new InterleavingStore(new SettingsDto("plan-a", "Plan A", true,
+            new Dictionary<string, PlanViewPreferences> { ["plan-b"] = planB }));
+        var service = new PlannerViewPreferenceService(store);
+
+        var preferenceWrite = service.SaveAsync("plan-a", Preferences(myTasks: true), CancellationToken.None);
+        await store.PreferenceOperationStarted;
+        var selectedPlanWrite = store.SaveSettingsAsync(
+            new SettingsDto("plan-new", "New plan", false), CancellationToken.None);
+        store.AllowPreferenceWrite();
+        await Task.WhenAll(preferenceWrite, selectedPlanWrite);
+
+        Assert.Equal("plan-new", store.Current.SelectedPlanId);
+        Assert.False(store.Current.HideCompletedTasks);
+        Assert.True(store.Current.PlanViews!["plan-a"].MyTasks);
+        Assert.Equal(planB, store.Current.PlanViews["plan-b"]);
+    }
+
     private static PlanViewPreferences Preferences(bool myTasks) => new(myTasks,
         new PlannerFilterSettings([], [], [], [], [], null));
 
@@ -87,6 +108,70 @@ public sealed class PlannerViewPreferenceServiceTests
         {
             Current = settings;
             return Task.CompletedTask;
+        }
+
+        public Task<BoardDisplay?> LoadCachedDisplayAsync(CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task SaveCachedDisplayAsync(BoardDisplay display, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+    }
+
+    private sealed class InterleavingStore(SettingsDto current) : IPlannerSettingsStore
+    {
+        private readonly SemaphoreSlim writeLock = new(1, 1);
+        private readonly TaskCompletionSource preferenceStarted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource allowPreferenceWrite =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public SettingsDto Current { get; private set; } = current;
+        public Task PreferenceOperationStarted => preferenceStarted.Task;
+
+        public void AllowPreferenceWrite() => allowPreferenceWrite.TrySetResult();
+
+        public Task<SettingsDto> LoadSettingsAsync(CancellationToken cancellationToken)
+        {
+            preferenceStarted.TrySetResult();
+            return Task.FromResult(Current);
+        }
+
+        public async Task SaveSettingsAsync(SettingsDto settings, CancellationToken cancellationToken)
+        {
+            if (settings.PlanViews?.ContainsKey("plan-a") == true &&
+                Current.PlanViews?.ContainsKey("plan-a") != true)
+            {
+                await allowPreferenceWrite.Task.WaitAsync(cancellationToken);
+            }
+
+            await writeLock.WaitAsync(cancellationToken);
+            try
+            {
+                Current = settings.PlanViews is null
+                    ? settings with { PlanViews = Current.PlanViews }
+                    : settings;
+            }
+            finally
+            {
+                writeLock.Release();
+            }
+        }
+
+        public async Task<SettingsDto> UpdateSettingsAsync(Func<SettingsDto, SettingsDto> update,
+            CancellationToken cancellationToken)
+        {
+            await writeLock.WaitAsync(cancellationToken);
+            try
+            {
+                preferenceStarted.TrySetResult();
+                await allowPreferenceWrite.Task.WaitAsync(cancellationToken);
+                Current = update(Current);
+                return Current;
+            }
+            finally
+            {
+                writeLock.Release();
+            }
         }
 
         public Task<BoardDisplay?> LoadCachedDisplayAsync(CancellationToken cancellationToken) =>

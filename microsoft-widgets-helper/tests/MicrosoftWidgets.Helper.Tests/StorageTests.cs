@@ -54,6 +54,37 @@ public sealed class StorageTests
     }
 
     [Fact]
+    public async Task SettingsStore_AtomicUpdateAndLegacyWriteShareOneLock()
+    {
+        var planB = new PlanViewPreferences(true, new PlannerFilterSettings([], [], [3], [], [], null));
+        var json = new CoordinatedSettingsJsonStore(new SettingsDto("plan-a", "Plan A", true,
+            new Dictionary<string, PlanViewPreferences> { ["plan-b"] = planB }));
+        var store = new PlannerSettingsStore(json);
+
+        var preferenceWrite = store.UpdateSettingsAsync(settings =>
+        {
+            var views = new Dictionary<string, PlanViewPreferences>(settings.PlanViews!)
+            {
+                ["plan-a"] = new(true, new PlannerFilterSettings([], [], [1], [], [], null))
+            };
+            return settings with { PlanViews = views };
+        }, CancellationToken.None);
+        await json.FirstReadStarted;
+        var selectedPlanWrite = store.SaveSettingsAsync(
+            new SettingsDto("plan-new", "New plan", false), CancellationToken.None);
+
+        Assert.False(selectedPlanWrite.IsCompleted);
+        json.AllowFirstRead();
+        await Task.WhenAll(preferenceWrite, selectedPlanWrite);
+
+        var loaded = await store.LoadSettingsAsync(CancellationToken.None);
+        Assert.Equal("plan-new", loaded.SelectedPlanId);
+        Assert.False(loaded.HideCompletedTasks);
+        Assert.True(loaded.PlanViews!["plan-a"].MyTasks);
+        Assert.Equal([3], loaded.PlanViews["plan-b"].Filters.Priorities);
+    }
+
+    [Fact]
     public async Task SettingsStore_ReturnsDefaultsWhenNoSettingsExist()
     {
         var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
@@ -121,5 +152,35 @@ public sealed class StorageTests
         Assert.Equal("Legacy task", Assert.Single(Assert.Single(loaded.Buckets).Tasks).Title);
         Assert.Null(loaded.Labels);
         Assert.True(loaded.IsStale);
+    }
+
+    private sealed class CoordinatedSettingsJsonStore(SettingsDto current) : ILocalJsonStore
+    {
+        private readonly TaskCompletionSource firstReadStarted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource allowFirstRead =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int settingsReadCount;
+
+        public Task FirstReadStarted => firstReadStarted.Task;
+        public void AllowFirstRead() => allowFirstRead.TrySetResult();
+
+        public async Task<T?> ReadAsync<T>(string name, CancellationToken cancellationToken)
+        {
+            if (typeof(T) != typeof(SettingsDto)) return default;
+            if (Interlocked.Increment(ref settingsReadCount) == 1)
+            {
+                firstReadStarted.TrySetResult();
+                await allowFirstRead.Task.WaitAsync(cancellationToken);
+            }
+
+            return (T)(object)current;
+        }
+
+        public Task WriteAsync<T>(string name, T value, CancellationToken cancellationToken)
+        {
+            current = (SettingsDto)(object)value!;
+            return Task.CompletedTask;
+        }
     }
 }

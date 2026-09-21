@@ -9,9 +9,7 @@ public sealed class BoardSelectionService(PlannerBoardService boards, IPlannerSe
     {
         var plan = (await boards.GetPlansAsync(cancellationToken)).SingleOrDefault(item => item.PlanId == planId)
             ?? throw new ArgumentException("That board is no longer available.");
-        var current = await settings.LoadSettingsAsync(cancellationToken);
-        var selected = current with { SelectedPlanId = plan.PlanId, SelectedPlanTitle = plan.Title };
-        await settings.SaveSettingsAsync(selected, cancellationToken);
-        return selected;
+        return await settings.UpdateSettingsAsync(current =>
+            current with { SelectedPlanId = plan.PlanId, SelectedPlanTitle = plan.Title }, cancellationToken);
     }
 }
