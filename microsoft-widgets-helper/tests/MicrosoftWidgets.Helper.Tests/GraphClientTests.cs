@@ -117,7 +117,7 @@ public sealed class GraphClientTests
         var handler = new StubHandler(request => request.RequestUri!.AbsolutePath.EndsWith("/bucketTaskBoardFormat")
             ? """{"orderHint":"a"}"""
             : request.RequestUri.AbsolutePath.EndsWith("/tasks")
-            ? """{"value":[{"id":"one","title":"First","planId":"plan","percentComplete":0,"@odata.etag":"W/\"v1\""}],"@odata.nextLink":"https://graph.microsoft.com/v1.0/next"}"""
+            ? """{"value":[{"id":"one","title":"First","planId":"plan","percentComplete":0,"@odata.etag":"W/\"v1\"","conversationThreadId":"thread-1"}],"@odata.nextLink":"https://graph.microsoft.com/v1.0/next"}"""
             : """{"value":[{"id":"two","title":"Second","planId":"plan","percentComplete":0,"@odata.etag":"W/\"v2\""}]}""");
         var client = CreateClient(handler);
 
@@ -127,6 +127,8 @@ public sealed class GraphClientTests
         Assert.Equal("W/\"v1\"", tasks[0].ETag);
         Assert.Equal("two", tasks[1].Id);
         Assert.Equal("a", tasks[0].BucketOrderHint);
+        Assert.Equal("thread-1", tasks[0].ConversationThreadId);
+        Assert.Null(tasks[1].ConversationThreadId);
     }
 
     [Fact]

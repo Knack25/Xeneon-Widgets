@@ -298,6 +298,7 @@ public sealed class PlannerGraphClient(HttpClient httpClient, IGraphTokenProvide
             item.TryGetProperty("percentComplete", out var percent) ? percent.GetInt32() : 0,
             item.TryGetProperty("@odata.etag", out var etag) ? etag.GetString() ?? string.Empty : string.Empty,
             assignments, null,
-            item.TryGetProperty("startDateTime", out var start) && start.ValueKind != JsonValueKind.Null ? start.GetDateTimeOffset() : null);
+            item.TryGetProperty("startDateTime", out var start) && start.ValueKind != JsonValueKind.Null ? start.GetDateTimeOffset() : null,
+            item.TryGetProperty("conversationThreadId", out var thread) ? thread.GetString() : null);
     }
 }

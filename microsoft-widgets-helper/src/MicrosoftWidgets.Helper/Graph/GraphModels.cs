@@ -22,4 +22,5 @@ public sealed record GraphTask(
     string ETag,
     IReadOnlyList<string> Assignments,
     string? BucketOrderHint = null,
-    DateTimeOffset? StartDateTime = null);
+    DateTimeOffset? StartDateTime = null,
+    string? ConversationThreadId = null);
