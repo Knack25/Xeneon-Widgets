@@ -64,8 +64,26 @@ async function createTask(task) {
   }));
 }
 
+async function updateNotes(taskId, description) {
+  return parseJsonResponse(await fetch(`${BASE_URL}/tasks/${encodeURIComponent(taskId)}/notes`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ description })
+  }));
+}
+
+async function getTaskChat(taskId, cursor) {
+  const query = cursor ? `?${new URLSearchParams({ cursor })}` : "";
+  return parseJsonResponse(await fetch(`${BASE_URL}/tasks/${encodeURIComponent(taskId)}/chat${query}`));
+}
+
+async function postTaskChat(taskId, message) {
+  return parseJsonResponse(await fetch(`${BASE_URL}/tasks/${encodeURIComponent(taskId)}/chat`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message })
+  }));
+}
+
 globalThis.PlannerApi = { getDisplay, getCurrentUser, completeTask, getPlans, selectPlan, getTaskDetails,
-  completeChecklistItem, moveTask, setDueDate, getMembers, setAssignments, createTask };
+  completeChecklistItem, moveTask, setDueDate, getMembers, setAssignments, createTask, updateNotes,
+  getTaskChat, postTaskChat };
 
 async function parseJsonResponse(response) {
   if (response.status === 204) return null;

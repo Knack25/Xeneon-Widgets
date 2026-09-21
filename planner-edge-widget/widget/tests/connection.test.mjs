@@ -3,6 +3,31 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 
+test("notes and chat API wrappers send the exact helper contracts", async () => {
+  const calls = [];
+  const context = { URLSearchParams, fetch: async (path, options = {}) => {
+    calls.push([path, options]);
+    return { ok: true, status: path.includes("/chat") && options.method !== "POST" ? 200 : 204,
+      json: async () => ({ state: "available", messages: [] }) };
+  } };
+  runInNewContext(readFileSync(new URL("../src/api.js", import.meta.url), "utf8"), context);
+
+  await context.PlannerApi.updateNotes("task", "Line one\nLine two");
+  await context.PlannerApi.getTaskChat("task", "opaque cursor");
+  await context.PlannerApi.postTaskChat("task", "Status update");
+
+  assert.equal(calls[0][0], "http://localhost:8787/tasks/task/notes");
+  assert.equal(calls[0][1].method, "PUT");
+  assert.equal(calls[0][1].headers["Content-Type"], "application/json");
+  assert.equal(calls[0][1].body, JSON.stringify({ description: "Line one\nLine two" }));
+  assert.equal(calls[1][0], "http://localhost:8787/tasks/task/chat?cursor=opaque+cursor");
+  assert.equal(calls[1][1].method, undefined);
+  assert.equal(calls[2][0], "http://localhost:8787/tasks/task/chat");
+  assert.equal(calls[2][1].method, "POST");
+  assert.equal(calls[2][1].headers["Content-Type"], "application/json");
+  assert.equal(calls[2][1].body, JSON.stringify({ message: "Status update" }));
+});
+
 test("connection test reports CORS and opaque requests separately", async () => {
   const elements = Object.fromEntries(["cors-result", "opaque-result", "retry"].map(id => [id, { textContent: "", disabled: false, addEventListener: () => {} }]));
   const modes = [];
