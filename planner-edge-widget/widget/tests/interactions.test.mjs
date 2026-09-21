@@ -401,6 +401,37 @@ test("notes save explicitly, support clearing, disable while pending, and report
   assert.match(app.innerHTML, /Notes saved/);
 });
 
+test("notes edits made while saving remain unsaved and do not replace the submitted cache value", async () => {
+  const board = { planId: "plan", planTitle: "Work", syncedAt: "2026-09-21T12:00:00Z", buckets: [
+    { bucketId: "b", name: "Doing", tasks: [{ taskId: "task", title: "Build" }] }
+  ] };
+  const detail = { taskId: "task", title: "Build", bucketId: "b", checklist: [], assignees: [], description: "Original" };
+  let releaseUpdate;
+  const { app, tap, input } = createDetailFixture(async (path, options = {}) => {
+    if (path.endsWith("/display")) return { ok: true, status: 200, json: async () => board };
+    if (path.endsWith("/details")) return { ok: true, status: 200, json: async () => detail };
+    if (path.includes("/chat")) return { ok: true, status: 200, json: async () => ({ state: "available", messages: [] }) };
+    assert.equal(JSON.parse(options.body).description, "Submitted notes");
+    return new Promise(resolve => { releaseUpdate = () => resolve({ ok: true, status: 204, json: async () => null }); });
+  });
+  await settle();
+  await tap("data-open-task", { openTask: "task" });
+  await settle();
+  input("data-notes-draft", "Submitted notes");
+  const saving = tap("data-save-notes");
+  input("data-notes-draft", "Next unsaved notes");
+  releaseUpdate();
+  await saving;
+  assert.match(app.innerHTML, /Next unsaved notes/);
+  assert.match(app.innerHTML, /Save current changes/);
+
+  await tap("data-close-dialog");
+  await tap("data-open-task", { openTask: "task" });
+  await settle();
+  assert.match(app.innerHTML, /Submitted notes/);
+  assert.doesNotMatch(app.innerHTML, /Next unsaved notes/);
+});
+
 test("failed notes saves retain an escaped draft", async () => {
   const board = { planId: "plan", planTitle: "Work", syncedAt: "2026-09-21T12:00:00Z", buckets: [
     { bucketId: "b", name: "Doing", tasks: [{ taskId: "task", title: "Build" }] }
@@ -553,6 +584,35 @@ test("successful chat posts clear the draft and render the returned page", async
   assert.match(app.innerHTML, /Status update/);
   assert.match(app.innerHTML, /data-chat-draft[^>]*value=""/);
   assert.match(app.innerHTML, /Comment posted/);
+});
+
+test("chat edits made while posting remain as the next comment draft", async () => {
+  const board = { planId: "plan", planTitle: "Work", syncedAt: "2026-09-21T12:00:00Z", buckets: [
+    { bucketId: "b", name: "Doing", tasks: [{ taskId: "task", title: "Build" }] }
+  ] };
+  const detail = { taskId: "task", title: "Build", checklist: [], assignees: [], description: "" };
+  let releasePost;
+  const { app, tap, input } = createDetailFixture(async (path, options = {}) => {
+    if (path.endsWith("/display")) return { ok: true, status: 200, json: async () => board };
+    if (path.endsWith("/details")) return { ok: true, status: 200, json: async () => detail };
+    if (options.method === "POST") {
+      assert.equal(JSON.parse(options.body).message, "Submitted comment");
+      return new Promise(resolve => { releasePost = () => resolve({ ok: true, status: 200, json: async () => ({
+        state: "available", messages: [{ id: "posted", author: "Alex", createdAt: "2026-09-21T12:00:00Z", body: "Submitted comment" }]
+      }) }); });
+    }
+    return { ok: true, status: 200, json: async () => ({ state: "available", messages: [] }) };
+  });
+  await settle();
+  await tap("data-open-task", { openTask: "task" });
+  await settle();
+  input("data-chat-draft", "Submitted comment");
+  const posting = tap("data-post-chat");
+  input("data-chat-draft", "Next comment");
+  releasePost();
+  await posting;
+  assert.match(app.innerHTML, /data-chat-draft[^>]*value="Next comment"/);
+  assert.match(app.innerHTML, /Submitted comment/);
 });
 
 test("closed dialogs reject stale chat completions", async () => {

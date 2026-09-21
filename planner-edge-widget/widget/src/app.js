@@ -458,13 +458,18 @@ app.addEventListener("click", async event => {
   if (hit("data-save-notes") && state.dialog?.type === "taskDetails" && !state.dialog.notesPending) {
     const dialog = state.dialog;
     const { taskId, generation } = dialog;
+    const description = dialog.notesDraft ?? "";
     dialog.notesPending = true; dialog.notesStatus = "Saving notes..."; render();
     try {
-      await api.updateNotes(taskId, dialog.notesDraft ?? "");
+      await api.updateNotes(taskId, description);
       if (!isCurrentTaskDialog(taskId, generation)) return;
       const info = details.get(taskId);
-      if (info) details.set(taskId, { ...info, description: dialog.notesDraft ?? "" });
-      dialog.notesPending = false; dialog.notesStatus = "Notes saved."; render();
+      if (info) details.set(taskId, { ...info, description });
+      const hasNewerDraft = dialog.notesDraft !== description;
+      if (!hasNewerDraft) dialog.notesDraft = null;
+      dialog.notesPending = false;
+      dialog.notesStatus = hasNewerDraft ? "Earlier notes saved. Save current changes." : "Notes saved.";
+      render();
     } catch (error) {
       if (!isCurrentTaskDialog(taskId, generation)) return;
       dialog.notesPending = false; dialog.notesStatus = normalizeError(error).message; render();
@@ -486,7 +491,8 @@ app.addEventListener("click", async event => {
       const page = await api.postTaskChat(taskId, message);
       if (!isCurrentTaskDialog(taskId, generation)) return;
       dialog.chatPage = { ...page, messages: sortChatMessages(page.messages || []) };
-      dialog.chatDraft = ""; dialog.chatPending = false; dialog.chatStatus = "Comment posted."; render();
+      if (dialog.chatDraft === message) dialog.chatDraft = "";
+      dialog.chatPending = false; dialog.chatStatus = "Comment posted."; render();
     } catch (error) {
       if (!isCurrentTaskDialog(taskId, generation)) return;
       dialog.chatPending = false; dialog.chatStatus = normalizeError(error).message; render();
