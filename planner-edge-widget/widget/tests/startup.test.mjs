@@ -7,12 +7,15 @@ test("widget scripts start together and show the selected board", async () => {
   const app = { innerHTML: '<section class="status">Loading Planner...</section>', addEventListener() {} };
   const context = {
     document: { getElementById: () => app },
-    fetch: async () => ({ ok: true, status: 200, json: async () => ({ planTitle: "Work", syncedAt: new Date().toISOString(), buckets: [] }) }),
+    fetch: async path => ({ ok: true, status: 200, json: async () => path.endsWith("/display")
+      ? ({ planId: "plan", planTitle: "Work", syncedAt: new Date().toISOString(), buckets: [], labels: [] })
+      : ({ myTasks: false, filters: {} }) }),
     setInterval: () => {},
+    localStorage: { getItem: () => null, setItem() {} },
     Intl,
     Date,
   };
-  for (const file of ["state.js", "api.js", "app.js"]) {
+  for (const file of ["state.js", "api.js", "filters.js", "view-state.js", "app.js"]) {
     runInNewContext(readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"), context, { filename: file });
   }
   await new Promise(resolve => setImmediate(resolve));

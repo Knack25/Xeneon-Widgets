@@ -48,3 +48,15 @@ test("task details track a pending bucket choice", () => {
   assert.equal(selected.dialog.bucketPickerOpen, false);
   assert.equal(closeDialog(selected).dialog, null);
 });
+
+test("checklist deletion confirmation preserves the task details dialog", () => {
+  const board = applyDisplayLoaded(createInitialState(), { planTitle: "Work", buckets: [] });
+  const details = openTaskDetails(board, "task");
+  details.dialog.checklistEditId = "item";
+  details.dialog.checklistEditDraft = "Draft title";
+  const confirming = context.PlannerState.beginConfirmChecklistDelete(details, "task", "item", "Remove me");
+
+  assert.equal(confirming.dialog.type, "confirmChecklistDelete");
+  assert.equal(confirming.dialog.returnDialog.checklistEditDraft, "Draft title");
+  assert.equal(context.PlannerState.closeActiveDialog(confirming).dialog.type, "taskDetails");
+});

@@ -7,18 +7,24 @@ const settle = (milliseconds = 15) => new Promise(resolve => setTimeout(resolve,
 
 function createDetailFixture(fetch, appOverrides = {}) {
   const handlers = {};
-  const app = { innerHTML: "", addEventListener: (type, listener) => { handlers[type] = listener; }, ...appOverrides };
+  const app = { innerHTML: "", addEventListener: (type, listener) => { handlers[type] = listener; } };
+  Object.defineProperties(app, Object.getOwnPropertyDescriptors(appOverrides));
   const context = { document: { getElementById: () => app }, setInterval() {}, Intl, Date, URLSearchParams,
-    IntersectionObserver: class { observe() {} disconnect() {} }, fetch };
-  for (const file of ["state.js", "api.js", "app.js"])
+    IntersectionObserver: class { observe() {} disconnect() {} }, fetch,
+    localStorage: { getItem: () => null, setItem() {} } };
+  for (const file of ["state.js", "api.js", "filters.js", "view-state.js", "app.js"])
     runInNewContext(readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"), context);
   const tap = (attribute, dataset = {}) => handlers.click({ target: {
-    closest: selector => selector === `[${attribute}]` ? { dataset } : null
+    closest: selector => selector === `[${attribute}]` ? { dataset } : null,
+    matches: selector => selector === `[${attribute}]`
   } });
   const input = (attribute, value) => handlers.input({ target: {
     matches: selector => selector === `[${attribute}]`, value
   } });
-  return { app, handlers, tap, input };
+  const change = (attribute, value) => handlers.change({ target: {
+    matches: selector => selector === `[${attribute}]`, value
+  } });
+  return { app, handlers, tap, input, change };
 }
 
 test("task card has separate tap targets and previews only three checklist items", async () => {
@@ -79,7 +85,7 @@ test("task details use a tap-friendly bucket picker and move only after selectio
   await new Promise(resolve => setTimeout(resolve, 15));
   await handlers.click({ target: { closest: selector => selector === "[data-open-task]" ? { dataset: { openTask: "task" } } : null } });
   assert.match(app.innerHTML, /data-open-bucket-picker/);
-  assert.doesNotMatch(app.innerHTML, /<select/);
+  assert.doesNotMatch(app.innerHTML, /<select[^>]*data-task-bucket/);
   assert.doesNotMatch(app.innerHTML, /data-move-task/);
 
   await handlers.click({ target: { closest: selector => selector === "[data-open-bucket-picker]" ? { dataset: {} } : null } });
@@ -775,3 +781,264 @@ test("returning from checklist completion reinitializes notes and chat", async (
   assert.match(app.innerHTML, /data-notes-draft/);
   assert.match(app.innerHTML, /data-chat-draft/);
 });
+
+test("My tasks and filters persist per board while search does not", async () => {
+  const writes = [];
+  const board = { planId: "plan", planTitle: "Work", syncedAt: "2026-09-21T12:00:00Z", labels: [], buckets: [
+    { bucketId: "b", name: "Doing", tasks: [
+      { taskId: "mine", title: "Mine", assignments: ["me"], priority: 5, percentComplete: 0, labelIds: [] },
+      { taskId: "other", title: "Other", assignments: ["other"], priority: 5, percentComplete: 0, labelIds: [] }
+    ] }
+  ] };
+  const preferences = { myTasks: true, filters: { assigneeIds: [], labelIds: [], priorities: [], bucketIds: [], progressValues: [], dueDateRange: null } };
+  const { app, tap, input } = createDetailFixture(async (path, options = {}) => {
+    if (path.endsWith("/display")) return response(board);
+    if (path.endsWith("/view-preferences/plan") && options.method === "PUT") {
+      writes.push(JSON.parse(options.body)); return response(JSON.parse(options.body));
+    }
+    if (path.endsWith("/view-preferences/plan")) return response(preferences);
+    if (path.endsWith("/auth/me")) return response({ userId: "me" });
+    return response({ checklist: [], assignees: [] });
+  });
+  await settle();
+  assert.match(app.innerHTML, /Mine/);
+  assert.doesNotMatch(app.innerHTML, />Other</);
+
+  await tap("data-toggle-my-tasks");
+  assert.equal(writes.at(-1).myTasks, false);
+  assert.equal("searchText" in writes.at(-1), false);
+  await tap("data-toggle-search");
+  input("data-search-tasks", "Other");
+  assert.match(app.innerHTML, />Other</);
+  assert.doesNotMatch(app.innerHTML, />Mine</);
+  assert.equal(writes.some(write => JSON.stringify(write).includes("Other")), false);
+});
+
+test("typing a search updates the board without rebuilding the focused toolbar", async () => {
+  let appRenders = 0;
+  let markup = "";
+  const boardElement = { dataset: { planId: "plan" }, scrollLeft: 0, innerHTML: "" };
+  const appOverrides = {
+    get innerHTML() { return markup; },
+    set innerHTML(value) { markup = value; appRenders++; },
+    querySelector: selector => selector === ".board" ? boardElement : null,
+    querySelectorAll: () => []
+  };
+  const board = { planId: "plan", planTitle: "Work", syncedAt: "2026-09-21T12:00:00Z", labels: [], buckets: [
+    { bucketId: "b", name: "Doing", tasks: [
+      { taskId: "mine", title: "Mine", assignments: [], priority: 5, percentComplete: 0, labelIds: [] },
+      { taskId: "other", title: "Other", assignments: [], priority: 5, percentComplete: 0, labelIds: [] }
+    ] }
+  ] };
+  const { tap, input } = createDetailFixture(async path => response(path.endsWith("/display") ? board :
+    path.includes("view-preferences") ? defaultPreferences() : { checklist: [], assignees: [] }), appOverrides);
+  await settle();
+  await tap("data-toggle-search");
+  const beforeTyping = appRenders;
+  input("data-search-tasks", "Other");
+  assert.equal(appRenders, beforeTyping);
+  assert.match(boardElement.innerHTML, />Other</);
+  assert.doesNotMatch(boardElement.innerHTML, />Mine</);
+});
+
+test("cards render priority labels progress due date and checklist preview", async () => {
+  const board = { planId: "plan", planTitle: "Work", syncedAt: "2026-09-21T12:00:00Z",
+    labels: [{ labelId: "category1", name: "Blocked" }], buckets: [{ bucketId: "b", name: "Doing", tasks: [{
+      taskId: "task", title: "Build", priority: 1, percentComplete: 50, labelIds: ["category1"],
+      dueDateTime: "2026-09-25T12:00:00Z", assignments: []
+    }] }] };
+  const { app } = createDetailFixture(async path => response(path.endsWith("/display") ? board :
+    path.includes("view-preferences") ? defaultPreferences() : { taskId: "task", checklist: [{ itemId: "one", title: "First", isChecked: false }], assignees: [] }));
+  await settle();
+  assert.match(app.innerHTML, /Urgent/);
+  assert.match(app.innerHTML, /Blocked/);
+  assert.match(app.innerHTML, /In progress/);
+  assert.match(app.innerHTML, /Sep 25/);
+  assert.match(app.innerHTML, /First/);
+});
+
+test("task metadata controls use focused routes and completion confirmation", async () => {
+  const calls = [];
+  const board = organizationBoard();
+  const detail = organizationDetail();
+  const { app, tap, input, change } = createDetailFixture(async (path, options = {}) => {
+    calls.push([path, options]);
+    if (path.endsWith("/display")) return response(board);
+    if (path.includes("view-preferences")) return response(defaultPreferences());
+    if (path.endsWith("/chat")) return response({ state: "available", messages: [] });
+    if (path.endsWith("/details")) return response(detail);
+    return response(null, 204);
+  });
+  await settle();
+  await tap("data-open-task", { openTask: "task" });
+  await settle();
+
+  input("data-title-draft", "Renamed task");
+  await tap("data-save-title");
+  assertRequest(calls, "/tasks/task/title", "PUT", { title: "Renamed task" });
+
+  change("data-task-priority", "3");
+  await settle();
+  assertRequest(calls, "/tasks/task/priority", "PUT", { priority: 3 });
+
+  input("data-start-date-draft", "2026-09-21");
+  await tap("data-save-start-date");
+  assertRequest(calls, "/tasks/task/start-date", "PUT", { date: "2026-09-21" });
+
+  await tap("data-toggle-task-label", { toggleTaskLabel: "category2" });
+  await tap("data-save-labels");
+  assertRequest(calls, "/tasks/task/labels", "PUT", { labelIds: ["category1", "category2"] });
+
+  const progressWritesBefore = calls.filter(([path]) => path.endsWith("/progress")).length;
+  change("data-task-progress", "100");
+  assert.match(app.innerHTML, /Complete task\?/);
+  assert.equal(calls.filter(([path]) => path.endsWith("/progress")).length, progressWritesBefore);
+  await tap("data-confirm-progress");
+  assertRequest(calls, "/tasks/task/progress", "PUT", { progress: 100 });
+});
+
+test("failed title and label writes retain their drafts", async () => {
+  const board = organizationBoard();
+  const detail = organizationDetail();
+  const { app, tap, input } = createDetailFixture(async (path, options = {}) => {
+    if (path.endsWith("/display")) return response(board);
+    if (path.includes("view-preferences")) return response(defaultPreferences());
+    if (path.endsWith("/chat")) return response({ state: "available", messages: [] });
+    if (path.endsWith("/details")) return response(detail);
+    if (options.method === "PUT") return response({ code: "conflict", message: "Refresh and try again." }, 409);
+    return response(null, 204);
+  });
+  await settle();
+  await tap("data-open-task", { openTask: "task" });
+  await settle();
+  input("data-title-draft", "Keep this title");
+  await tap("data-toggle-task-label", { toggleTaskLabel: "category2" });
+  await tap("data-save-title");
+  assert.match(app.innerHTML, /value="Keep this title"/);
+  assert.match(app.innerHTML, /Refresh and try again/);
+  await tap("data-save-labels");
+  assert.match(app.innerHTML, /data-toggle-task-label="category2"[^>]*aria-pressed="true"/);
+});
+
+test("new task sends start date priority and labels without progress", async () => {
+  const calls = [];
+  const board = organizationBoard();
+  const { tap, input, change } = createDetailFixture(async (path, options = {}) => {
+    calls.push([path, options]);
+    if (path.endsWith("/display")) return response(board);
+    if (path.includes("view-preferences")) return response(defaultPreferences());
+    return response(null, options.method === "POST" ? 204 : 200);
+  });
+  await settle();
+  await tap("data-new-task");
+  input("data-new-task-title", "New work");
+  input("data-new-task-start", "2026-09-21");
+  input("data-new-task-due", "2026-09-25");
+  change("data-new-task-priority", "3");
+  await tap("data-toggle-new-label", { toggleNewLabel: "category1" });
+  await tap("data-submit-new-task");
+  const create = calls.find(([path, options]) => path.endsWith("/tasks") && options?.method === "POST");
+  const body = JSON.parse(create[1].body);
+  assert.deepEqual(body, { title: "New work", bucketId: "b", date: "2026-09-25", userIds: [],
+    startDate: "2026-09-21", priority: 3, labelIds: ["category1"] });
+  assert.equal("percentComplete" in body, false);
+});
+
+test("saved filter errors remain visible without discarding the active filter", async () => {
+  const board = organizationBoard();
+  const { app, tap } = createDetailFixture(async (path, options = {}) => {
+    if (path.endsWith("/display")) return response(board);
+    if (path.includes("view-preferences") && options.method === "PUT")
+      return response({ code: "offline", message: "Could not save filters." }, 503);
+    if (path.includes("view-preferences")) return response(defaultPreferences());
+    if (path.endsWith("/members")) return response([]);
+    return response({ checklist: [], assignees: [] });
+  });
+  await settle();
+  await tap("data-open-filters");
+  await tap("data-toggle-filter", { filterGroup: "priorities", filterValue: "1" });
+  assert.match(app.innerHTML, /Could not save filters/);
+  await tap("data-close-dialog");
+  assert.match(app.innerHTML, /Urgent task/);
+  assert.doesNotMatch(app.innerHTML, /Normal task/);
+});
+
+test("checklist supports add rename delete confirmation and button reordering", async () => {
+  const calls = [];
+  const board = organizationBoard();
+  const detail = organizationDetail();
+  const { app, handlers, tap, input } = createDetailFixture(async (path, options = {}) => {
+    calls.push([path, options]);
+    if (path.endsWith("/display")) return response(board);
+    if (path.includes("view-preferences")) return response(defaultPreferences());
+    if (path.endsWith("/chat")) return response({ state: "available", messages: [] });
+    if (path.endsWith("/details")) return response(detail);
+    return response(null, 204);
+  });
+  await settle();
+  await tap("data-open-task", { openTask: "task" });
+  await settle();
+  assert.match(app.innerHTML, /data-move-checklist-up="first"[^>]*disabled/);
+  assert.match(app.innerHTML, /data-move-checklist-down="second"[^>]*disabled/);
+  assert.equal(handlers.dragstart, undefined);
+  assert.equal(handlers.touchmove, undefined);
+
+  input("data-checklist-add-draft", "New item");
+  await tap("data-add-checklist");
+  assertRequest(calls, "/tasks/task/checklist", "POST", { title: "New item" });
+
+  await tap("data-edit-checklist", { editChecklist: "first" });
+  input("data-checklist-edit-draft", "Renamed");
+  await tap("data-save-checklist-edit", { saveChecklistEdit: "first" });
+  assertRequest(calls, "/tasks/task/checklist/first", "PUT", { title: "Renamed" });
+
+  await tap("data-delete-checklist", { deleteChecklist: "first" });
+  assert.match(app.innerHTML, /Delete checklist item\?/);
+  assert.equal(calls.some(([path, options]) => path.endsWith("/checklist/first") && options?.method === "DELETE"), false);
+  await tap("data-dialog-backdrop");
+  assert.match(app.innerHTML, /Task chat/);
+  await tap("data-delete-checklist", { deleteChecklist: "first" });
+  await tap("data-confirm-checklist-delete");
+  assert.ok(calls.some(([path, options]) => path.endsWith("/checklist/first") && options?.method === "DELETE"));
+
+  await tap("data-move-checklist-down", { moveChecklistDown: "first" });
+  assertRequest(calls, "/tasks/task/checklist/first/position", "PUT", { direction: "down" });
+
+  await tap("data-checklist-item", { checklistTask: "task", checklistItem: "first" });
+  assert.match(app.innerHTML, /Complete checklist item\?/);
+});
+
+function response(body, status = 200) {
+  return { ok: status >= 200 && status < 300, status, json: async () => body };
+}
+
+function defaultPreferences() {
+  return { myTasks: false, filters: { assigneeIds: [], labelIds: [], priorities: [], bucketIds: [], progressValues: [], dueDateRange: null } };
+}
+
+function organizationBoard() {
+  return { planId: "plan", planTitle: "Work", syncedAt: "2026-09-21T12:00:00Z",
+    labels: [{ labelId: "category1", name: "Blocked" }, { labelId: "category2", name: "Release" }],
+    buckets: [{ bucketId: "b", name: "Doing", tasks: [
+      { taskId: "task", title: "Urgent task", bucketId: "b", priority: 1, percentComplete: 50,
+        labelIds: ["category1"], assignments: ["person-a"], dueDateTime: "2026-09-25T12:00:00Z" },
+      { taskId: "normal", title: "Normal task", bucketId: "b", priority: 5, percentComplete: 0,
+        labelIds: [], assignments: [] }
+    ] }]
+  };
+}
+
+function organizationDetail() {
+  return { taskId: "task", title: "Urgent task", bucketId: "b", dueDateTime: "2026-09-25T12:00:00Z",
+    startDateTime: null, priority: 1, percentComplete: 50, labelIds: ["category1"],
+    assignees: ["Alex"], assigneeIds: ["person-a"], description: "Notes", checklist: [
+      { itemId: "first", title: "First", isChecked: false },
+      { itemId: "second", title: "Second", isChecked: false }
+    ] };
+}
+
+function assertRequest(calls, suffix, method, expectedBody) {
+  const call = calls.find(([path, options]) => path.endsWith(suffix) && options?.method === method);
+  assert.ok(call, `${method} ${suffix} was not requested`);
+  assert.deepEqual(JSON.parse(call[1].body), expectedBody);
+}

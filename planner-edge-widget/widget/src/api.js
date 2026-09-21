@@ -8,6 +8,16 @@ async function getDisplay() {
   return parseJsonResponse(response);
 }
 
+async function getViewPreferences(planId) {
+  return parseJsonResponse(await fetch(`${BASE_URL}/view-preferences/${encodeURIComponent(planId)}`));
+}
+
+async function saveViewPreferences(planId, preferences) {
+  return parseJsonResponse(await fetch(`${BASE_URL}/view-preferences/${encodeURIComponent(planId)}`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(preferences)
+  }));
+}
+
 async function getCurrentUser() {
   return parseJsonResponse(await fetch(`${BASE_URL}/auth/me`));
 }
@@ -48,6 +58,57 @@ async function setDueDate(taskId, date) {
   }));
 }
 
+async function setTitle(taskId, title) {
+  return putTaskValue(taskId, "title", { title });
+}
+
+async function setProgress(taskId, progress) {
+  return putTaskValue(taskId, "progress", { progress });
+}
+
+async function setPriority(taskId, priority) {
+  return putTaskValue(taskId, "priority", { priority });
+}
+
+async function setStartDate(taskId, date) {
+  return putTaskValue(taskId, "start-date", { date });
+}
+
+async function setLabels(taskId, labelIds) {
+  return putTaskValue(taskId, "labels", { labelIds });
+}
+
+async function putTaskValue(taskId, route, value) {
+  return parseJsonResponse(await fetch(`${BASE_URL}/tasks/${encodeURIComponent(taskId)}/${route}`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(value)
+  }));
+}
+
+async function addChecklistItem(taskId, title) {
+  return checklistRequest(taskId, "", "POST", { title });
+}
+
+async function renameChecklistItem(taskId, itemId, title) {
+  return checklistRequest(taskId, `/${encodeURIComponent(itemId)}`, "PUT", { title });
+}
+
+async function deleteChecklistItem(taskId, itemId) {
+  return checklistRequest(taskId, `/${encodeURIComponent(itemId)}`, "DELETE");
+}
+
+async function moveChecklistItem(taskId, itemId, direction) {
+  return checklistRequest(taskId, `/${encodeURIComponent(itemId)}/position`, "PUT", { direction });
+}
+
+async function checklistRequest(taskId, suffix, method, value) {
+  const options = { method };
+  if (value) {
+    options.headers = { "Content-Type": "application/json" };
+    options.body = JSON.stringify(value);
+  }
+  return parseJsonResponse(await fetch(`${BASE_URL}/tasks/${encodeURIComponent(taskId)}/checklist${suffix}`, options));
+}
+
 async function getMembers() {
   return parseJsonResponse(await fetch(`${BASE_URL}/members`));
 }
@@ -81,9 +142,10 @@ async function postTaskChat(taskId, message) {
   }));
 }
 
-globalThis.PlannerApi = { getDisplay, getCurrentUser, completeTask, getPlans, selectPlan, getTaskDetails,
-  completeChecklistItem, moveTask, setDueDate, getMembers, setAssignments, createTask, updateNotes,
-  getTaskChat, postTaskChat };
+globalThis.PlannerApi = { getDisplay, getViewPreferences, saveViewPreferences, getCurrentUser, completeTask,
+  getPlans, selectPlan, getTaskDetails, completeChecklistItem, moveTask, setDueDate, setTitle, setProgress,
+  setPriority, setStartDate, setLabels, addChecklistItem, renameChecklistItem, deleteChecklistItem,
+  moveChecklistItem, getMembers, setAssignments, createTask, updateNotes, getTaskChat, postTaskChat };
 
 async function parseJsonResponse(response) {
   if (response.status === 204) return null;
