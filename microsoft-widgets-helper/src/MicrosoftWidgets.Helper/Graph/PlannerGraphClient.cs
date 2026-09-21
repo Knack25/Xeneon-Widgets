@@ -85,6 +85,31 @@ public sealed class PlannerGraphClient(HttpClient httpClient, IGraphTokenProvide
         }));
     }
 
+    public async Task<IReadOnlyList<GraphPlanLabel>> GetPlanLabelsAsync(
+        string planId,
+        CancellationToken cancellationToken)
+    {
+        using var response = await SendAsync(new HttpRequestMessage(HttpMethod.Get,
+            $"planner/plans/{Uri.EscapeDataString(planId)}/details"), cancellationToken);
+        using var document = await JsonDocument.ParseAsync(
+            await response.Content.ReadAsStreamAsync(cancellationToken), cancellationToken: cancellationToken);
+        if (!document.RootElement.TryGetProperty("categoryDescriptions", out var descriptions)
+            || descriptions.ValueKind != JsonValueKind.Object)
+            return [];
+
+        var labels = new List<GraphPlanLabel>();
+        for (var index = 1; index <= 25; index++)
+        {
+            var id = $"category{index}";
+            if (!descriptions.TryGetProperty(id, out var description)
+                || description.ValueKind != JsonValueKind.String)
+                continue;
+            var name = description.GetString();
+            if (!string.IsNullOrWhiteSpace(name)) labels.Add(new GraphPlanLabel(id, name));
+        }
+        return labels;
+    }
+
     private async Task<string?> GetBucketOrderHintAsync(string taskId, CancellationToken cancellationToken)
     {
         if (orderHints.TryGetValue(taskId, out var cached) && cached.Expires > DateTimeOffset.UtcNow)
@@ -420,6 +445,13 @@ public sealed class PlannerGraphClient(HttpClient httpClient, IGraphTokenProvide
         var assignments = item.TryGetProperty("assignments", out var assigned)
             ? assigned.EnumerateObject().Select(property => property.Name).ToList()
             : [];
+        var appliedCategories = item.TryGetProperty("appliedCategories", out var categories)
+            && categories.ValueKind == JsonValueKind.Object
+            ? categories.EnumerateObject()
+                .Where(property => property.Value.ValueKind == JsonValueKind.True)
+                .Select(property => property.Name)
+                .ToList()
+            : [];
         return new GraphTask(
             item.GetProperty("id").GetString()!,
             item.GetProperty("title").GetString() ?? "Untitled task",
@@ -431,6 +463,7 @@ public sealed class PlannerGraphClient(HttpClient httpClient, IGraphTokenProvide
             item.TryGetProperty("@odata.etag", out var etag) ? etag.GetString() ?? string.Empty : string.Empty,
             assignments, null,
             item.TryGetProperty("startDateTime", out var start) && start.ValueKind != JsonValueKind.Null ? start.GetDateTimeOffset() : null,
-            item.TryGetProperty("conversationThreadId", out var thread) ? thread.GetString() : null);
+            item.TryGetProperty("conversationThreadId", out var thread) ? thread.GetString() : null,
+            appliedCategories);
     }
 }

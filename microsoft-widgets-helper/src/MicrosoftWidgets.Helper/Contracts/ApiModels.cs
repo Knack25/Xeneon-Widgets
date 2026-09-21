@@ -40,6 +40,8 @@ public sealed record BucketDisplay(
     string Name,
     IReadOnlyList<TaskDisplay> Tasks);
 
+public sealed record LabelDisplay(string LabelId, string Name);
+
 public sealed record TaskDisplay(
     string TaskId,
     string Title,
@@ -48,14 +50,17 @@ public sealed record TaskDisplay(
     int? Priority,
     int PercentComplete,
     string ETag,
-    IReadOnlyList<string> Assignments);
+    IReadOnlyList<string> Assignments,
+    DateTimeOffset? StartDateTime = null,
+    IReadOnlyList<string>? LabelIds = null);
 
 public sealed record BoardDisplay(
     string PlanId,
     string PlanTitle,
     DateTimeOffset SyncedAt,
     bool IsStale,
-    IReadOnlyList<BucketDisplay> Buckets);
+    IReadOnlyList<BucketDisplay> Buckets,
+    IReadOnlyList<LabelDisplay>? Labels = null);
 
 public sealed record CompleteTaskResponse(
     string TaskId,
@@ -72,4 +77,8 @@ public sealed record TaskDetailsResponse(
     IReadOnlyList<string> Assignees,
     IReadOnlyList<ChecklistItemDisplay> Checklist,
     string? Description = null,
-    IReadOnlyList<string>? AssigneeIds = null);
+    IReadOnlyList<string>? AssigneeIds = null,
+    DateTimeOffset? StartDateTime = null,
+    int? Priority = null,
+    int? PercentComplete = null,
+    IReadOnlyList<string>? LabelIds = null);

@@ -5,6 +5,8 @@ public sealed record GraphMember(string Id, string DisplayName);
 
 public sealed record GraphPlan(string Id, string Title, string GroupId, string? GroupName);
 
+public sealed record GraphPlanLabel(string Id, string Name);
+
 public sealed record GraphBucket(string Id, string Name, string PlanId, string? OrderHint = null);
 
 public sealed record GraphChecklistItem(string Id, string Title, bool IsChecked, string? OrderHint);
@@ -32,4 +34,5 @@ public sealed record GraphTask(
     IReadOnlyList<string> Assignments,
     string? BucketOrderHint = null,
     DateTimeOffset? StartDateTime = null,
-    string? ConversationThreadId = null);
+    string? ConversationThreadId = null,
+    IReadOnlyList<string>? AppliedCategories = null);

@@ -33,7 +33,8 @@ public sealed class TaskDetailsService(IPlannerGraphClient graphClient, IMemoryC
         }
         var response = new TaskDetailsResponse(task.Id, task.Title, task.BucketId, task.DueDateTime, assignees,
             details.Checklist.Select(item => new ChecklistItemDisplay(item.Id, item.Title, item.IsChecked)).ToList(),
-            details.Description, task.Assignments);
+            details.Description, task.Assignments, task.StartDateTime, task.Priority, task.PercentComplete,
+            task.AppliedCategories ?? []);
         cache.Set(taskId, response, TimeSpan.FromSeconds(45));
         return response;
     }

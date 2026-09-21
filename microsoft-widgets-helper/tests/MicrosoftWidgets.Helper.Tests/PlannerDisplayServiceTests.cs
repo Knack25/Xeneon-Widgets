@@ -54,6 +54,30 @@ public sealed class PlannerDisplayServiceTests
     }
 
     [Fact]
+    public async Task GetDisplayAsync_MapsLabelsAndTaskOrganizationFields()
+    {
+        var start = new DateTimeOffset(2026, 9, 21, 12, 0, 0, TimeSpan.Zero);
+        var graph = new FakePlannerGraphClient
+        {
+            Buckets = [new GraphBucket("bucket", "Doing", "plan")],
+            Labels = [new GraphPlanLabel("category1", "Blocked")],
+            Tasks = [new GraphTask("task", "Work", "plan", "bucket", null, 3, 50, "etag", [],
+                StartDateTime: start, AppliedCategories: ["category1"])]
+        };
+
+        var board = await new PlannerDisplayService(graph).GetDisplayAsync("plan", "Board", true, CancellationToken.None);
+
+        var label = Assert.Single(board.Labels!);
+        Assert.Equal("category1", label.LabelId);
+        Assert.Equal("Blocked", label.Name);
+        var task = Assert.Single(Assert.Single(board.Buckets).Tasks);
+        Assert.Equal(start, task.StartDateTime);
+        Assert.Equal(["category1"], task.LabelIds);
+        Assert.Equal(3, task.Priority);
+        Assert.Equal(50, task.PercentComplete);
+    }
+
+    [Fact]
     public async Task GetDisplayAsync_OrdersTasksByBucketBoardHintWithStableFallback()
     {
         var graph = new FakePlannerGraphClient
@@ -76,11 +100,13 @@ public sealed class PlannerDisplayServiceTests
     {
         public IReadOnlyList<GraphBucket> Buckets { get; init; } = [];
         public IReadOnlyList<GraphTask> Tasks { get; init; } = [];
+        public IReadOnlyList<GraphPlanLabel> Labels { get; init; } = [];
 
         public Task<IReadOnlyList<GraphGroup>> GetMemberGroupsAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<IReadOnlyList<GraphPlan>> GetPlansForGroupAsync(string groupId, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<IReadOnlyList<GraphBucket>> GetBucketsAsync(string planId, CancellationToken cancellationToken) => Task.FromResult(Buckets);
         public Task<IReadOnlyList<GraphTask>> GetTasksAsync(string planId, CancellationToken cancellationToken) => Task.FromResult(Tasks);
+        public Task<IReadOnlyList<GraphPlanLabel>> GetPlanLabelsAsync(string planId, CancellationToken cancellationToken) => Task.FromResult(Labels);
         public Task<GraphTask?> GetTaskAsync(string taskId, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<string?> GetUserDisplayNameAsync(string userId, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task CompleteTaskAsync(string taskId, string etag, CancellationToken cancellationToken) => throw new NotSupportedException();

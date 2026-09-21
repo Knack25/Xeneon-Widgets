@@ -150,6 +150,34 @@ public sealed class GraphClientTests
     }
 
     [Fact]
+    public async Task GetTasksAsync_MapsStartAndAppliedCategories()
+    {
+        var handler = new StubHandler(request => request.RequestUri!.AbsolutePath.EndsWith("/bucketTaskBoardFormat")
+            ? """{"orderHint":"a"}"""
+            : """{"value":[{"id":"task","title":"Work","planId":"plan","percentComplete":50,"priority":3,"startDateTime":"2026-09-21T12:00:00Z","appliedCategories":{"category1":true,"category2":false}}]}""");
+
+        var task = Assert.Single(await CreateClient(handler).GetTasksAsync("plan", CancellationToken.None));
+
+        Assert.Equal(["category1"], task.AppliedCategories);
+        Assert.Equal(new DateTimeOffset(2026, 9, 21, 12, 0, 0, TimeSpan.Zero), task.StartDateTime);
+    }
+
+    [Fact]
+    public async Task GetPlanLabelsAsync_ReturnsOnlyNamedCategories()
+    {
+        var handler = new StubHandler(request =>
+        {
+            Assert.Equal("/v1.0/planner/plans/plan/details", request.RequestUri!.AbsolutePath);
+            return """{"categoryDescriptions":{"category1":"Blocked","category2":null,"category25":"Release"}}""";
+        });
+
+        var labels = await CreateClient(handler).GetPlanLabelsAsync("plan", CancellationToken.None);
+
+        Assert.Equal(["category1", "category25"], labels.Select(label => label.Id));
+        Assert.Equal(["Blocked", "Release"], labels.Select(label => label.Name));
+    }
+
+    [Fact]
     public async Task CompleteTaskAsync_SendsLatestEtagAndCompletionBody()
     {
         var handler = new StubHandler(request =>

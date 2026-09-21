@@ -13,6 +13,7 @@ public sealed class PlannerDisplayService(IPlannerGraphClient graphClient)
     {
         var buckets = await graphClient.GetBucketsAsync(planId, cancellationToken);
         var tasks = await graphClient.GetTasksAsync(planId, cancellationToken);
+        var labels = await graphClient.GetPlanLabelsAsync(planId, cancellationToken);
 
         var visibleTasks = hideCompletedTasks
             ? tasks.Where(task => task.PercentComplete < 100)
@@ -46,7 +47,8 @@ public sealed class PlannerDisplayService(IPlannerGraphClient graphClient)
             planTitle,
             DateTimeOffset.UtcNow,
             IsStale: false,
-            bucketDisplays);
+            bucketDisplays,
+            labels.Select(label => new LabelDisplay(label.Id, label.Name)).ToList());
     }
 
     private static TaskDisplay ToDisplay(GraphTask task)
@@ -59,6 +61,8 @@ public sealed class PlannerDisplayService(IPlannerGraphClient graphClient)
             task.Priority,
             task.PercentComplete,
             task.ETag,
-            task.Assignments);
+            task.Assignments,
+            task.StartDateTime,
+            task.AppliedCategories ?? []);
     }
 }

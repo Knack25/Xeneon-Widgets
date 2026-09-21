@@ -34,12 +34,29 @@ public sealed class TaskDetailsServiceTests
         Assert.Equal("Assigned person unavailable", Assert.Single(details.Assignees));
     }
 
+    [Fact]
+    public async Task GetAsync_MapsTaskOrganizationFields()
+    {
+        var start = new DateTimeOffset(2026, 9, 21, 12, 0, 0, TimeSpan.Zero);
+        var graph = new FakeGraph { StartDateTime = start };
+
+        var details = await new TaskDetailsService(graph, new MemoryCache(new MemoryCacheOptions()))
+            .GetAsync("task", CancellationToken.None);
+
+        Assert.Equal(start, details.StartDateTime);
+        Assert.Equal(3, details.Priority);
+        Assert.Equal(50, details.PercentComplete);
+        Assert.Equal(["category1"], details.LabelIds);
+    }
+
     private sealed class FakeGraph : IPlannerGraphClient
     {
         public int DetailReads { get; private set; }
         public bool FailNameLookup { get; init; }
+        public DateTimeOffset? StartDateTime { get; init; }
         public Task<GraphTask?> GetTaskAsync(string taskId, CancellationToken ct) =>
-            Task.FromResult<GraphTask?>(new GraphTask(taskId, "Task", "plan", "bucket", null, null, 0, "etag", ["person"]));
+            Task.FromResult<GraphTask?>(new GraphTask(taskId, "Task", "plan", "bucket", null, 3, 50, "etag", ["person"],
+                StartDateTime: StartDateTime, AppliedCategories: ["category1"]));
         public Task<string?> GetUserDisplayNameAsync(string userId, CancellationToken ct) => FailNameLookup
             ? throw new HttpRequestException("Directory unavailable")
             : Task.FromResult<string?>("Alex Smith");

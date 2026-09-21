@@ -12,6 +12,9 @@ public interface IPlannerGraphClient
 
     Task<IReadOnlyList<GraphTask>> GetTasksAsync(string planId, CancellationToken cancellationToken);
 
+    Task<IReadOnlyList<GraphPlanLabel>> GetPlanLabelsAsync(string planId, CancellationToken cancellationToken)
+        => throw new NotSupportedException();
+
     Task<string> GetCurrentUserIdAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
 
     Task<IReadOnlyList<GraphMember>> GetGroupMembersAsync(string groupId, CancellationToken cancellationToken)
