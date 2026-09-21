@@ -934,10 +934,12 @@ async function saveDetailMetadata(field, value) {
     updateDetailValue(taskId, field, value);
     if (field === "priority") dialog.priorityDraft = null;
     if (field === "progress") dialog.progressDraft = null;
-    state.completing = false; dialog.metadataStatus = "Changes saved."; render();
+    if (state.dialog === dialog) state.completing = false;
+    dialog.metadataStatus = "Changes saved."; render();
   } catch (error) {
     if (!isCurrentMetadataRequest(dialog, field, generation)) return;
-    state.completing = false; dialog.metadataStatus = normalizeError(error).message; render();
+    if (state.dialog === dialog) state.completing = false;
+    dialog.metadataStatus = normalizeError(error).message; render();
   }
 }
 

@@ -1187,6 +1187,51 @@ test("older progress success cannot clear a newer failed non-complete draft", as
   assert.match(app.innerHTML, /Keep not started/);
 });
 
+test("metadata completion cannot release an active progress confirmation request", async () => {
+  const priorityRequests = [];
+  const progressRequests = [];
+  const board = organizationBoard();
+  const detail = { ...organizationDetail(), priority: 1, percentComplete: 0 };
+  const { app, tap, change } = createDetailFixture(async (path, options = {}) => {
+    if (path.endsWith("/display")) return response(board);
+    if (path.includes("view-preferences")) return response(defaultPreferences());
+    if (path.endsWith("/chat")) return response({ state: "available", messages: [] });
+    if (path.endsWith("/details")) return response(detail);
+    if (path.endsWith("/priority") && options.method === "PUT")
+      return new Promise(resolve => priorityRequests.push(resolve));
+    if (path.endsWith("/progress") && options.method === "PUT")
+      return new Promise(resolve => progressRequests.push(resolve));
+    return response(null, 204);
+  });
+  await settle();
+  await tap("data-open-task", { openTask: "task" });
+  await settle();
+  const priorityWrite = change("data-task-priority", "3");
+  await change("data-task-progress", "100");
+  assert.match(app.innerHTML, /Complete task\?/);
+  const completionWrite = tap("data-confirm-progress");
+  assert.equal(progressRequests.length, 1);
+  assert.match(app.innerHTML, /data-confirm-progress\s+disabled/);
+
+  priorityRequests[0](response(null, 204));
+  await priorityWrite;
+  const confirmStayedDisabled = /data-confirm-progress\s+disabled/.test(app.innerHTML);
+  const duplicateAttempt = tap("data-confirm-progress");
+  const progressWriteCount = progressRequests.length;
+
+  progressRequests[0](response(null, 204));
+  await completionWrite;
+  if (progressRequests[1]) {
+    progressRequests[1](response(null, 204));
+    await duplicateAttempt;
+  }
+
+  assert.equal(confirmStayedDisabled, true);
+  assert.equal(progressWriteCount, 1);
+  assert.match(app.innerHTML, /data-task-progress[\s\S]*option value="100" selected/);
+  assert.doesNotMatch(app.innerHTML, /Complete task\?/);
+});
+
 test("new task sends start date priority and labels without progress", async () => {
   const calls = [];
   const board = organizationBoard();
