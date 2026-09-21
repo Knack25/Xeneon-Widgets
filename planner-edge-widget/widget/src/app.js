@@ -14,6 +14,7 @@ let dialogGeneration = 0;
 let taskObserver = null;
 let preferences = filterEngine?.createDefaultPreferences() || { myTasks: false, filters: {} };
 let preferencesPlanId = null;
+let activePreferencesPlanId = null;
 let preferenceLoadGeneration = 0;
 let searchText = "";
 let searchOpen = false;
@@ -42,7 +43,10 @@ async function loadPreferences(board) {
   const planId = board.planId;
   const generation = ++preferenceLoadGeneration;
   const defaults = filterEngine.sanitizePreferences(filterEngine.createDefaultPreferences(), board, null);
-  preferences = defaults;
+  if (activePreferencesPlanId !== planId) {
+    preferences = defaults;
+    activePreferencesPlanId = planId;
+  }
   preferencesPlanId = null;
   try {
     const saved = await api.getViewPreferences(planId);
@@ -60,11 +64,15 @@ async function loadPreferences(board) {
       if (!isCurrentPreferenceLoad(planId, generation)) return;
     }
     preferences = sanitized;
+    activePreferencesPlanId = planId;
     preferencesPlanId = planId;
     filterError = null;
   } catch (error) {
     if (!isCurrentPreferenceLoad(planId, generation)) return;
-    preferences = defaults;
+    if (activePreferencesPlanId !== planId) {
+      preferences = defaults;
+      activePreferencesPlanId = planId;
+    }
     preferencesPlanId = null;
     filterError = normalizeError(error).message;
   }
@@ -101,10 +109,16 @@ async function loadMembersForPlan(planId) {
 
 async function savePreferences() {
   if (!state.display || !filterEngine) return;
+  const planId = state.display.planId;
+  const savedPreferences = preferences;
+  const generation = ++preferenceLoadGeneration;
+  activePreferencesPlanId = planId;
   try {
-    await api.saveViewPreferences(state.display.planId, preferences);
+    await api.saveViewPreferences(planId, savedPreferences);
+    if (state.display?.planId !== planId || preferenceLoadGeneration !== generation) return;
     filterError = null;
   } catch (error) {
+    if (state.display?.planId !== planId || preferenceLoadGeneration !== generation) return;
     filterError = normalizeError(error).message;
   }
   render();
@@ -434,7 +448,7 @@ function showTaskDetails(taskId) {
     chatPage: null, chatDraft: "", chatStatus: "Loading comments...", chatLoading: true, chatPending: false,
     titleDraft: null, labelDraft: null, startDateDraft: null, progressDraft: null, priorityDraft: null,
     checklistAddDraft: "", checklistEditId: null,
-    checklistEditDraft: "", checklistStatus: "", metadataStatus: "", generation });
+    checklistEditDraft: "", checklistStatus: "", metadataStatus: "", metadataGenerations: {}, generation });
   render();
   loadTaskChat(taskId, generation);
 }
@@ -517,6 +531,8 @@ app.addEventListener("change", async event => {
     const progress = Number(event.target.value);
     if (progress === 100) {
       const info = details.get(state.dialog.taskId);
+      nextMetadataGeneration(state.dialog, "progress");
+      state.completing = false;
       state = flow.beginConfirmProgress(state, state.dialog.taskId, info?.title || "Task"); render();
     } else {
       state.dialog.progressDraft = progress;
@@ -660,7 +676,7 @@ app.addEventListener("click", async event => {
       await api.selectPlan(chosen.dataset.selectPlan);
       details.clear(); failures.clear(); members = null; memberError = null; memberPlanId = null;
       memberRequest = null; memberRequestGeneration++; preferenceLoadGeneration++;
-      createNotice = null; filterError = null; preferencesPlanId = null; searchText = "";
+      createNotice = null; filterError = null; preferencesPlanId = null; activePreferencesPlanId = null; searchText = "";
       state = flow.closeDialog(state);
       await loadDisplay(true);
     } catch (error) { state.completing = false; state.dialogError = normalizeError(error).message; render(); }
@@ -903,6 +919,7 @@ async function saveDetailMetadata(field, value) {
   const dialog = state.dialog;
   if (dialog?.type !== "taskDetails") return;
   const taskId = dialog.taskId;
+  const generation = nextMetadataGeneration(dialog, field);
   const operations = {
     title: () => api.setTitle(taskId, value),
     progress: () => api.setProgress(taskId, value),
@@ -913,15 +930,26 @@ async function saveDetailMetadata(field, value) {
   state.completing = true; dialog.metadataStatus = "Saving..."; render();
   try {
     await operations[field]();
-    if (state.dialog !== dialog) return;
+    if (!isCurrentMetadataRequest(dialog, field, generation)) return;
     updateDetailValue(taskId, field, value);
     if (field === "priority") dialog.priorityDraft = null;
     if (field === "progress") dialog.progressDraft = null;
     state.completing = false; dialog.metadataStatus = "Changes saved."; render();
   } catch (error) {
-    if (state.dialog !== dialog) return;
+    if (!isCurrentMetadataRequest(dialog, field, generation)) return;
     state.completing = false; dialog.metadataStatus = normalizeError(error).message; render();
   }
+}
+
+function nextMetadataGeneration(dialog, field) {
+  dialog.metadataGenerations ||= {};
+  dialog.metadataGenerations[field] = (dialog.metadataGenerations[field] || 0) + 1;
+  return dialog.metadataGenerations[field];
+}
+
+function isCurrentMetadataRequest(dialog, field, generation) {
+  const activeDialog = state.dialog === dialog || state.dialog?.returnDialog === dialog;
+  return activeDialog && dialog.metadataGenerations?.[field] === generation;
 }
 
 function updateDetailValue(taskId, field, value) {

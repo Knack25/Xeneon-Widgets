@@ -862,6 +862,51 @@ test("switching plans isolates preferences and retries a failed preference load"
   assert.equal(planBPreferenceReads, 2);
 });
 
+test("same-plan preference retry preserves settings saved after an initial read failure", async () => {
+  let refresh;
+  let preferenceReads = 0;
+  const writes = [];
+  const board = preferenceBoard("plan", "Work");
+  const handlers = {};
+  const appNode = { innerHTML: "", addEventListener: (type, listener) => { handlers[type] = listener; } };
+  const context = { document: { getElementById: () => appNode }, Intl, Date, URLSearchParams,
+    localStorage: { getItem: () => null, setItem() {} },
+    IntersectionObserver: class { observe() {} disconnect() {} },
+    setInterval: callback => { refresh = callback; },
+    fetch: async (path, options = {}) => {
+      if (path.endsWith("/display")) return response(board);
+      if (path.endsWith("/view-preferences/plan") && options.method === "PUT") {
+        const saved = JSON.parse(options.body); writes.push(saved); return response(saved);
+      }
+      if (path.endsWith("/view-preferences/plan")) {
+        preferenceReads++;
+        return response({ code: "offline", message: "Preferences unavailable." }, 503);
+      }
+      if (path.endsWith("/members")) return response([]);
+      return response({ checklist: [], assignees: [] });
+    } };
+  for (const file of ["state.js", "api.js", "filters.js", "view-state.js", "app.js"])
+    runInNewContext(readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"), context);
+  const click = (attribute, dataset = {}) => handlers.click({ target: {
+    closest: selector => selector === `[${attribute}]` ? { dataset } : null,
+    matches: selector => selector === `[${attribute}]`
+  } });
+  await settle();
+  assert.equal(preferenceReads, 1);
+  assert.match(appNode.innerHTML, /Urgent plan/);
+  assert.match(appNode.innerHTML, /Normal plan/);
+  await click("data-open-filters");
+  await click("data-toggle-filter", { filterGroup: "priorities", filterValue: "1" });
+  await click("data-close-dialog");
+  assert.deepEqual(writes.at(-1).filters.priorities, [1]);
+  assert.match(appNode.innerHTML, /Urgent plan/);
+  assert.doesNotMatch(appNode.innerHTML, /Normal plan/);
+  await refresh();
+  assert.equal(preferenceReads, 2);
+  assert.match(appNode.innerHTML, /Urgent plan/);
+  assert.doesNotMatch(appNode.innerHTML, /Normal plan/);
+});
+
 test("restored assignee filters remove stale members and persist the repair", async () => {
   const writes = [];
   let memberReads = 0;
@@ -1082,6 +1127,64 @@ test("failed priority and non-complete progress writes retain attempted selectio
   await change("data-task-progress", "50");
   assert.match(app.innerHTML, /data-task-progress[\s\S]*option value="50" selected/);
   assert.match(app.innerHTML, /Refresh and try again/);
+});
+
+test("older priority success cannot clear a newer failed draft", async () => {
+  const requests = [];
+  const board = organizationBoard();
+  const detail = { ...organizationDetail(), priority: 1 };
+  const { app, tap, change } = createDetailFixture(async (path, options = {}) => {
+    if (path.endsWith("/display")) return response(board);
+    if (path.includes("view-preferences")) return response(defaultPreferences());
+    if (path.endsWith("/chat")) return response({ state: "available", messages: [] });
+    if (path.endsWith("/details")) return response(detail);
+    if (path.endsWith("/priority") && options.method === "PUT")
+      return new Promise(resolve => requests.push({ value: JSON.parse(options.body).priority, resolve }));
+    return response(null, 204);
+  });
+  await settle();
+  await tap("data-open-task", { openTask: "task" });
+  await settle();
+  const older = change("data-task-priority", "3");
+  const newer = change("data-task-priority", "5");
+  assert.deepEqual(requests.map(request => request.value), [3, 5]);
+  requests[1].resolve(response({ code: "conflict", message: "Keep medium." }, 409));
+  await newer;
+  assert.match(app.innerHTML, /data-task-priority[\s\S]*option value="5" selected/);
+  assert.match(app.innerHTML, /Keep medium/);
+  requests[0].resolve(response(null, 204));
+  await older;
+  assert.match(app.innerHTML, /data-task-priority[\s\S]*option value="5" selected/);
+  assert.match(app.innerHTML, /Keep medium/);
+});
+
+test("older progress success cannot clear a newer failed non-complete draft", async () => {
+  const requests = [];
+  const board = organizationBoard();
+  const detail = { ...organizationDetail(), percentComplete: 0 };
+  const { app, tap, change } = createDetailFixture(async (path, options = {}) => {
+    if (path.endsWith("/display")) return response(board);
+    if (path.includes("view-preferences")) return response(defaultPreferences());
+    if (path.endsWith("/chat")) return response({ state: "available", messages: [] });
+    if (path.endsWith("/details")) return response(detail);
+    if (path.endsWith("/progress") && options.method === "PUT")
+      return new Promise(resolve => requests.push({ value: JSON.parse(options.body).progress, resolve }));
+    return response(null, 204);
+  });
+  await settle();
+  await tap("data-open-task", { openTask: "task" });
+  await settle();
+  const older = change("data-task-progress", "50");
+  const newer = change("data-task-progress", "0");
+  assert.deepEqual(requests.map(request => request.value), [50, 0]);
+  requests[1].resolve(response({ code: "conflict", message: "Keep not started." }, 409));
+  await newer;
+  assert.match(app.innerHTML, /data-task-progress[\s\S]*option value="0" selected/);
+  assert.match(app.innerHTML, /Keep not started/);
+  requests[0].resolve(response(null, 204));
+  await older;
+  assert.match(app.innerHTML, /data-task-progress[\s\S]*option value="0" selected/);
+  assert.match(app.innerHTML, /Keep not started/);
 });
 
 test("new task sends start date priority and labels without progress", async () => {
