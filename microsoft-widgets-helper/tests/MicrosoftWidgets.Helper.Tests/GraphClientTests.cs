@@ -234,9 +234,9 @@ public sealed class GraphClientTests
         {
             Assert.Equal(HttpMethod.Get, request.Method);
             Assert.Equal("/v1.0/groups/group/threads/thread/posts", request.RequestUri!.AbsolutePath);
-            Assert.Equal("?$select=id,body,from,createdDateTime", request.RequestUri.Query);
+            Assert.Equal("?$select=id,body,sender,from,createdDateTime", request.RequestUri.Query);
             Assert.Equal("conversation-token", request.Headers.Authorization?.Parameter);
-            return """{"value":[{"id":"post-1","body":{"contentType":"html","content":"<p>Hello</p>"},"from":{"emailAddress":{"name":"Alex","address":"alex@example.com"}},"createdDateTime":"2026-09-21T12:00:00Z"}],"@odata.nextLink":"NEXT"}"""
+            return """{"value":[{"id":"post-1","body":{"contentType":"html","content":"<p>Hello</p>"},"sender":{"emailAddress":{"name":"Actual sender","address":"sender@example.com"}},"from":{"emailAddress":{"name":"Fallback author","address":"fallback@example.com"}},"createdDateTime":"2026-09-21T12:00:00Z"}],"@odata.nextLink":"NEXT"}"""
                 .Replace("NEXT", next, StringComparison.Ordinal);
         });
 
@@ -246,9 +246,24 @@ public sealed class GraphClientTests
         var post = Assert.Single(page.Posts);
         Assert.Equal("post-1", post.Id);
         Assert.Equal("<p>Hello</p>", post.Body);
-        Assert.Equal("Alex", post.Author);
+        Assert.Equal("html", post.ContentType);
+        Assert.Equal("Actual sender", post.Author);
         Assert.Equal(new DateTimeOffset(2026, 9, 21, 12, 0, 0, TimeSpan.Zero), post.CreatedAt);
         Assert.Equal(next, page.NextLink?.AbsoluteUri);
+    }
+
+    [Fact]
+    public async Task GetConversationPostsAsync_FallsBackToFromWhenSenderIsUnavailableAndRetainsTextType()
+    {
+        var handler = new StubHandler(_ =>
+            """{"value":[{"id":"post-1","body":{"contentType":"text","content":"<script>alert(1)</script>"},"from":{"emailAddress":{"name":"Fallback author"}}}]}""");
+
+        var post = Assert.Single((await CreateClient(handler, new DistinctTokenProvider())
+            .GetConversationPostsAsync("group", "thread", null, CancellationToken.None)).Posts);
+
+        Assert.Equal("text", post.ContentType);
+        Assert.Equal("<script>alert(1)</script>", post.Body);
+        Assert.Equal("Fallback author", post.Author);
     }
 
     [Fact]

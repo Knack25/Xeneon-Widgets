@@ -1,3 +1,4 @@
+using System.Net;
 using Microsoft.Extensions.Caching.Memory;
 using PlannerEdge.Helper.Graph;
 using PlannerEdge.Helper.Planner;
@@ -34,6 +35,21 @@ public sealed class TaskNotesServiceTests
         Assert.Equal("", Assert.Single(graph.Updates).Description);
     }
 
+    [Fact]
+    public async Task UpdateAsync_RejectsNullDescriptionAsValidationError()
+    {
+        var graph = new FakeGraph();
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+
+        var error = await Assert.ThrowsAsync<ArgumentException>(() =>
+            new TaskNotesService(graph, new TaskDetailsService(graph, cache))
+                .UpdateAsync("task", null!, CancellationToken.None));
+
+        Assert.Contains("notes", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, graph.DetailReads);
+        Assert.Empty(graph.Updates);
+    }
+
     [Theory]
     [InlineData(4000, false)]
     [InlineData(4001, true)]
@@ -53,7 +69,7 @@ public sealed class TaskNotesServiceTests
     }
 
     [Fact]
-    public async Task UpdateAsync_WhenGraphUpdateFails_KeepsCachedDetails()
+    public async Task UpdateAsync_WhenNonConflictGraphUpdateFails_KeepsCachedDetails()
     {
         var graph = new FakeGraph { FailUpdate = true };
         using var cache = new MemoryCache(new MemoryCacheOptions());
@@ -70,10 +86,28 @@ public sealed class TaskNotesServiceTests
         Assert.Empty(graph.Updates);
     }
 
+    [Fact]
+    public async Task UpdateAsync_WhenGraphUpdateConflicts_InvalidatesCachedDetails()
+    {
+        var graph = new FakeGraph { UpdateException = new GraphApiException(HttpStatusCode.PreconditionFailed, "stale") };
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var details = new TaskDetailsService(graph, cache);
+        await details.GetAsync("task", CancellationToken.None);
+        var service = new TaskNotesService(graph, details);
+
+        await Assert.ThrowsAsync<GraphApiException>(() =>
+            service.UpdateAsync("task", "Updated notes", CancellationToken.None));
+        await details.GetAsync("task", CancellationToken.None);
+
+        Assert.Equal(3, graph.DetailReads);
+        Assert.Empty(graph.Updates);
+    }
+
     private sealed class FakeGraph : IPlannerGraphClient
     {
         public int DetailReads { get; private set; }
         public bool FailUpdate { get; init; }
+        public Exception? UpdateException { get; init; }
         public List<(string TaskId, string Description, string ETag)> Updates { get; } = [];
 
         public Task<GraphTask?> GetTaskAsync(string taskId, CancellationToken ct) =>
@@ -87,6 +121,7 @@ public sealed class TaskNotesServiceTests
 
         public Task UpdateTaskDescriptionAsync(string taskId, string description, string etag, CancellationToken ct)
         {
+            if (UpdateException is not null) throw UpdateException;
             if (FailUpdate)
                 throw new HttpRequestException("Update failed");
             Updates.Add((taskId, description, etag));

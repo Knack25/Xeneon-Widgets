@@ -45,6 +45,8 @@ public interface IPlannerGraphClient
     Task<GraphConversationPage> GetConversationPostsAsync(string groupId, string threadId, Uri? continuationUri,
         CancellationToken cancellationToken) => throw new NotSupportedException();
 
+    Task EnsureConversationAccessAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
+
     Task ReplyToConversationAsync(string groupId, string threadId, string message, CancellationToken cancellationToken)
         => throw new NotSupportedException();
 

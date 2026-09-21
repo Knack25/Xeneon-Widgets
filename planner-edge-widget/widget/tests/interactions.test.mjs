@@ -503,6 +503,22 @@ test("chat shows empty and permission states", async () => {
   assert.doesNotMatch(app.innerHTML, /data-post-chat/);
 });
 
+test("chat composer is multiline with its existing length and touch constraints", async () => {
+  const board = { planId: "plan", planTitle: "Work", syncedAt: "2026-09-21T12:00:00Z", buckets: [
+    { bucketId: "b", name: "Doing", tasks: [{ taskId: "task", title: "Build" }] }
+  ] };
+  const detail = { taskId: "task", title: "Build", checklist: [], assignees: [], description: "" };
+  const { app, tap } = createDetailFixture(async path => ({ ok: true, status: 200, json: async () =>
+    path.endsWith("/display") ? board : path.endsWith("/details") ? detail : { state: "available", messages: [] }
+  }));
+  await settle();
+  await tap("data-open-task", { openTask: "task" });
+  await settle();
+
+  assert.match(app.innerHTML, /<textarea[^>]*data-chat-draft[^>]*maxlength="4000"/);
+  assert.doesNotMatch(app.innerHTML, /<input[^>]*data-chat-draft/);
+});
+
 test("loading earlier chat prepends messages and preserves chronological order", async () => {
   const calls = [];
   const board = { planId: "plan", planTitle: "Work", syncedAt: "2026-09-21T12:00:00Z", buckets: [
@@ -582,7 +598,7 @@ test("successful chat posts clear the draft and render the returned page", async
   await tap("data-post-chat");
   assert.deepEqual(posts, ["Status update"]);
   assert.match(app.innerHTML, /Status update/);
-  assert.match(app.innerHTML, /data-chat-draft[^>]*value=""/);
+  assert.match(app.innerHTML, /<textarea[^>]*data-chat-draft[^>]*><\/textarea>/);
   assert.match(app.innerHTML, /Comment posted/);
 });
 
@@ -611,7 +627,7 @@ test("chat edits made while posting remain as the next comment draft", async () 
   input("data-chat-draft", "Next comment");
   releasePost();
   await posting;
-  assert.match(app.innerHTML, /data-chat-draft[^>]*value="Next comment"/);
+  assert.match(app.innerHTML, /<textarea[^>]*data-chat-draft[^>]*>Next comment<\/textarea>/);
   assert.match(app.innerHTML, /Submitted comment/);
 });
 
@@ -636,6 +652,56 @@ test("closed dialogs reject stale chat completions", async () => {
   await settle();
   assert.doesNotMatch(app.innerHTML, /Task chat/);
   assert.doesNotMatch(app.innerHTML, /Late/);
+});
+
+test("closed dialogs ignore late chat rejection and cancellation errors", async () => {
+  for (const lateError of [new Error("Late failure"), Object.assign(new Error("Cancelled"), { name: "AbortError" })]) {
+    let rejectChat;
+    const board = { planId: "plan", planTitle: "Work", syncedAt: "2026-09-21T12:00:00Z", buckets: [
+      { bucketId: "b", name: "Doing", tasks: [{ taskId: "task", title: "Build" }] }
+    ] };
+    const detail = { taskId: "task", title: "Build", checklist: [], assignees: [], description: "" };
+    const { app, tap } = createDetailFixture(async path => {
+      if (path.endsWith("/display")) return { ok: true, status: 200, json: async () => board };
+      if (path.endsWith("/details")) return { ok: true, status: 200, json: async () => detail };
+      return new Promise((_, reject) => { rejectChat = reject; });
+    });
+    await settle();
+    await tap("data-open-task", { openTask: "task" });
+    await settle();
+    await tap("data-close-dialog");
+    rejectChat(lateError);
+    await settle();
+    assert.doesNotMatch(app.innerHTML, /Task chat|Late failure|Cancelled/);
+  }
+});
+
+test("unattached first comment keeps a disabled draft and prevents another submission", async () => {
+  let postCount = 0;
+  const board = { planId: "plan", planTitle: "Work", syncedAt: "2026-09-21T12:00:00Z", buckets: [
+    { bucketId: "b", name: "Doing", tasks: [{ taskId: "task", title: "Build" }] }
+  ] };
+  const detail = { taskId: "task", title: "Build", checklist: [], assignees: [], description: "" };
+  const { app, tap, input } = createDetailFixture(async (path, options = {}) => {
+    if (path.endsWith("/display")) return { ok: true, status: 200, json: async () => board };
+    if (path.endsWith("/details")) return { ok: true, status: 200, json: async () => detail };
+    if (options.method === "POST") {
+      postCount++;
+      return { ok: true, status: 200, json: async () => ({ state: "attachment_pending", messages: [],
+        message: "Your comment was created, but Planner could not attach the conversation. Refresh task details before posting again." }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ state: "available", messages: [] }) };
+  });
+  await settle();
+  await tap("data-open-task", { openTask: "task" });
+  await settle();
+  input("data-chat-draft", "First <comment>");
+  await tap("data-post-chat");
+
+  assert.equal(postCount, 1);
+  assert.match(app.innerHTML, /comment was created/);
+  assert.match(app.innerHTML, /<textarea[^>]*data-chat-draft[^>]*disabled[^>]*>First &lt;comment&gt;<\/textarea>/);
+  assert.doesNotMatch(app.innerHTML, /data-post-chat/);
 });
 
 test("chat updates preserve detail panel, board, and bucket scroll positions", async () => {

@@ -13,6 +13,8 @@ public sealed class TaskChatService(
     TaskDetailsService taskDetails)
 {
     private const string PermissionMessage = "Enable task chat to read and post Planner comments.";
+    private const string AttachmentPendingMessage =
+        "Your comment was created, but Planner could not attach the conversation. Refresh task details before posting again.";
 
     public async Task<TaskChatResponse> GetAsync(string taskId, string? cursor, CancellationToken cancellationToken)
     {
@@ -21,7 +23,15 @@ public sealed class TaskChatService(
         {
             if (!string.IsNullOrWhiteSpace(cursor))
                 throw new ArgumentException("The conversation cursor is no longer valid.", nameof(cursor));
-            return new TaskChatResponse("available", []);
+            try
+            {
+                await graphClient.EnsureConversationAccessAsync(cancellationToken);
+                return new TaskChatResponse("available", []);
+            }
+            catch (MsalUiRequiredException)
+            {
+                return new TaskChatResponse("interaction_required", [], Message: PermissionMessage);
+            }
         }
 
         var continuation = DecodeCursor(cursor, context.GroupId, context.Task.ConversationThreadId);
@@ -56,9 +66,8 @@ public sealed class TaskChatService(
                 throw ConversationPermissionRequired();
             }
 
-            await graphClient.SetConversationThreadAsync(
-                context.Task.Id, threadId, context.Task.ETag, cancellationToken);
-            taskDetails.Invalidate(taskId);
+            if (!await AttachCreatedThreadAsync(context.Task, threadId, cancellationToken))
+                return new TaskChatResponse("attachment_pending", [], Message: AttachmentPendingMessage);
         }
         else
         {
@@ -107,12 +116,62 @@ public sealed class TaskChatService(
         var page = await graphClient.GetConversationPostsAsync(groupId, threadId, continuation, cancellationToken);
         var messages = page.Posts
             .Select(post => new TaskChatMessage(post.Id, post.Author, post.CreatedAt,
-                ConversationText.ToPlainText(post.Body)))
+                post.ContentType.Equals("html", StringComparison.OrdinalIgnoreCase)
+                    ? ConversationText.ToPlainText(post.Body)
+                    : post.Body))
             .OrderBy(message => message.CreatedAt ?? DateTimeOffset.MinValue)
             .ThenBy(message => message.Id, StringComparer.Ordinal)
             .ToList();
         return new TaskChatResponse("available", messages,
             page.NextLink is null ? null : EncodeCursor(page.NextLink));
+    }
+
+    private async Task<bool> AttachCreatedThreadAsync(GraphTask originalTask, string threadId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await graphClient.SetConversationThreadAsync(originalTask.Id, threadId, originalTask.ETag, cancellationToken);
+            taskDetails.Invalidate(originalTask.Id);
+            return true;
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            var refreshed = await TryReloadTaskAsync(originalTask.Id, cancellationToken);
+            if (refreshed?.ConversationThreadId == threadId)
+            {
+                taskDetails.Invalidate(originalTask.Id);
+                return true;
+            }
+            if (refreshed is null || !string.IsNullOrWhiteSpace(refreshed.ConversationThreadId))
+                return false;
+
+            try
+            {
+                await graphClient.SetConversationThreadAsync(originalTask.Id, threadId, refreshed.ETag, cancellationToken);
+                taskDetails.Invalidate(originalTask.Id);
+                return true;
+            }
+            catch (Exception retryError) when (retryError is not OperationCanceledException)
+            {
+                var afterRetry = await TryReloadTaskAsync(originalTask.Id, cancellationToken);
+                if (afterRetry?.ConversationThreadId != threadId) return false;
+                taskDetails.Invalidate(originalTask.Id);
+                return true;
+            }
+        }
+    }
+
+    private async Task<GraphTask?> TryReloadTaskAsync(string taskId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await graphClient.GetTaskAsync(taskId, cancellationToken);
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            return null;
+        }
     }
 
     private static string EncodeCursor(Uri uri) => Convert.ToBase64String(Encoding.UTF8.GetBytes(uri.AbsoluteUri))

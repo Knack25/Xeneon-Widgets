@@ -40,6 +40,21 @@ public sealed class TaskChatServiceTests
     }
 
     [Fact]
+    public async Task GetAsync_PreservesTextBodiesAndConvertsOnlyHtmlBodies()
+    {
+        var fixture = CreateFixture();
+        fixture.Graph.Page = new GraphConversationPage([
+            new("text", "<script>alert(1)</script>", "Alex", DateTimeOffset.Parse("2026-09-21T12:00:00Z"), "text"),
+            new("html", "<p>Safe &amp; sound</p><script>alert(2)</script>", "Blair", DateTimeOffset.Parse("2026-09-21T12:01:00Z"), "html")
+        ], null);
+
+        var response = await fixture.Service.GetAsync("task", null, CancellationToken.None);
+
+        Assert.Equal("<script>alert(1)</script>", response.Messages[0].Body);
+        Assert.Equal("Safe & sound", response.Messages[1].Body);
+    }
+
+    [Fact]
     public async Task GetAsync_ReturnsAvailableEmptyStateWithoutReadingConversationWhenTaskHasNoThread()
     {
         var fixture = CreateFixture(threadId: null);
@@ -50,6 +65,21 @@ public sealed class TaskChatServiceTests
         Assert.Empty(response.Messages);
         Assert.Null(response.NextCursor);
         Assert.Empty(fixture.Graph.ConversationReads);
+        Assert.Equal(1, fixture.Graph.ConversationAccessChecks);
+    }
+
+    [Fact]
+    public async Task GetAsync_ReturnsInteractionRequiredForTaskWithoutThreadWhenConsentIsMissing()
+    {
+        var fixture = CreateFixture(threadId: null);
+        fixture.Graph.ConversationException = new MsalUiRequiredException("consent_required", "Sensitive detail");
+
+        var response = await fixture.Service.GetAsync("task", null, CancellationToken.None);
+
+        Assert.Equal("interaction_required", response.State);
+        Assert.Empty(response.Messages);
+        Assert.DoesNotContain("Sensitive", response.Message);
+        Assert.Equal(1, fixture.Graph.ConversationAccessChecks);
     }
 
     [Fact]
@@ -170,17 +200,59 @@ public sealed class TaskChatServiceTests
     }
 
     [Fact]
-    public async Task PostAsync_PropagatesEtagConflictWithoutRetryingThreadCreation()
+    public async Task PostAsync_ReconcilesMatchingThreadAfterUncertainAttachmentWithoutCreatingAgain()
     {
         var fixture = CreateFixture(threadId: null);
-        fixture.Graph.AttachmentException = new GraphApiException(HttpStatusCode.PreconditionFailed, "stale");
+        fixture.Graph.AttachmentResults.Enqueue(new HttpRequestException("connection dropped"));
+        fixture.Graph.TaskResult = read => read == 1
+            ? fixture.Graph.CurrentTask
+            : fixture.Graph.CurrentTask with { ConversationThreadId = "new-thread", ETag = "W/\"latest\"" };
 
-        var error = await Assert.ThrowsAsync<GraphApiException>(() =>
-            fixture.Service.PostAsync("task", "First comment", CancellationToken.None));
+        var response = await fixture.Service.PostAsync("task", "First comment", CancellationToken.None);
 
-        Assert.Equal(HttpStatusCode.PreconditionFailed, error.StatusCode);
+        Assert.Equal("available", response.State);
         Assert.Single(fixture.Graph.Creates);
         Assert.Single(fixture.Graph.Attachments);
+        Assert.Equal("new-thread", Assert.Single(fixture.Graph.ConversationReads).ThreadId);
+    }
+
+    [Fact]
+    public async Task PostAsync_RetriesSameThreadWithRefreshedEtagAfterConflict()
+    {
+        var fixture = CreateFixture(threadId: null);
+        fixture.Graph.AttachmentResults.Enqueue(new GraphApiException(HttpStatusCode.PreconditionFailed, "stale"));
+        fixture.Graph.AttachmentResults.Enqueue(null);
+        fixture.Graph.TaskResult = read => read == 1
+            ? fixture.Graph.CurrentTask
+            : fixture.Graph.CurrentTask with { ETag = "W/\"latest\"" };
+
+        var response = await fixture.Service.PostAsync("task", "First comment", CancellationToken.None);
+
+        Assert.Equal("available", response.State);
+        Assert.Single(fixture.Graph.Creates);
+        Assert.Equal([
+            ("task", "new-thread", "W/\"task\""),
+            ("task", "new-thread", "W/\"latest\"")
+        ], fixture.Graph.Attachments);
+    }
+
+    [Fact]
+    public async Task PostAsync_ReturnsAttachmentPendingAfterPersistentFailureWithoutCreatingAgain()
+    {
+        var fixture = CreateFixture(threadId: null);
+        fixture.Graph.AttachmentResults.Enqueue(new GraphApiException(HttpStatusCode.PreconditionFailed, "stale"));
+        fixture.Graph.AttachmentResults.Enqueue(new HttpRequestException("connection dropped"));
+        fixture.Graph.TaskResult = read => read == 1
+            ? fixture.Graph.CurrentTask
+            : fixture.Graph.CurrentTask with { ETag = $"W/\"latest-{read}\"" };
+
+        var response = await fixture.Service.PostAsync("task", "First comment", CancellationToken.None);
+
+        Assert.Equal("attachment_pending", response.State);
+        Assert.Contains("comment was created", response.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Single(fixture.Graph.Creates);
+        Assert.Equal(2, fixture.Graph.Attachments.Count);
+        Assert.All(fixture.Graph.Attachments, attachment => Assert.Equal("new-thread", attachment.ThreadId));
         Assert.Empty(fixture.Graph.ConversationReads);
     }
 
@@ -226,15 +298,22 @@ public sealed class TaskChatServiceTests
         public GraphTask CurrentTask { get; set; } = null!;
         public GraphConversationPage Page { get; set; } = new([], null);
         public Exception? ConversationException { get; set; }
-        public Exception? AttachmentException { get; set; }
         public Exception? GroupMembersException { get; set; }
+        public Queue<Exception?> AttachmentResults { get; } = [];
+        public Func<int, GraphTask>? TaskResult { get; set; }
+        public int TaskReads { get; private set; }
+        public int ConversationAccessChecks { get; private set; }
         public int DetailReads { get; private set; }
         public List<(string GroupId, string ThreadId, Uri? Cursor)> ConversationReads { get; } = [];
         public List<(string GroupId, string ThreadId, string Message)> Replies { get; } = [];
         public List<(string GroupId, string Topic, string Message)> Creates { get; } = [];
         public List<(string TaskId, string ThreadId, string ETag)> Attachments { get; } = [];
 
-        public Task<GraphTask?> GetTaskAsync(string taskId, CancellationToken cancellationToken) => Task.FromResult<GraphTask?>(CurrentTask);
+        public Task<GraphTask?> GetTaskAsync(string taskId, CancellationToken cancellationToken)
+        {
+            TaskReads++;
+            return Task.FromResult<GraphTask?>(TaskResult?.Invoke(TaskReads) ?? CurrentTask);
+        }
         public Task<IReadOnlyList<GraphPlan>> GetMyPlansAsync(CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<GraphPlan>>([new("plan", "Plan", "group", null)]);
         public Task<IReadOnlyList<GraphGroup>> GetMemberGroupsAsync(CancellationToken cancellationToken)
@@ -248,6 +327,12 @@ public sealed class TaskChatServiceTests
             if (ConversationException is not null) throw ConversationException;
             ConversationReads.Add((groupId, threadId, continuationUri));
             return Task.FromResult(Page);
+        }
+        public Task EnsureConversationAccessAsync(CancellationToken cancellationToken)
+        {
+            ConversationAccessChecks++;
+            if (ConversationException is not null) throw ConversationException;
+            return Task.CompletedTask;
         }
         public Task ReplyToConversationAsync(string groupId, string threadId, string message, CancellationToken cancellationToken)
         {
@@ -265,7 +350,7 @@ public sealed class TaskChatServiceTests
         public Task SetConversationThreadAsync(string taskId, string threadId, string etag, CancellationToken cancellationToken)
         {
             Attachments.Add((taskId, threadId, etag));
-            if (AttachmentException is not null) throw AttachmentException;
+            if (AttachmentResults.TryDequeue(out var result) && result is not null) throw result;
             CurrentTask = CurrentTask with { ConversationThreadId = threadId };
             return System.Threading.Tasks.Task.CompletedTask;
         }

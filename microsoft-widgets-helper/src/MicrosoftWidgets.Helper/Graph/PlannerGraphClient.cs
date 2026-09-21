@@ -256,7 +256,7 @@ public sealed class PlannerGraphClient(HttpClient httpClient, IGraphTokenProvide
         var escapedGroup = Uri.EscapeDataString(groupId);
         var escapedThread = Uri.EscapeDataString(threadId);
         var requestUri = continuationUri ?? new Uri(
-            $"groups/{escapedGroup}/threads/{escapedThread}/posts?$select=id,body,from,createdDateTime",
+            $"groups/{escapedGroup}/threads/{escapedThread}/posts?$select=id,body,sender,from,createdDateTime",
             UriKind.Relative);
         if (continuationUri is not null)
             ValidateConversationContinuation(continuationUri, escapedGroup, escapedThread);
@@ -267,27 +267,20 @@ public sealed class PlannerGraphClient(HttpClient httpClient, IGraphTokenProvide
         var posts = new List<GraphConversationPost>();
         foreach (var item in document.RootElement.GetProperty("value").EnumerateArray())
         {
-            var body = item.TryGetProperty("body", out var bodyValue)
-                && bodyValue.TryGetProperty("content", out var content)
-                ? content.GetString() ?? string.Empty
-                : string.Empty;
-            string? author = null;
-            if (item.TryGetProperty("from", out var from)
-                && from.ValueKind == JsonValueKind.Object
-                && from.TryGetProperty("emailAddress", out var email)
-                && email.ValueKind == JsonValueKind.Object)
-            {
-                if (email.TryGetProperty("name", out var name)) author = name.GetString();
-                if (string.IsNullOrWhiteSpace(author) && email.TryGetProperty("address", out var address))
-                    author = address.GetString();
-            }
+            var hasBody = item.TryGetProperty("body", out var bodyValue) && bodyValue.ValueKind == JsonValueKind.Object;
+            var body = hasBody && bodyValue.TryGetProperty("content", out var content)
+                ? content.GetString() ?? string.Empty : string.Empty;
+            var contentType = hasBody && bodyValue.TryGetProperty("contentType", out var type)
+                ? type.GetString() ?? string.Empty : string.Empty;
+            var author = ReadConversationAuthor(item, "sender") ?? ReadConversationAuthor(item, "from");
             posts.Add(new GraphConversationPost(
                 item.GetProperty("id").GetString()!,
                 body,
                 string.IsNullOrWhiteSpace(author) ? "Unknown" : author,
                 item.TryGetProperty("createdDateTime", out var createdAt) && createdAt.ValueKind != JsonValueKind.Null
                     ? createdAt.GetDateTimeOffset()
-                    : null));
+                    : null,
+                contentType));
         }
 
         Uri? nextLink = null;
@@ -297,6 +290,21 @@ public sealed class PlannerGraphClient(HttpClient httpClient, IGraphTokenProvide
             if (!string.IsNullOrWhiteSpace(value)) nextLink = new Uri(value, UriKind.Absolute);
         }
         return new GraphConversationPage(posts, nextLink);
+    }
+
+    public async Task EnsureConversationAccessAsync(CancellationToken cancellationToken) =>
+        _ = await tokenProvider.GetConversationTokenAsync(cancellationToken);
+
+    private static string? ReadConversationAuthor(JsonElement item, string propertyName)
+    {
+        if (!item.TryGetProperty(propertyName, out var source)
+            || source.ValueKind != JsonValueKind.Object
+            || !source.TryGetProperty("emailAddress", out var email)
+            || email.ValueKind != JsonValueKind.Object)
+            return null;
+        var name = email.TryGetProperty("name", out var nameValue) ? nameValue.GetString() : null;
+        return !string.IsNullOrWhiteSpace(name) ? name
+            : email.TryGetProperty("address", out var address) ? address.GetString() : null;
     }
 
     public async Task ReplyToConversationAsync(string groupId, string threadId, string message,

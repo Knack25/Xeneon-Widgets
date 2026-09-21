@@ -156,13 +156,16 @@ function sortChatMessages(messages) {
 function renderChat(dialog) {
   const page = dialog.chatPage;
   if (!page) return `<h3>Task chat</h3><p class="section-status" role="status">${escapeHtml(dialog.chatStatus || "Loading comments...")}</p>`;
+  if (page.state === "attachment_pending")
+    return `<h3>Task chat</h3><p class="section-status" role="status">${escapeHtml(page.message || "Your comment was created. Refresh task details before posting again.")}</p>
+      <div class="chat-composer"><textarea data-chat-draft maxlength="4000" disabled aria-label="Submitted comment">${escapeHtml(dialog.chatDraft || "")}</textarea></div>`;
   if (page.state !== "available")
     return `<h3>Task chat</h3><p class="section-status" role="status">${escapeHtml(page.message || "Task chat is unavailable.")}</p>`;
   const messages = sortChatMessages(page.messages || []);
   return `<h3>Task chat</h3>
     <div class="chat-history">${page.nextCursor ? `<button type="button" data-load-earlier-chat ${dialog.chatLoading ? "disabled" : ""}>Load earlier comments</button>` : ""}
       ${messages.length ? messages.map(message => `<article class="chat-message"><p class="chat-meta"><strong>${escapeHtml(message.author || "Unknown")}</strong>${message.createdAt ? ` <time>${escapeHtml(formatChatTime(message.createdAt))}</time>` : ""}</p><p>${escapeHtml(message.body || "")}</p></article>`).join("") : '<p class="empty">No comments yet.</p>'}</div>
-    <div class="chat-composer"><input data-chat-draft maxlength="4000" value="${escapeHtml(dialog.chatDraft || "")}" aria-label="Add a comment" placeholder="Add a comment"><button type="button" class="primary" data-post-chat ${dialog.chatPending ? "disabled" : ""}>Post</button></div>
+    <div class="chat-composer"><textarea data-chat-draft maxlength="4000" aria-label="Add a comment" placeholder="Add a comment">${escapeHtml(dialog.chatDraft || "")}</textarea><button type="button" class="primary" data-post-chat ${dialog.chatPending ? "disabled" : ""}>Post</button></div>
     <p class="section-status" role="status">${escapeHtml(dialog.chatStatus || "")}</p>`;
 }
 
@@ -491,7 +494,7 @@ app.addEventListener("click", async event => {
       const page = await api.postTaskChat(taskId, message);
       if (!isCurrentTaskDialog(taskId, generation)) return;
       dialog.chatPage = { ...page, messages: sortChatMessages(page.messages || []) };
-      if (dialog.chatDraft === message) dialog.chatDraft = "";
+      if (page.state === "available" && dialog.chatDraft === message) dialog.chatDraft = "";
       dialog.chatPending = false; dialog.chatStatus = "Comment posted."; render();
     } catch (error) {
       if (!isCurrentTaskDialog(taskId, generation)) return;
