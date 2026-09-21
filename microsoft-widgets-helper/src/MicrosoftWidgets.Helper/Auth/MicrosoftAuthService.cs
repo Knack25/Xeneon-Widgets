@@ -25,6 +25,7 @@ public interface IMicrosoftAuthService : IGraphTokenProvider
     Task<AuthStatusResponse> GetStatusAsync(CancellationToken cancellationToken);
     Task<AuthStatusResponse> SignInAsync(CancellationToken cancellationToken);
     Task<AuthStatusResponse> ConnectOutlookAsync(CancellationToken cancellationToken);
+    Task<AuthStatusResponse> EnableTaskChatAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
     Task<AuthStatusResponse> EnableAssigneeNamesAsync(CancellationToken cancellationToken);
     Task<AuthStatusResponse> EnableBoardMembersAsync(CancellationToken cancellationToken);
     Task SignOutAsync(CancellationToken cancellationToken);
@@ -33,6 +34,10 @@ public interface IMicrosoftAuthService : IGraphTokenProvider
 public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILocalJsonStore jsonStore, string? cacheDirectory = null) : IMicrosoftAuthService
 {
     internal static IReadOnlyList<string> PlannerScopes { get; } = Array.AsReadOnly(new[] { "User.Read", "Tasks.ReadWrite" });
+    internal static IReadOnlyList<string> ConversationScopes { get; } =
+        Array.AsReadOnly(new[] { "Group-Conversation.ReadWrite.All" });
+    internal static IReadOnlyList<string> PlannerConnectScopes { get; } =
+        Array.AsReadOnly(new[] { "User.Read", "Tasks.ReadWrite", "Group-Conversation.ReadWrite.All" });
     internal static IReadOnlyList<string> AssigneeNamesScopes { get; } = Array.AsReadOnly(new[] { "User.ReadBasic.All" });
     internal static IReadOnlyList<string> BoardMembersScopes { get; } = Array.AsReadOnly(new[] { "GroupMember.ReadBasic.All" });
     private const string RedirectUri = "http://localhost";
@@ -114,6 +119,9 @@ public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILoc
 
     public Task<string> GetGroupMemberTokenAsync(CancellationToken cancellationToken) => GetTokenForScopesAsync(BoardMembersScopes, cancellationToken);
 
+    public Task<string> GetConversationTokenAsync(CancellationToken cancellationToken) =>
+        GetTokenForScopesAsync(ConversationScopes, cancellationToken);
+
     public async Task<string> GetTokenForScopesAsync(IEnumerable<string> scopes, CancellationToken cancellationToken)
     {
         var client = await RequireAppAsync(cancellationToken);
@@ -135,10 +143,13 @@ public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILoc
     }
 
     public Task<AuthStatusResponse> SignInAsync(CancellationToken cancellationToken) =>
-        ConnectAsync(PlannerScopes, requireExistingAccount: false, cancellationToken);
+        ConnectAsync(PlannerConnectScopes, requireExistingAccount: false, cancellationToken);
 
     public Task<AuthStatusResponse> ConnectOutlookAsync(CancellationToken cancellationToken) =>
         ConnectAsync(OutlookScopes.All, requireExistingAccount: false, cancellationToken);
+
+    public Task<AuthStatusResponse> EnableTaskChatAsync(CancellationToken cancellationToken) =>
+        ConnectAsync(ConversationScopes, requireExistingAccount: true, cancellationToken);
 
     public Task<AuthStatusResponse> EnableAssigneeNamesAsync(CancellationToken cancellationToken) =>
         ConnectAsync(AssigneeNamesScopes, requireExistingAccount: true, cancellationToken);

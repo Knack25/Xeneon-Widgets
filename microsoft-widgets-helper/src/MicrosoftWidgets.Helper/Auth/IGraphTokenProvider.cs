@@ -6,4 +6,5 @@ public interface IGraphTokenProvider
 
     Task<string> GetBasicUserTokenAsync(CancellationToken cancellationToken) => GetAccessTokenAsync(cancellationToken);
     Task<string> GetGroupMemberTokenAsync(CancellationToken cancellationToken) => GetAccessTokenAsync(cancellationToken);
+    Task<string> GetConversationTokenAsync(CancellationToken cancellationToken) => GetAccessTokenAsync(cancellationToken);
 }

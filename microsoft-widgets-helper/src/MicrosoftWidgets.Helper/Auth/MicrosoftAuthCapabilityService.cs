@@ -6,7 +6,8 @@ namespace PlannerEdge.Helper.Auth;
 public sealed record MicrosoftAuthCapability(string State,
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Message = null);
 
-public sealed record MicrosoftAuthCapabilities(MicrosoftAuthCapability Planner, MicrosoftAuthCapability AssigneeNames, MicrosoftAuthCapability BoardMembers);
+public sealed record MicrosoftAuthCapabilities(MicrosoftAuthCapability Planner, MicrosoftAuthCapability TaskChat,
+    MicrosoftAuthCapability AssigneeNames, MicrosoftAuthCapability BoardMembers);
 
 public sealed class MicrosoftAuthCapabilityService(IMicrosoftAuthService auth)
 {
@@ -22,6 +23,7 @@ public sealed class MicrosoftAuthCapabilityService(IMicrosoftAuthService auth)
             if (!status.IsSignedIn) return All(SignedOut());
 
             var planner = await CheckAsync(MicrosoftAuthService.PlannerScopes, cancellationToken);
+            var taskChat = await CheckAsync(MicrosoftAuthService.ConversationScopes, cancellationToken);
             var assigneeNames = await CheckAsync(MicrosoftAuthService.AssigneeNamesScopes, cancellationToken);
             var boardMembers = await CheckAsync(MicrosoftAuthService.BoardMembersScopes, cancellationToken);
 
@@ -32,7 +34,7 @@ public sealed class MicrosoftAuthCapabilityService(IMicrosoftAuthService auth)
             var currentConfiguration = await auth.GetConfigurationAsync(cancellationToken);
             if (configuration != currentConfiguration || !string.Equals(status.AccountHint, currentStatus.AccountHint, StringComparison.OrdinalIgnoreCase))
                 return All(new("unavailable", "The Microsoft account changed. Refresh the connection status."));
-            return new(planner, assigneeNames, boardMembers);
+            return new(planner, taskChat, assigneeNames, boardMembers);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { return All(Unavailable()); }
         catch (Exception ex) when (ex is MsalException or HttpRequestException or IOException or InvalidOperationException)
@@ -57,5 +59,5 @@ public sealed class MicrosoftAuthCapabilityService(IMicrosoftAuthService auth)
 
     private static MicrosoftAuthCapability SignedOut() => new("signed_out", "Sign in to Microsoft to check this feature.");
     private static MicrosoftAuthCapability Unavailable() => new("unavailable", "Microsoft permissions could not be checked. Try again when the connection is available.");
-    private static MicrosoftAuthCapabilities All(MicrosoftAuthCapability capability) => new(capability, capability, capability);
+    private static MicrosoftAuthCapabilities All(MicrosoftAuthCapability capability) => new(capability, capability, capability, capability);
 }

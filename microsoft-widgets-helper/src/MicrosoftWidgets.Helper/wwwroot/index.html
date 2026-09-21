@@ -71,9 +71,9 @@
     <h2>Planner</h2>
     <section>
       <h3>Connection</h3>
-      <div class="actions"><button id="sign-in" disabled>Connect Planner</button><button id="enable-names" hidden>Show assignee names</button><button id="enable-members" hidden>Enable board members</button><button id="cancel-sign-in" hidden>Cancel sign-in</button></div>
+      <div class="actions"><button id="sign-in" disabled>Connect Planner</button><button id="enable-task-chat" hidden>Enable task chat</button><button id="enable-names" hidden>Show assignee names</button><button id="enable-members" hidden>Enable board members</button><button id="cancel-sign-in" hidden>Cancel sign-in</button></div>
       <details><summary>Permissions</summary>
-      <p class="hint">Showing assignee names requires User.ReadBasic.All. Editing assignees requires GroupMember.ReadBasic.All. Your work administrator may need to approve these permissions.</p>
+      <p class="hint">Task chat requires Group-Conversation.ReadWrite.All to read and post Planner task comments. Showing assignee names requires User.ReadBasic.All. Editing assignees requires GroupMember.ReadBasic.All. Your work administrator may need to approve these permissions.</p>
       </details>
       <details class="help"><summary>Microsoft sign-in shows an error?</summary>
         <p>If you see <strong>AADSTS900971: No reply address provided</strong>, the Microsoft app registration needs a redirect address:</p>
@@ -148,6 +148,7 @@
     const message = document.querySelector('#message');
     const signIn = document.querySelector('#sign-in');
     const signOut = document.querySelector('#sign-out');
+    const enableTaskChat = document.querySelector('#enable-task-chat');
     const enableNames = document.querySelector('#enable-names');
     const enableMembers = document.querySelector('#enable-members');
     const cancelSignIn = document.querySelector('#cancel-sign-in');
@@ -167,6 +168,7 @@
     function renderPermissions() {
       for (const [key, button, available, request, retry] of [
         ['planner', signIn, 'Planner connected', 'Connect Planner', 'Retry Planner'],
+        ['taskChat', enableTaskChat, 'Task chat enabled', 'Enable task chat', 'Retry task chat'],
         ['assigneeNames', enableNames, 'Assignee names enabled', 'Show assignee names', 'Retry assignee names'],
         ['boardMembers', enableMembers, 'Board members enabled', 'Enable board members', 'Retry board members']
       ]) {
@@ -184,7 +186,7 @@
       renderPermissions();
       try { const value = await api('/auth/capabilities'); if (ticket === permissionCheck) capabilities = value; }
       catch(error) {
-        if (ticket === permissionCheck) capabilities = Object.fromEntries(['planner','assigneeNames','boardMembers'].map(key => [key,{state:'unavailable',message:error.message}]));
+        if (ticket === permissionCheck) capabilities = Object.fromEntries(['planner','taskChat','assigneeNames','boardMembers'].map(key => [key,{state:'unavailable',message:error.message}]));
       } finally { if (ticket === permissionCheck) { permissionPending = false; renderPermissions(); } }
     }
 
@@ -226,6 +228,7 @@
       if (status.error) message.textContent = status.error.message;
       signIn.hidden = false;
       signOut.hidden = !status.isSignedIn;
+      enableTaskChat.hidden = !status.isSignedIn;
       enableNames.hidden = !status.isSignedIn;
       enableMembers.hidden = !status.isSignedIn;
       board.disabled = !status.isSignedIn;
@@ -277,6 +280,17 @@
       finally { signInRequest = null; cancelSignIn.hidden = true; renderPermissions(); }
     });
     cancelSignIn.addEventListener('click', () => signInRequest?.abort());
+    enableTaskChat.addEventListener('click', async () => {
+      if (enableTaskChat.disabled) return;
+      if (capabilities.taskChat?.state === 'unavailable') { await refresh(); return; }
+      permissionActionPending = true;
+      renderPermissions();
+      enableTaskChat.disabled = true;
+      message.textContent = 'Complete the Microsoft permission prompt to enable task chat.';
+      try { await api('/auth/enable-task-chat', {method:'POST'}); await refresh(); message.textContent = 'Task chat is enabled.'; }
+      catch(error) { message.textContent = error.message; }
+      finally { permissionActionPending = false; renderPermissions(); }
+    });
     enableNames.addEventListener('click', async () => {
       if (enableNames.disabled) return;
       if (capabilities.assigneeNames?.state === 'unavailable') { await refresh(); return; }

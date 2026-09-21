@@ -169,6 +169,8 @@ app.MapGet("/auth/sign-in", async (IMicrosoftAuthService auth, OutlookAccountSta
     Results.Ok(await outlookAccount.TransitionAsync(() => auth.SignInAsync(ct), ct)));
 app.MapPost("/auth/sign-in", async (IMicrosoftAuthService auth, OutlookAccountState outlookAccount, CancellationToken ct) =>
     Results.Ok(await outlookAccount.TransitionAsync(() => auth.SignInAsync(ct), ct)));
+app.MapPost("/auth/enable-task-chat", async (IMicrosoftAuthService auth, OutlookAccountState outlookAccount, CancellationToken ct) =>
+    Results.Ok(await outlookAccount.TransitionAsync(() => auth.EnableTaskChatAsync(ct), ct)));
 app.MapPost("/auth/enable-assignee-names", async (IMicrosoftAuthService auth, OutlookAccountState outlookAccount, CancellationToken ct) =>
     Results.Ok(await outlookAccount.TransitionAsync(() => auth.EnableAssigneeNamesAsync(ct), ct)));
 app.MapPost("/auth/enable-board-members", async (IMicrosoftAuthService auth, OutlookAccountState outlookAccount, CancellationToken ct) =>

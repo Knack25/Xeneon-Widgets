@@ -6,6 +6,14 @@ namespace PlannerEdge.Helper.Tests;
 public sealed class MicrosoftAuthAcquisitionTests
 {
     [Fact]
+    public void PlannerAndConversationScopesRemainSeparated()
+    {
+        Assert.Equal(new[] { "User.Read", "Tasks.ReadWrite" }, MicrosoftAuthService.PlannerScopes);
+        Assert.Equal(new[] { "User.Read", "Tasks.ReadWrite", "Group-Conversation.ReadWrite.All" }, MicrosoftAuthService.PlannerConnectScopes);
+        Assert.Equal(new[] { "Group-Conversation.ReadWrite.All" }, MicrosoftAuthService.ConversationScopes);
+    }
+
+    [Fact]
     public async Task SilentSuccessNeverInvokesInteractiveAcquisition()
     {
         var result = await MicrosoftAuthService.AcquireSilentFirstAsync(
