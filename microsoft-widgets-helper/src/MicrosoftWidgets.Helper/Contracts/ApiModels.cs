@@ -29,6 +29,8 @@ public sealed record ProgressRequest(int Progress);
 public sealed record PriorityRequest(int Priority);
 public sealed record StartDateRequest(string? Date);
 public sealed record LabelsRequest(IReadOnlyList<string> LabelIds);
+public sealed record ChecklistTitleRequest(string Title);
+public sealed record ChecklistPositionRequest(string Direction);
 public sealed record AssignmentsRequest(IReadOnlyList<string> UserIds);
 public sealed record CreateTaskRequest(string Title, string BucketId, string? Date, IReadOnlyList<string> UserIds,
     string? StartDate = null, int? Priority = null, IReadOnlyList<string>? LabelIds = null);

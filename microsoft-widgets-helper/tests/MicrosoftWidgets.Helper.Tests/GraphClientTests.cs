@@ -66,6 +66,37 @@ public sealed class GraphClientTests
         await CreateClient(handler).CompleteChecklistItemAsync("task", "item", "W/\"latest\"", CancellationToken.None);
     }
 
+    [Fact]
+    public async Task PatchChecklistAsync_DeletesItemAsJsonNullWithDetailsEtag()
+    {
+        var handler = new StubHandler(request =>
+        {
+            Assert.Equal(HttpMethod.Patch, request.Method);
+            Assert.EndsWith("/planner/tasks/task/details", request.RequestUri!.AbsolutePath);
+            Assert.Equal("W/\"details\"", request.Headers.IfMatch.Single().ToString());
+            Assert.Equal("{\"checklist\":{\"item\":null}}", request.Content!.ReadAsStringAsync().Result);
+            return "{}";
+        });
+
+        await ((IPlannerGraphClient)CreateClient(handler)).PatchChecklistAsync(
+            "task", "item", null, "W/\"details\"", CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task PatchChecklistAsync_SerializesOnlyRequestedChecklistFields()
+    {
+        var handler = new StubHandler(request =>
+        {
+            Assert.Equal("{\"checklist\":{\"item\":{\"@odata.type\":\"microsoft.graph.plannerChecklistItem\",\"title\":\"Renamed\",\"orderHint\":\"previous next!\"}}}",
+                request.Content!.ReadAsStringAsync().Result);
+            return "{}";
+        });
+
+        await ((IPlannerGraphClient)CreateClient(handler)).PatchChecklistAsync(
+            "task", "item", new GraphChecklistPatch("Renamed", "previous next!"),
+            "W/\"details\"", CancellationToken.None);
+    }
+
     [Theory]
     [InlineData("Updated notes", "{\"description\":\"Updated notes\"}")]
     [InlineData("Line one\nLine two", "{\"description\":\"Line one\\nLine two\"}")]

@@ -23,6 +23,8 @@ public sealed class PlannerIntegrationTests
             "/tasks/{taskId}/due-date", "/tasks/{taskId}/assignments", "/tasks/{taskId}/notes",
             "/tasks/{taskId}/chat", "/tasks/{taskId}/title", "/tasks/{taskId}/progress",
             "/tasks/{taskId}/priority", "/tasks/{taskId}/start-date", "/tasks/{taskId}/labels",
+            "/tasks/{taskId}/checklist", "/tasks/{taskId}/checklist/{itemId}",
+            "/tasks/{taskId}/checklist/{itemId}/position",
             "/tasks/{taskId}/checklist/{itemId}/complete" })
         {
             Assert.Contains(path, routes);

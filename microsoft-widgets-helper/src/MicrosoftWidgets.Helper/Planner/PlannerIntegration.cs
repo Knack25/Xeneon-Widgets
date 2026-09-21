@@ -25,6 +25,7 @@ public static class PlannerIntegration
         services.AddSingleton<TaskAssignmentService>();
         services.AddSingleton<TaskCreationService>();
         services.AddSingleton<TaskMetadataService>();
+        services.AddSingleton<ChecklistService>();
         services.AddSingleton<ChecklistCompletionService>();
         return services;
     }
@@ -122,6 +123,30 @@ public static class PlannerIntegration
             TaskAssignmentService assignments, CancellationToken ct) =>
         {
             await assignments.SetAsync(taskId, request.UserIds, ct);
+            return Results.NoContent();
+        });
+        app.MapPost("/tasks/{taskId}/checklist", async (string taskId, ChecklistTitleRequest request,
+            ChecklistService checklist, CancellationToken ct) =>
+        {
+            await checklist.AddAsync(taskId, request.Title, ct);
+            return Results.NoContent();
+        });
+        app.MapPut("/tasks/{taskId}/checklist/{itemId}", async (string taskId, string itemId,
+            ChecklistTitleRequest request, ChecklistService checklist, CancellationToken ct) =>
+        {
+            await checklist.RenameAsync(taskId, itemId, request.Title, ct);
+            return Results.NoContent();
+        });
+        app.MapDelete("/tasks/{taskId}/checklist/{itemId}", async (string taskId, string itemId,
+            ChecklistService checklist, CancellationToken ct) =>
+        {
+            await checklist.DeleteAsync(taskId, itemId, ct);
+            return Results.NoContent();
+        });
+        app.MapPut("/tasks/{taskId}/checklist/{itemId}/position", async (string taskId, string itemId,
+            ChecklistPositionRequest request, ChecklistService checklist, CancellationToken ct) =>
+        {
+            await checklist.MoveAsync(taskId, itemId, request.Direction, ct);
             return Results.NoContent();
         });
         app.MapPost("/tasks/{taskId}/checklist/{itemId}/complete", async (string taskId, string itemId,

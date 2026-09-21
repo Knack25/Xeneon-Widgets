@@ -1,5 +1,7 @@
 namespace PlannerEdge.Helper.Graph;
 
+public sealed record GraphChecklistPatch(string? Title = null, string? OrderHint = null, bool? IsChecked = null);
+
 public interface IPlannerGraphClient
 {
     Task<IReadOnlyList<GraphPlan>> GetMyPlansAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
@@ -27,6 +29,9 @@ public interface IPlannerGraphClient
     Task<GraphTaskDetails> GetTaskDetailsAsync(string taskId, CancellationToken cancellationToken);
 
     Task CompleteChecklistItemAsync(string taskId, string itemId, string etag, CancellationToken cancellationToken);
+
+    Task PatchChecklistAsync(string taskId, string itemId, GraphChecklistPatch? patch, string etag,
+        CancellationToken cancellationToken) => throw new NotSupportedException();
 
     Task UpdateTaskDescriptionAsync(string taskId, string description, string etag, CancellationToken cancellationToken)
         => throw new NotSupportedException();
