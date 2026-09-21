@@ -814,6 +814,147 @@ test("My tasks and filters persist per board while search does not", async () =>
   assert.equal(writes.some(write => JSON.stringify(write).includes("Other")), false);
 });
 
+test("switching plans isolates preferences and retries a failed preference load", async () => {
+  let refresh;
+  let selectedPlan = "plan-a";
+  let planBPreferenceReads = 0;
+  const boards = {
+    "plan-a": preferenceBoard("plan-a", "Alpha"),
+    "plan-b": preferenceBoard("plan-b", "Beta")
+  };
+  const handlers = {};
+  const appNode = { innerHTML: "", addEventListener: (type, listener) => { handlers[type] = listener; } };
+  const context = { document: { getElementById: () => appNode }, Intl, Date, URLSearchParams,
+    localStorage: { getItem: () => null, setItem() {} },
+    IntersectionObserver: class { observe() {} disconnect() {} },
+    setInterval: callback => { refresh = callback; },
+    fetch: async (path, options = {}) => {
+      if (path.endsWith("/display")) return response(boards[selectedPlan]);
+      if (path.endsWith("/plans")) return response([{ planId: "plan-a", title: "Alpha" }, { planId: "plan-b", title: "Beta" }]);
+      if (path.endsWith("/selected-plan") && options.method === "PUT") {
+        selectedPlan = JSON.parse(options.body).planId; return response({ planId: selectedPlan });
+      }
+      if (path.endsWith("/view-preferences/plan-a")) return response(preferencesWith({ priorities: [1] }));
+      if (path.endsWith("/view-preferences/plan-b")) {
+        planBPreferenceReads++;
+        if (planBPreferenceReads === 1) return response({ code: "offline", message: "Preferences unavailable." }, 503);
+        return response(preferencesWith({ priorities: [5] }));
+      }
+      return response({ checklist: [], assignees: [] });
+    } };
+  for (const file of ["state.js", "api.js", "filters.js", "view-state.js", "app.js"])
+    runInNewContext(readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"), context);
+  const click = (attribute, dataset = {}) => handlers.click({ target: {
+    closest: selector => selector === `[${attribute}]` ? { dataset } : null,
+    matches: selector => selector === `[${attribute}]`
+  } });
+  await settle();
+  assert.match(appNode.innerHTML, /Urgent plan-a/);
+  assert.doesNotMatch(appNode.innerHTML, /Normal plan-a/);
+  await click("data-open-board-picker");
+  await click("data-select-plan", { selectPlan: "plan-b" });
+  assert.match(appNode.innerHTML, /Urgent plan-b/);
+  assert.match(appNode.innerHTML, /Normal plan-b/);
+  assert.equal(planBPreferenceReads, 1);
+  await refresh();
+  assert.doesNotMatch(appNode.innerHTML, /Urgent plan-b/);
+  assert.match(appNode.innerHTML, /Normal plan-b/);
+  assert.equal(planBPreferenceReads, 2);
+});
+
+test("restored assignee filters remove stale members and persist the repair", async () => {
+  const writes = [];
+  let memberReads = 0;
+  const board = { planId: "plan", planTitle: "Work", syncedAt: "2026-09-21T12:00:00Z", labels: [], buckets: [
+    { bucketId: "b", name: "Doing", tasks: [
+      { taskId: "valid-task", title: "Valid", assignments: ["valid"], priority: 5, percentComplete: 0, labelIds: [] },
+      { taskId: "other-task", title: "Other", assignments: ["other"], priority: 5, percentComplete: 0, labelIds: [] }
+    ] }
+  ] };
+  const { app } = createDetailFixture(async (path, options = {}) => {
+    if (path.endsWith("/display")) return response(board);
+    if (path.endsWith("/view-preferences/plan") && options.method === "PUT") {
+      writes.push(JSON.parse(options.body)); return response(JSON.parse(options.body));
+    }
+    if (path.endsWith("/view-preferences/plan")) return response(preferencesWith({ assigneeIds: ["valid", "deleted"] }));
+    if (path.endsWith("/members")) { memberReads++; return response([{ id: "valid", displayName: "Valid Person" }]); }
+    return response({ checklist: [], assignees: [] });
+  });
+  await settle();
+  assert.equal(memberReads, 1);
+  assert.deepEqual(writes.at(-1).filters.assigneeIds, ["valid"]);
+  assert.match(app.innerHTML, />Valid</);
+  assert.doesNotMatch(app.innerHTML, />Other</);
+});
+
+test("overlapping member restoration ignores the prior plan response", async () => {
+  let refresh;
+  let selectedPlan = "plan-a";
+  const memberReads = { "plan-a": 0, "plan-b": 0 };
+  const memberResolvers = {};
+  const boards = {
+    "plan-a": { ...preferenceBoard("plan-a", "Alpha"), buckets: [{ bucketId: "plan-a-bucket", name: "Doing", tasks: [
+      { taskId: "a", title: "Alpha task", assignments: ["a-user"], priority: 5, percentComplete: 0, labelIds: [] }
+    ] }] },
+    "plan-b": { ...preferenceBoard("plan-b", "Beta"), buckets: [{ bucketId: "plan-b-bucket", name: "Doing", tasks: [
+      { taskId: "b", title: "Beta task", assignments: ["b-user"], priority: 5, percentComplete: 0, labelIds: [] },
+      { taskId: "other", title: "Other task", assignments: ["other"], priority: 5, percentComplete: 0, labelIds: [] }
+    ] }] }
+  };
+  const appNode = { innerHTML: "", addEventListener() {} };
+  const context = { document: { getElementById: () => appNode }, Intl, Date, URLSearchParams,
+    localStorage: { getItem: () => null, setItem() {} },
+    IntersectionObserver: class { observe() {} disconnect() {} },
+    setInterval: callback => { refresh = callback; },
+    fetch: async path => {
+      if (path.endsWith("/display")) return response(boards[selectedPlan]);
+      if (path.includes("/view-preferences/"))
+        return response(preferencesWith({ assigneeIds: [selectedPlan === "plan-a" ? "a-user" : "b-user"] }));
+      if (path.endsWith("/members")) {
+        const requestPlan = selectedPlan;
+        memberReads[requestPlan]++;
+        return new Promise(resolve => { memberResolvers[requestPlan] = members => resolve(response(members)); });
+      }
+      return response({ checklist: [], assignees: [] });
+    } };
+  for (const file of ["state.js", "api.js", "filters.js", "view-state.js", "app.js"])
+    runInNewContext(readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"), context);
+  await settle();
+  assert.equal(memberReads["plan-a"], 1);
+  selectedPlan = "plan-b";
+  refresh();
+  await settle();
+  assert.equal(memberReads["plan-b"], 1);
+  memberResolvers["plan-b"]([{ id: "b-user", displayName: "Beta User" }]);
+  await settle();
+  assert.match(appNode.innerHTML, />Beta task</);
+  assert.doesNotMatch(appNode.innerHTML, />Other task</);
+  memberResolvers["plan-a"]([{ id: "a-user", displayName: "Alpha User" }]);
+  await settle();
+  assert.match(appNode.innerHTML, />Beta task</);
+  assert.doesNotMatch(appNode.innerHTML, />Alpha task</);
+  assert.deepEqual(memberReads, { "plan-a": 1, "plan-b": 1 });
+});
+
+test("successful structured filter changes persist the selected value", async () => {
+  const writes = [];
+  const board = organizationBoard();
+  const { tap } = createDetailFixture(async (path, options = {}) => {
+    if (path.endsWith("/display")) return response(board);
+    if (path.endsWith("/view-preferences/plan") && options.method === "PUT") {
+      writes.push(JSON.parse(options.body)); return response(JSON.parse(options.body));
+    }
+    if (path.includes("view-preferences")) return response(defaultPreferences());
+    if (path.endsWith("/members")) return response([]);
+    return response({ checklist: [], assignees: [] });
+  });
+  await settle();
+  await tap("data-open-filters");
+  await tap("data-toggle-filter", { filterGroup: "priorities", filterValue: "1" });
+  assert.deepEqual(writes.at(-1).filters.priorities, [1]);
+  assert.equal("searchText" in writes.at(-1), false);
+});
+
 test("typing a search updates the board without rebuilding the focused toolbar", async () => {
   let appRenders = 0;
   let markup = "";
@@ -895,6 +1036,7 @@ test("task metadata controls use focused routes and completion confirmation", as
   assert.equal(calls.filter(([path]) => path.endsWith("/progress")).length, progressWritesBefore);
   await tap("data-confirm-progress");
   assertRequest(calls, "/tasks/task/progress", "PUT", { progress: 100 });
+  assert.match(app.innerHTML, /data-task-progress[\s\S]*option value="100" selected/);
 });
 
 test("failed title and label writes retain their drafts", async () => {
@@ -918,6 +1060,28 @@ test("failed title and label writes retain their drafts", async () => {
   assert.match(app.innerHTML, /Refresh and try again/);
   await tap("data-save-labels");
   assert.match(app.innerHTML, /data-toggle-task-label="category2"[^>]*aria-pressed="true"/);
+});
+
+test("failed priority and non-complete progress writes retain attempted selections", async () => {
+  const board = organizationBoard();
+  const detail = { ...organizationDetail(), priority: 1, percentComplete: 0 };
+  const { app, tap, change } = createDetailFixture(async (path, options = {}) => {
+    if (path.endsWith("/display")) return response(board);
+    if (path.includes("view-preferences")) return response(defaultPreferences());
+    if (path.endsWith("/chat")) return response({ state: "available", messages: [] });
+    if (path.endsWith("/details")) return response(detail);
+    if (options.method === "PUT") return response({ code: "conflict", message: "Refresh and try again." }, 409);
+    return response(null, 204);
+  });
+  await settle();
+  await tap("data-open-task", { openTask: "task" });
+  await settle();
+  await change("data-task-priority", "3");
+  assert.match(app.innerHTML, /data-task-priority[\s\S]*option value="3" selected/);
+  assert.match(app.innerHTML, /Refresh and try again/);
+  await change("data-task-progress", "50");
+  assert.match(app.innerHTML, /data-task-progress[\s\S]*option value="50" selected/);
+  assert.match(app.innerHTML, /Refresh and try again/);
 });
 
 test("new task sends start date priority and labels without progress", async () => {
@@ -958,9 +1122,36 @@ test("saved filter errors remain visible without discarding the active filter", 
   await tap("data-open-filters");
   await tap("data-toggle-filter", { filterGroup: "priorities", filterValue: "1" });
   assert.match(app.innerHTML, /Could not save filters/);
+  assert.match(app.innerHTML, /confirm-panel[\s\S]*dialog-error[^>]*role="alert"[^>]*>Could not save filters/);
   await tap("data-close-dialog");
   assert.match(app.innerHTML, /Urgent task/);
   assert.doesNotMatch(app.innerHTML, /Normal task/);
+});
+
+test("failed checklist add and rename writes retain their drafts", async () => {
+  const board = organizationBoard();
+  const detail = organizationDetail();
+  const { app, tap, input } = createDetailFixture(async (path, options = {}) => {
+    if (path.endsWith("/display")) return response(board);
+    if (path.includes("view-preferences")) return response(defaultPreferences());
+    if (path.endsWith("/chat")) return response({ state: "available", messages: [] });
+    if (path.endsWith("/details")) return response(detail);
+    if (path.includes("/checklist") && ["POST", "PUT"].includes(options.method))
+      return response({ code: "conflict", message: "Checklist changed in Planner." }, 409);
+    return response(null, 204);
+  });
+  await settle();
+  await tap("data-open-task", { openTask: "task" });
+  await settle();
+  input("data-checklist-add-draft", "Keep new item");
+  await tap("data-add-checklist");
+  assert.match(app.innerHTML, /data-checklist-add-draft[^>]*value="Keep new item"/);
+  assert.match(app.innerHTML, /Checklist changed in Planner/);
+  await tap("data-edit-checklist", { editChecklist: "first" });
+  input("data-checklist-edit-draft", "Keep renamed item");
+  await tap("data-save-checklist-edit", { saveChecklistEdit: "first" });
+  assert.match(app.innerHTML, /data-checklist-edit-draft[^>]*value="Keep renamed item"/);
+  assert.match(app.innerHTML, /Checklist changed in Planner/);
 });
 
 test("checklist supports add rename delete confirmation and button reordering", async () => {
@@ -1035,6 +1226,19 @@ function organizationDetail() {
       { itemId: "first", title: "First", isChecked: false },
       { itemId: "second", title: "Second", isChecked: false }
     ] };
+}
+
+function preferenceBoard(planId, title) {
+  return { planId, planTitle: title, syncedAt: "2026-09-21T12:00:00Z", labels: [], buckets: [
+    { bucketId: `${planId}-bucket`, name: "Doing", tasks: [
+      { taskId: `${planId}-urgent`, title: `Urgent ${planId}`, assignments: [], priority: 1, percentComplete: 0, labelIds: [] },
+      { taskId: `${planId}-normal`, title: `Normal ${planId}`, assignments: [], priority: 5, percentComplete: 0, labelIds: [] }
+    ] }
+  ] };
+}
+
+function preferencesWith(filters) {
+  return { ...defaultPreferences(), filters: { ...defaultPreferences().filters, ...filters } };
 }
 
 function assertRequest(calls, suffix, method, expectedBody) {

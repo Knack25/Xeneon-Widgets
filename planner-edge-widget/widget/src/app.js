@@ -14,6 +14,7 @@ let dialogGeneration = 0;
 let taskObserver = null;
 let preferences = filterEngine?.createDefaultPreferences() || { myTasks: false, filters: {} };
 let preferencesPlanId = null;
+let preferenceLoadGeneration = 0;
 let searchText = "";
 let searchOpen = false;
 let currentUserId = null;
@@ -21,6 +22,8 @@ let filterError = null;
 let members = null;
 let memberPlanId = null;
 let memberError = null;
+let memberRequest = null;
+let memberRequestGeneration = 0;
 let createNotice = null;
 
 async function loadDisplay(force = false) {
@@ -36,15 +39,64 @@ async function loadDisplay(force = false) {
 }
 
 async function loadPreferences(board) {
-  preferencesPlanId = board.planId;
+  const planId = board.planId;
+  const generation = ++preferenceLoadGeneration;
+  const defaults = filterEngine.sanitizePreferences(filterEngine.createDefaultPreferences(), board, null);
+  preferences = defaults;
+  preferencesPlanId = null;
   try {
-    const saved = await api.getViewPreferences(board.planId);
-    preferences = filterEngine.sanitizePreferences(saved, board, members);
-    if (preferences.myTasks && !currentUserId) currentUserId = (await api.getCurrentUser()).userId;
+    const saved = await api.getViewPreferences(planId);
+    if (!isCurrentPreferenceLoad(planId, generation)) return;
+    const hasAssigneeFilters = Array.isArray(saved?.filters?.assigneeIds) && saved.filters.assigneeIds.length > 0;
+    const planMembers = hasAssigneeFilters ? await loadMembersForPlan(planId) : null;
+    if (!isCurrentPreferenceLoad(planId, generation) || hasAssigneeFilters && !planMembers) return;
+    const sanitized = filterEngine.sanitizePreferences(saved, board, planMembers);
+    if (JSON.stringify(sanitized) !== JSON.stringify(saved)) {
+      await api.saveViewPreferences(planId, sanitized);
+      if (!isCurrentPreferenceLoad(planId, generation)) return;
+    }
+    if (sanitized.myTasks && !currentUserId) {
+      currentUserId = (await api.getCurrentUser()).userId;
+      if (!isCurrentPreferenceLoad(planId, generation)) return;
+    }
+    preferences = sanitized;
+    preferencesPlanId = planId;
+    filterError = null;
   } catch (error) {
-    preferences = filterEngine.sanitizePreferences(preferences, board, members);
+    if (!isCurrentPreferenceLoad(planId, generation)) return;
+    preferences = defaults;
+    preferencesPlanId = null;
     filterError = normalizeError(error).message;
   }
+}
+
+function isCurrentPreferenceLoad(planId, generation) {
+  return state.display?.planId === planId && preferenceLoadGeneration === generation;
+}
+
+async function loadMembersForPlan(planId) {
+  if (memberPlanId === planId && members) return members;
+  if (memberRequest?.planId === planId) return memberRequest.promise;
+  const generation = ++memberRequestGeneration;
+  const request = { planId };
+  request.promise = (async () => {
+    try {
+      const loaded = await api.getMembers();
+      if (state.display?.planId !== planId || memberRequestGeneration !== generation) return null;
+      members = loaded;
+      memberPlanId = planId;
+      memberError = null;
+      return loaded;
+    } catch (error) {
+      if (state.display?.planId === planId && memberRequestGeneration === generation)
+        memberError = normalizeError(error).message;
+      throw error;
+    } finally {
+      if (memberRequest === request) memberRequest = null;
+    }
+  })();
+  memberRequest = request;
+  return request.promise;
 }
 
 async function savePreferences() {
@@ -265,7 +317,7 @@ function renderFilterDialog() {
     <section><h3>Bucket</h3>${options("bucketIds", buckets.map(bucket => ({ id: bucket.bucketId, name: bucket.name })))}</section>
     <section><h3>Progress</h3>${options("progressValues", [{ id: 0, value: 0, name: "Not started" }, { id: 50, value: 50, name: "In progress" }, { id: 100, value: 100, name: "Completed" }])}</section>
     <section><h3>Due</h3>${options("dueDateRange", dueOptions)}</section>
-  </div><div class="confirm-actions"><button type="button" data-clear-filters>Clear filters</button><button type="button" class="primary" data-close-dialog>Done</button></div>`;
+  </div>${filterError ? `<p class="dialog-error" role="alert">${escapeHtml(filterError)}</p>` : ""}<div class="confirm-actions"><button type="button" data-clear-filters>Clear filters</button><button type="button" class="primary" data-close-dialog>Done</button></div>`;
 }
 
 function renderLabelPicker(selectedIds, attribute) {
@@ -295,6 +347,8 @@ function hydrateDetailDrafts(dialog, info) {
   if (dialog.titleDraft == null) dialog.titleDraft = info.title || "";
   if (dialog.labelDraft == null) dialog.labelDraft = [...(info.labelIds || [])];
   if (dialog.startDateDraft == null) dialog.startDateDraft = info.startDateTime?.slice(0, 10) || "";
+  if (dialog.progressDraft == null) dialog.progressDraft = info.percentComplete;
+  if (dialog.priorityDraft == null) dialog.priorityDraft = info.priority;
   if (dialog.checklistAddDraft == null) dialog.checklistAddDraft = "";
 }
 
@@ -322,9 +376,9 @@ function renderDialog() {
       <div class="title-editor"><input data-title-draft maxlength="255" value="${escapeHtml(dialog.titleDraft)}" aria-label="Task title"><button type="button" class="primary" data-save-title>Save title</button></div>
       <p class="section-status" role="status">${escapeHtml(dialog.metadataStatus || "")}</p>
       <dl class="task-meta"><dt>Progress</dt><dd><select data-task-progress aria-label="Task progress">
-        ${[[0, "Not started"], [50, "In progress"], [100, "Completed"]].map(([value, name]) => `<option value="${value}" ${info.percentComplete === value ? "selected" : ""}>${name}</option>`).join("")}</select></dd>
+        ${[[0, "Not started"], [50, "In progress"], [100, "Completed"]].map(([value, name]) => `<option value="${value}" ${dialog.progressDraft === value ? "selected" : ""}>${name}</option>`).join("")}</select></dd>
       <dt>Priority</dt><dd><select data-task-priority aria-label="Task priority">
-        ${[[1, "Urgent"], [3, "Important"], [5, "Medium"], [9, "Low"]].map(([value, name]) => `<option value="${value}" ${info.priority === value ? "selected" : ""}>${name}</option>`).join("")}</select></dd>
+        ${[[1, "Urgent"], [3, "Important"], [5, "Medium"], [9, "Low"]].map(([value, name]) => `<option value="${value}" ${dialog.priorityDraft === value ? "selected" : ""}>${name}</option>`).join("")}</select></dd>
       <dt>Start</dt><dd><div class="date-edit"><input type="date" data-start-date-draft value="${escapeHtml(dialog.startDateDraft)}"><button type="button" data-save-start-date>Save</button><button type="button" data-clear-start-date>Clear</button></div></dd>
       <dt>Due</dt><dd><button type="button" data-open-date-picker ${state.completing ? "disabled" : ""}>${info.dueDateTime ? formatDate(info.dueDateTime) : "No due date"}</button>
       ${dialog.datePickerOpen ? renderCalendar(dialog) : ""}</dd>
@@ -378,7 +432,8 @@ function showTaskDetails(taskId) {
   const generation = ++dialogGeneration;
   Object.assign(state.dialog, { notesDraft: details.get(taskId)?.description || null, notesStatus: "", notesPending: false,
     chatPage: null, chatDraft: "", chatStatus: "Loading comments...", chatLoading: true, chatPending: false,
-    titleDraft: null, labelDraft: null, startDateDraft: null, checklistAddDraft: "", checklistEditId: null,
+    titleDraft: null, labelDraft: null, startDateDraft: null, progressDraft: null, priorityDraft: null,
+    checklistAddDraft: "", checklistEditId: null,
     checklistEditDraft: "", checklistStatus: "", metadataStatus: "", generation });
   render();
   loadTaskChat(taskId, generation);
@@ -455,14 +510,18 @@ app.addEventListener("change", async event => {
     state.dialog.priority = Number(event.target.value); return;
   }
   if (event.target.matches?.("[data-task-priority]") && state.dialog?.type === "taskDetails") {
-    await saveDetailMetadata("priority", Number(event.target.value)); return;
+    state.dialog.priorityDraft = Number(event.target.value);
+    await saveDetailMetadata("priority", state.dialog.priorityDraft); return;
   }
   if (event.target.matches?.("[data-task-progress]") && state.dialog?.type === "taskDetails") {
     const progress = Number(event.target.value);
     if (progress === 100) {
       const info = details.get(state.dialog.taskId);
       state = flow.beginConfirmProgress(state, state.dialog.taskId, info?.title || "Task"); render();
-    } else await saveDetailMetadata("progress", progress);
+    } else {
+      state.dialog.progressDraft = progress;
+      await saveDetailMetadata("progress", progress);
+    }
   }
 });
 
@@ -480,10 +539,11 @@ app.addEventListener("click", async event => {
   }
   if (hit("data-open-filters") && !state.dialog) {
     state.dialog = { type: "filters" }; state.dialogError = null; render();
-    if (memberPlanId !== state.display?.planId) { members = null; memberError = null; memberPlanId = state.display?.planId; }
+    if (memberPlanId !== state.display?.planId) { members = null; memberError = null; }
     if (!members) {
       try {
-        members = await api.getMembers();
+        const loadedMembers = await loadMembersForPlan(state.display.planId);
+        if (!loadedMembers) return;
         const sanitized = filterEngine.sanitizePreferences(preferences, state.display, members);
         const changed = JSON.stringify(sanitized) !== JSON.stringify(preferences);
         preferences = sanitized;
@@ -527,11 +587,11 @@ app.addEventListener("click", async event => {
     dialog.memberPickerOpen = true;
     dialog.assigneeDraft = [...(dialog.type === "createTask" ? dialog.selectedAssignees || [] : details.get(dialog.taskId)?.assigneeIds || [])];
     state.dialogError = null;
-    if (memberPlanId !== state.display?.planId) { members = null; memberError = null; memberPlanId = state.display?.planId; }
+    if (memberPlanId !== state.display?.planId) { members = null; memberError = null; }
     if (!members) memberError = null;
     render();
     if (!members && !memberError) {
-      try { members = await api.getMembers(); }
+      try { await loadMembersForPlan(state.display.planId); }
       catch (error) { memberError = normalizeError(error).message; }
       if (state.dialog === dialog) render();
     }
@@ -599,6 +659,7 @@ app.addEventListener("click", async event => {
     try {
       await api.selectPlan(chosen.dataset.selectPlan);
       details.clear(); failures.clear(); members = null; memberError = null; memberPlanId = null;
+      memberRequest = null; memberRequestGeneration++; preferenceLoadGeneration++;
       createNotice = null; filterError = null; preferencesPlanId = null; searchText = "";
       state = flow.closeDialog(state);
       await loadDisplay(true);
@@ -795,7 +856,10 @@ app.addEventListener("click", async event => {
       await api.setProgress(taskId, 100);
       updateDetailValue(taskId, "progress", 100);
       state = flow.closeActiveDialog(state);
-      if (state.dialog?.type === "taskDetails") state.dialog.metadataStatus = "Progress saved.";
+      if (state.dialog?.type === "taskDetails") {
+        state.dialog.progressDraft = null;
+        state.dialog.metadataStatus = "Progress saved.";
+      }
       render();
     } catch (error) {
       state.completing = false; state.dialogError = normalizeError(error).message; render();
@@ -851,6 +915,8 @@ async function saveDetailMetadata(field, value) {
     await operations[field]();
     if (state.dialog !== dialog) return;
     updateDetailValue(taskId, field, value);
+    if (field === "priority") dialog.priorityDraft = null;
+    if (field === "progress") dialog.progressDraft = null;
     state.completing = false; dialog.metadataStatus = "Changes saved."; render();
   } catch (error) {
     if (state.dialog !== dialog) return;
