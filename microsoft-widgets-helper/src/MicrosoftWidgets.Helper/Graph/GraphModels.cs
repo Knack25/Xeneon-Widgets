@@ -11,6 +11,10 @@ public sealed record GraphChecklistItem(string Id, string Title, bool IsChecked,
 
 public sealed record GraphTaskDetails(string ETag, IReadOnlyList<GraphChecklistItem> Checklist, string? Description = null);
 
+public sealed record GraphConversationPost(string Id, string Body, string Author, DateTimeOffset? CreatedAt);
+
+public sealed record GraphConversationPage(IReadOnlyList<GraphConversationPost> Posts, Uri? NextLink);
+
 public sealed record GraphTask(
     string Id,
     string Title,

@@ -250,6 +250,94 @@ public sealed class PlannerGraphClient(HttpClient httpClient, IGraphTokenProvide
         using var response = await SendAsync(request, cancellationToken);
     }
 
+    public async Task<GraphConversationPage> GetConversationPostsAsync(string groupId, string threadId,
+        Uri? continuationUri, CancellationToken cancellationToken)
+    {
+        var escapedGroup = Uri.EscapeDataString(groupId);
+        var escapedThread = Uri.EscapeDataString(threadId);
+        var requestUri = continuationUri ?? new Uri(
+            $"groups/{escapedGroup}/threads/{escapedThread}/posts?$select=id,body,from,createdDateTime",
+            UriKind.Relative);
+        if (continuationUri is not null)
+            ValidateConversationContinuation(continuationUri, escapedGroup, escapedThread);
+
+        using var response = await SendConversationAsync(new HttpRequestMessage(HttpMethod.Get, requestUri), cancellationToken);
+        using var document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellationToken),
+            cancellationToken: cancellationToken);
+        var posts = new List<GraphConversationPost>();
+        foreach (var item in document.RootElement.GetProperty("value").EnumerateArray())
+        {
+            var body = item.TryGetProperty("body", out var bodyValue)
+                && bodyValue.TryGetProperty("content", out var content)
+                ? content.GetString() ?? string.Empty
+                : string.Empty;
+            string? author = null;
+            if (item.TryGetProperty("from", out var from)
+                && from.ValueKind == JsonValueKind.Object
+                && from.TryGetProperty("emailAddress", out var email)
+                && email.ValueKind == JsonValueKind.Object)
+            {
+                if (email.TryGetProperty("name", out var name)) author = name.GetString();
+                if (string.IsNullOrWhiteSpace(author) && email.TryGetProperty("address", out var address))
+                    author = address.GetString();
+            }
+            posts.Add(new GraphConversationPost(
+                item.GetProperty("id").GetString()!,
+                body,
+                string.IsNullOrWhiteSpace(author) ? "Unknown" : author,
+                item.TryGetProperty("createdDateTime", out var createdAt) && createdAt.ValueKind != JsonValueKind.Null
+                    ? createdAt.GetDateTimeOffset()
+                    : null));
+        }
+
+        Uri? nextLink = null;
+        if (document.RootElement.TryGetProperty("@odata.nextLink", out var next) && next.ValueKind == JsonValueKind.String)
+        {
+            var value = next.GetString();
+            if (!string.IsNullOrWhiteSpace(value)) nextLink = new Uri(value, UriKind.Absolute);
+        }
+        return new GraphConversationPage(posts, nextLink);
+    }
+
+    public async Task ReplyToConversationAsync(string groupId, string threadId, string message,
+        CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post,
+            $"groups/{Uri.EscapeDataString(groupId)}/threads/{Uri.EscapeDataString(threadId)}/reply");
+        request.Content = JsonContent(new
+        {
+            post = new { body = new { contentType = "text", content = message } }
+        });
+        using var response = await SendConversationAsync(request, cancellationToken);
+    }
+
+    public async Task<string> CreateConversationThreadAsync(string groupId, string topic, string message,
+        CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post,
+            $"groups/{Uri.EscapeDataString(groupId)}/threads");
+        request.Content = JsonContent(new
+        {
+            topic,
+            posts = new[] { new { body = new { contentType = "text", content = message } } }
+        });
+        using var response = await SendConversationAsync(request, cancellationToken);
+        using var document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellationToken),
+            cancellationToken: cancellationToken);
+        return document.RootElement.GetProperty("id").GetString()
+            ?? throw new JsonException("Microsoft Graph did not return a conversation thread ID.");
+    }
+
+    public async Task SetConversationThreadAsync(string taskId, string threadId, string etag,
+        CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Patch,
+            $"planner/tasks/{Uri.EscapeDataString(taskId)}");
+        request.Headers.IfMatch.ParseAdd(etag);
+        request.Content = JsonContent(new { conversationThreadId = threadId });
+        using var response = await SendAsync(request, cancellationToken);
+    }
+
     private async IAsyncEnumerable<JsonElement> GetCollectionAsync(string path, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
         string? next = path;
@@ -291,6 +379,32 @@ public sealed class PlannerGraphClient(HttpClient httpClient, IGraphTokenProvide
             response.Dispose();
             throw new GraphApiException(status, body);
         }
+    }
+
+    private async Task<HttpResponseMessage> SendConversationAsync(HttpRequestMessage request,
+        CancellationToken cancellationToken)
+    {
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer",
+            await tokenProvider.GetConversationTokenAsync(cancellationToken));
+        var response = await httpClient.SendAsync(request, cancellationToken);
+        if (response.IsSuccessStatusCode)
+            return response;
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        var status = response.StatusCode;
+        response.Dispose();
+        throw new GraphApiException(status, body);
+    }
+
+    private static StringContent JsonContent<T>(T value) =>
+        new(JsonSerializer.Serialize(value), Encoding.UTF8, "application/json");
+
+    private static void ValidateConversationContinuation(Uri uri, string escapedGroup, string escapedThread)
+    {
+        if (uri.Scheme != Uri.UriSchemeHttps
+            || !uri.Host.Equals("graph.microsoft.com", StringComparison.OrdinalIgnoreCase)
+            || !uri.AbsolutePath.Equals($"/v1.0/groups/{escapedGroup}/threads/{escapedThread}/posts",
+                StringComparison.Ordinal))
+            throw new ArgumentException("The conversation cursor is invalid.", nameof(uri));
     }
 
     private static GraphTask ToTask(JsonElement item)

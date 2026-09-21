@@ -41,4 +41,16 @@ public interface IPlannerGraphClient
 
     Task CreateTaskAsync(string planId, string bucketId, string title, DateTimeOffset? dueDate,
         IReadOnlyList<string> assigneeIds, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+    Task<GraphConversationPage> GetConversationPostsAsync(string groupId, string threadId, Uri? continuationUri,
+        CancellationToken cancellationToken) => throw new NotSupportedException();
+
+    Task ReplyToConversationAsync(string groupId, string threadId, string message, CancellationToken cancellationToken)
+        => throw new NotSupportedException();
+
+    Task<string> CreateConversationThreadAsync(string groupId, string topic, string message,
+        CancellationToken cancellationToken) => throw new NotSupportedException();
+
+    Task SetConversationThreadAsync(string taskId, string threadId, string etag, CancellationToken cancellationToken)
+        => throw new NotSupportedException();
 }

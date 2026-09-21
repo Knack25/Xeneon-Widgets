@@ -226,13 +226,129 @@ public sealed class GraphClientTests
         await CreateClient(handler).CreateTaskAsync("plan", "bucket", "New task", null, ["person"], CancellationToken.None);
     }
 
-    private static PlannerGraphClient CreateClient(HttpMessageHandler handler) => new(
+    [Fact]
+    public async Task GetConversationPostsAsync_UsesConversationTokenAndMapsPostsAndContinuation()
+    {
+        var next = "https://graph.microsoft.com/v1.0/groups/group/threads/thread/posts?$skiptoken=older";
+        var handler = new StubHandler(request =>
+        {
+            Assert.Equal(HttpMethod.Get, request.Method);
+            Assert.Equal("/v1.0/groups/group/threads/thread/posts", request.RequestUri!.AbsolutePath);
+            Assert.Equal("?$select=id,body,from,createdDateTime", request.RequestUri.Query);
+            Assert.Equal("conversation-token", request.Headers.Authorization?.Parameter);
+            return """{"value":[{"id":"post-1","body":{"contentType":"html","content":"<p>Hello</p>"},"from":{"emailAddress":{"name":"Alex","address":"alex@example.com"}},"createdDateTime":"2026-09-21T12:00:00Z"}],"@odata.nextLink":"NEXT"}"""
+                .Replace("NEXT", next, StringComparison.Ordinal);
+        });
+
+        var page = await CreateClient(handler, new DistinctTokenProvider())
+            .GetConversationPostsAsync("group", "thread", null, CancellationToken.None);
+
+        var post = Assert.Single(page.Posts);
+        Assert.Equal("post-1", post.Id);
+        Assert.Equal("<p>Hello</p>", post.Body);
+        Assert.Equal("Alex", post.Author);
+        Assert.Equal(new DateTimeOffset(2026, 9, 21, 12, 0, 0, TimeSpan.Zero), post.CreatedAt);
+        Assert.Equal(next, page.NextLink?.AbsoluteUri);
+    }
+
+    [Fact]
+    public async Task GetConversationPostsAsync_UsesValidatedContinuationWithoutAddingTop()
+    {
+        var continuation = new Uri("https://graph.microsoft.com/v1.0/groups/group/threads/thread/posts?$skiptoken=older");
+        var handler = new StubHandler(request =>
+        {
+            Assert.Equal(continuation, request.RequestUri);
+            Assert.DoesNotContain("$top", request.RequestUri!.Query, StringComparison.OrdinalIgnoreCase);
+            return """{"value":[]}""";
+        });
+
+        await CreateClient(handler, new DistinctTokenProvider())
+            .GetConversationPostsAsync("group", "thread", continuation, CancellationToken.None);
+    }
+
+    [Theory]
+    [InlineData("http://graph.microsoft.com/v1.0/groups/group/threads/thread/posts?$skiptoken=x")]
+    [InlineData("https://example.com/v1.0/groups/group/threads/thread/posts?$skiptoken=x")]
+    [InlineData("https://graph.microsoft.com/v1.0/groups/group/threads/other/posts?$skiptoken=x")]
+    public async Task GetConversationPostsAsync_RejectsUnsafeContinuation(string continuation)
+    {
+        var handler = new StubHandler(_ => throw new Xunit.Sdk.XunitException("Unsafe continuation reached the network."));
+
+        await Assert.ThrowsAsync<ArgumentException>(() => CreateClient(handler, new DistinctTokenProvider())
+            .GetConversationPostsAsync("group", "thread", new Uri(continuation), CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task ReplyToConversationAsync_PostsPlainTextWithConversationToken()
+    {
+        var handler = new StubHandler(request =>
+        {
+            Assert.Equal(HttpMethod.Post, request.Method);
+            Assert.Equal("/v1.0/groups/group/threads/thread/reply", request.RequestUri!.AbsolutePath);
+            Assert.Equal("conversation-token", request.Headers.Authorization?.Parameter);
+            using var body = JsonDocument.Parse(request.Content!.ReadAsStringAsync().Result);
+            var postBody = body.RootElement.GetProperty("post").GetProperty("body");
+            Assert.Equal("text", postBody.GetProperty("contentType").GetString());
+            Assert.Equal("Status <ready>", postBody.GetProperty("content").GetString());
+            return "{}";
+        });
+
+        await CreateClient(handler, new DistinctTokenProvider())
+            .ReplyToConversationAsync("group", "thread", "Status <ready>", CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task CreateConversationThreadAsync_PostsPlainTextAndReturnsThreadId()
+    {
+        var handler = new StubHandler(request =>
+        {
+            Assert.Equal(HttpMethod.Post, request.Method);
+            Assert.Equal("/v1.0/groups/group/threads", request.RequestUri!.AbsolutePath);
+            Assert.Equal("conversation-token", request.Headers.Authorization?.Parameter);
+            using var body = JsonDocument.Parse(request.Content!.ReadAsStringAsync().Result);
+            Assert.Equal("Task title", body.RootElement.GetProperty("topic").GetString());
+            var postBody = body.RootElement.GetProperty("posts")[0].GetProperty("body");
+            Assert.Equal("text", postBody.GetProperty("contentType").GetString());
+            Assert.Equal("First comment", postBody.GetProperty("content").GetString());
+            return """{"id":"new-thread"}""";
+        });
+
+        var threadId = await CreateClient(handler, new DistinctTokenProvider())
+            .CreateConversationThreadAsync("group", "Task title", "First comment", CancellationToken.None);
+
+        Assert.Equal("new-thread", threadId);
+    }
+
+    [Fact]
+    public async Task SetConversationThreadAsync_PatchesTaskWithCurrentEtag()
+    {
+        var handler = new StubHandler(request =>
+        {
+            Assert.Equal(HttpMethod.Patch, request.Method);
+            Assert.Equal("/v1.0/planner/tasks/task", request.RequestUri!.AbsolutePath);
+            Assert.Equal("W/\"latest\"", request.Headers.IfMatch.Single().ToString());
+            Assert.Equal("core-token", request.Headers.Authorization?.Parameter);
+            Assert.Equal("{\"conversationThreadId\":\"new-thread\"}", request.Content!.ReadAsStringAsync().Result);
+            return "{}";
+        });
+
+        await CreateClient(handler, new DistinctTokenProvider())
+            .SetConversationThreadAsync("task", "new-thread", "W/\"latest\"", CancellationToken.None);
+    }
+
+    private static PlannerGraphClient CreateClient(HttpMessageHandler handler, IGraphTokenProvider? tokenProvider = null) => new(
         new HttpClient(handler) { BaseAddress = new Uri("https://graph.microsoft.com/v1.0/") },
-        new StaticTokenProvider());
+        tokenProvider ?? new StaticTokenProvider());
 
     private sealed class StaticTokenProvider : IGraphTokenProvider
     {
         public Task<string> GetAccessTokenAsync(CancellationToken cancellationToken) => Task.FromResult("token");
+    }
+
+    private sealed class DistinctTokenProvider : IGraphTokenProvider
+    {
+        public Task<string> GetAccessTokenAsync(CancellationToken cancellationToken) => Task.FromResult("core-token");
+        public Task<string> GetConversationTokenAsync(CancellationToken cancellationToken) => Task.FromResult("conversation-token");
     }
 
     private sealed class StubHandler(Func<HttpRequestMessage, string> responseBody) : HttpMessageHandler

@@ -28,6 +28,13 @@ public sealed record AssignmentsRequest(IReadOnlyList<string> UserIds);
 public sealed record CreateTaskRequest(string Title, string BucketId, string? Date, IReadOnlyList<string> UserIds);
 public sealed record UpdateNotesRequest(string Description);
 
+public sealed record TaskChatMessage(string Id, string Author, DateTimeOffset? CreatedAt, string Body);
+
+public sealed record TaskChatResponse(string State, IReadOnlyList<TaskChatMessage> Messages,
+    string? NextCursor = null, string? Message = null);
+
+public sealed record PostChatRequest(string Message);
+
 public sealed record BucketDisplay(
     string BucketId,
     string Name,

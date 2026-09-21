@@ -46,4 +46,20 @@ public sealed class ContractTests
         Assert.Equal("forbidden", error.Code);
         Assert.Equal("Planner denied access.", error.Message);
     }
+
+    [Fact]
+    public void TaskChatContracts_ExposeStableFields()
+    {
+        var createdAt = new DateTimeOffset(2026, 9, 21, 12, 0, 0, TimeSpan.Zero);
+        var message = new TaskChatMessage("post-1", "Alex", createdAt, "Ready to ship");
+        var response = new TaskChatResponse("available", [message], "opaque", null);
+        var request = new PostChatRequest("Status update");
+
+        Assert.Equal("post-1", Assert.Single(response.Messages).Id);
+        Assert.Equal("Alex", response.Messages[0].Author);
+        Assert.Equal(createdAt, response.Messages[0].CreatedAt);
+        Assert.Equal("Ready to ship", response.Messages[0].Body);
+        Assert.Equal("opaque", response.NextCursor);
+        Assert.Equal("Status update", request.Message);
+    }
 }
