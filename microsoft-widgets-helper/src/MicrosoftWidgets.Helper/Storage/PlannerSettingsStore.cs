@@ -21,9 +21,15 @@ public sealed class PlannerSettingsStore(ILocalJsonStore jsonStore) : IPlannerSe
             ?? new SettingsDto(null, null, HideCompletedTasks: true);
     }
 
-    public Task SaveSettingsAsync(SettingsDto settings, CancellationToken cancellationToken)
+    public async Task SaveSettingsAsync(SettingsDto settings, CancellationToken cancellationToken)
     {
-        return jsonStore.WriteAsync(SettingsFileName, settings, cancellationToken);
+        if (settings.PlanViews is null)
+        {
+            var current = await jsonStore.ReadAsync<SettingsDto>(SettingsFileName, cancellationToken);
+            settings = settings with { PlanViews = current?.PlanViews };
+        }
+
+        await jsonStore.WriteAsync(SettingsFileName, settings, cancellationToken);
     }
 
     public async Task<BoardDisplay?> LoadCachedDisplayAsync(CancellationToken cancellationToken)

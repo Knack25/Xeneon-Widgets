@@ -17,7 +17,18 @@ public sealed record PlanSummary(
 public sealed record SettingsDto(
     string? SelectedPlanId,
     string? SelectedPlanTitle,
-    bool HideCompletedTasks);
+    bool HideCompletedTasks,
+    IReadOnlyDictionary<string, PlanViewPreferences>? PlanViews = null);
+
+public sealed record PlannerFilterSettings(
+    IReadOnlyList<string> AssigneeIds,
+    IReadOnlyList<string> LabelIds,
+    IReadOnlyList<int> Priorities,
+    IReadOnlyList<string> BucketIds,
+    IReadOnlyList<int> ProgressValues,
+    string? DueDateRange);
+
+public sealed record PlanViewPreferences(bool MyTasks, PlannerFilterSettings Filters);
 
 public sealed record SelectedPlanRequest(string PlanId);
 

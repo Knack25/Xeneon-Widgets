@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http.Metadata;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using PlannerEdge.Helper.Planner;
@@ -30,5 +31,34 @@ public sealed class PlannerIntegrationTests
             Assert.Contains(path, routes);
             Assert.Contains("/api/planner" + path, routes);
         }
+    }
+
+    [Fact]
+    public async Task PreferenceAndCachedDisplayRoutes_PreserveLegacyUrlsAndNamespacedAliases()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.Services.AddMemoryCache();
+        builder.Services.AddPlannerIntegration();
+        await using var app = builder.Build();
+        app.MapPlannerIntegration();
+
+        var routes = ((IEndpointRouteBuilder)app).DataSources.SelectMany(source => source.Endpoints)
+            .OfType<RouteEndpoint>()
+            .Select(endpoint => (Path: endpoint.RoutePattern.RawText,
+                Methods: endpoint.Metadata.GetMetadata<IHttpMethodMetadata>()?.HttpMethods ?? []))
+            .ToList();
+
+        AssertRoute(routes, "/display/cached", "GET");
+        AssertRoute(routes, "/view-preferences/{planId}", "GET");
+        AssertRoute(routes, "/view-preferences/{planId}", "PUT");
+        AssertRoute(routes, "/api/planner/display/cached", "GET");
+        AssertRoute(routes, "/api/planner/view-preferences/{planId}", "GET");
+        AssertRoute(routes, "/api/planner/view-preferences/{planId}", "PUT");
+    }
+
+    private static void AssertRoute(IEnumerable<(string? Path, IReadOnlyList<string> Methods)> routes,
+        string path, string method)
+    {
+        Assert.Contains(routes, route => route.Path == path && route.Methods.Contains(method));
     }
 }

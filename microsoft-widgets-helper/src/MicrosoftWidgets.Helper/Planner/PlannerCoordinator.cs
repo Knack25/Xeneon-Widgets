@@ -5,6 +5,15 @@ namespace PlannerEdge.Helper.Planner;
 
 public sealed class PlannerCoordinator(IPlannerSettingsStore settingsStore, PlannerDisplayService displayService)
 {
+    public async Task<BoardDisplay?> GetCachedDisplayAsync(CancellationToken cancellationToken)
+    {
+        var settings = await settingsStore.LoadSettingsAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(settings.SelectedPlanId)) return null;
+
+        var cached = await settingsStore.LoadCachedDisplayAsync(cancellationToken);
+        return cached?.PlanId == settings.SelectedPlanId ? cached : null;
+    }
+
     public async Task<BoardDisplay?> GetDisplayAsync(CancellationToken cancellationToken)
     {
         var settings = await settingsStore.LoadSettingsAsync(cancellationToken);

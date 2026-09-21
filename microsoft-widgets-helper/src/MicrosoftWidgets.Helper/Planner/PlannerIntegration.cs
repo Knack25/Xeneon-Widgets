@@ -16,6 +16,7 @@ public static class PlannerIntegration
         services.AddSingleton<PlannerDisplayService>();
         services.AddSingleton<TaskCompletionService>();
         services.AddSingleton<PlannerCoordinator>();
+        services.AddSingleton<PlannerViewPreferenceService>();
         services.AddSingleton<TaskDetailsService>();
         services.AddSingleton<TaskNotesService>();
         services.AddSingleton<TaskChatService>();
@@ -55,6 +56,17 @@ public static class PlannerIntegration
             var display = await coordinator.GetDisplayAsync(ct);
             return display is null ? Results.NoContent() : Results.Ok(display);
         });
+        app.MapGet("/display/cached", async (PlannerCoordinator coordinator, CancellationToken ct) =>
+        {
+            var display = await coordinator.GetCachedDisplayAsync(ct);
+            return display is null ? Results.NoContent() : Results.Ok(display);
+        });
+        app.MapGet("/view-preferences/{planId}", async (string planId,
+            PlannerViewPreferenceService preferences, CancellationToken ct) =>
+            Results.Ok(await preferences.GetAsync(planId, ct)));
+        app.MapPut("/view-preferences/{planId}", async (string planId, PlanViewPreferences request,
+            PlannerViewPreferenceService preferences, CancellationToken ct) =>
+            Results.Ok(await preferences.SaveAsync(planId, request, ct)));
         app.MapGet("/members", async (BoardMemberService members, CancellationToken ct) =>
             Results.Ok(await members.GetAsync(ct)));
         app.MapPost("/tasks", async (CreateTaskRequest request, TaskCreationService creation, CancellationToken ct) =>
