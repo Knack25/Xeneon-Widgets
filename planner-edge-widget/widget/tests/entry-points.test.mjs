@@ -15,3 +15,15 @@ test("next widget package has its own version", () => {
   const manifest = JSON.parse(readFileSync(new URL("../manifest.json", import.meta.url), "utf8"));
   assert.equal(manifest.version, "0.3.0");
 });
+
+test("native entry loads pure widget modules before the app", () => {
+  const nativePage = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  const filters = nativePage.indexOf('src="src/filters.js"');
+  const viewState = nativePage.indexOf('src="src/view-state.js"');
+  const app = nativePage.indexOf('src="src/app.js"');
+
+  assert.ok(filters >= 0);
+  assert.ok(viewState >= 0);
+  assert.ok(filters < app);
+  assert.ok(viewState < app);
+});
