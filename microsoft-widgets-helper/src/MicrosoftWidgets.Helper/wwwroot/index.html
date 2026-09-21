@@ -73,7 +73,7 @@
       <h3>Connection</h3>
       <div class="actions"><button id="sign-in" disabled>Connect Planner</button><button id="enable-task-chat" hidden>Enable task chat</button><button id="enable-names" hidden>Show assignee names</button><button id="enable-members" hidden>Enable board members</button><button id="cancel-sign-in" hidden>Cancel sign-in</button></div>
       <details><summary>Permissions</summary>
-      <p class="hint">Task chat requires Group-Conversation.ReadWrite.All to read and post Planner task comments. Showing assignee names requires User.ReadBasic.All. Editing assignees requires GroupMember.ReadBasic.All. Your work administrator may need to approve these permissions.</p>
+      <p class="hint">Planner uses the delegated Microsoft Graph permissions User.Read and Tasks.ReadWrite. Task chat additionally requires Group-Conversation.ReadWrite.All to read and post Planner comments; existing users may need to select Enable task chat once. Without that consent, only task chat is unavailable, and notes continue to work through Tasks.ReadWrite. The optional User.ReadBasic.All permission shows assignee names, and GroupMember.ReadBasic.All enables assignee editing. Your work administrator may need to approve these permissions.</p>
       </details>
       <details class="help"><summary>Microsoft sign-in shows an error?</summary>
         <p>If you see <strong>AADSTS900971: No reply address provided</strong>, the Microsoft app registration needs a redirect address:</p>

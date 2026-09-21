@@ -26,6 +26,8 @@ The helper targets `net10.0-windows` and uses a dedicated STA Windows Forms mess
 
 `Planner/PlannerIntegration.cs` registers Planner services and routes. New clients can use `/api/planner/plans`, `/api/planner/display`, `/api/planner/tasks`, and the other Planner routes under this prefix. Existing unprefixed endpoints remain supported for installed widgets. `/board/index.html` remains available and bundles assets from the sibling Planner widget project.
 
+The Planner connection uses delegated Microsoft Graph permissions `User.Read`, `Tasks.ReadWrite`, and `Group-Conversation.ReadWrite.All`. Existing users may need to open setup and select **Enable task chat** once to grant the conversation permission. Without it, only task chat is unavailable; Planner boards, tasks, checklists, and notes continue to work, and notes use `Tasks.ReadWrite`. Optional `User.ReadBasic.All` and `GroupMember.ReadBasic.All` permissions enable assignee names and board-member selection respectively.
+
 The Windows data directory remains `%LOCALAPPDATA%/PlannerEdgeWidget` intentionally. Existing connection settings, selected board, and encrypted MSAL cache are reused without moving or rewriting credentials. Existing internal `PlannerEdge.Helper` namespaces are retained during extraction to keep the behavior change small.
 
 ## Adding an integration
