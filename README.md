@@ -18,7 +18,7 @@ The Foundry VTT module, connector and character dashboard now live in [Xeneon-Fo
 
 ## Screenshots
 
-All previews use fictional demo data. Dark-mode controls shown here are in development and are not included in release 0.3.2.
+All previews use fictional demo data. Appearance settings are included in release 0.3.3 and later.
 
 ### Outlook
 

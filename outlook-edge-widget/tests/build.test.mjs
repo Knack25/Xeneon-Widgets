@@ -12,7 +12,7 @@ test('dependency versions are exact, lockfile matches, and Outlook version is in
   const pkg=JSON.parse(await readFile(new URL('package.json',root),'utf8'));
   const lock=JSON.parse(await readFile(new URL('package-lock.json',root),'utf8'));
   const manifest=JSON.parse(await readFile(new URL('widget/manifest.json',root),'utf8'));
-  assert.equal(pkg.version,'0.1.0');assert.equal(manifest.version,pkg.version);assert.equal(lock.packages[''].version,pkg.version);
+  assert.equal(pkg.version,'0.2.0');assert.equal(manifest.version,pkg.version);assert.equal(lock.packages[''].version,pkg.version);
   for(const [name,version] of Object.entries({...pkg.dependencies,...pkg.devDependencies})) {
     assert.match(version,/^\d+\.\d+\.\d+$/);assert.equal(lock.packages[`node_modules/${name}`].version,version);
   }

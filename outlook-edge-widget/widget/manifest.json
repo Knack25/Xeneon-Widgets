@@ -3,7 +3,7 @@
   "id": "com.knack25.outlookedgewidget",
   "name": "Outlook Edge Widget",
   "description": "Read-only Outlook calendar with Week, Agenda, and Month views.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "preview_icon": "resources/icon.svg",
   "min_app_version": "5.51",
   "min_framework_version": "1.0.0",
