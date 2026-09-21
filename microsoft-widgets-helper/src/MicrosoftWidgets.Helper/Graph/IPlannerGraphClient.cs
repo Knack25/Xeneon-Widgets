@@ -25,6 +25,9 @@ public interface IPlannerGraphClient
 
     Task CompleteChecklistItemAsync(string taskId, string itemId, string etag, CancellationToken cancellationToken);
 
+    Task UpdateTaskDescriptionAsync(string taskId, string description, string etag, CancellationToken cancellationToken)
+        => throw new NotSupportedException();
+
     Task CompleteTaskAsync(string taskId, string etag, CancellationToken cancellationToken);
 
     Task MoveTaskAsync(string taskId, string bucketId, string etag, CancellationToken cancellationToken)

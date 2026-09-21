@@ -17,6 +17,7 @@ public static class PlannerIntegration
         services.AddSingleton<TaskCompletionService>();
         services.AddSingleton<PlannerCoordinator>();
         services.AddSingleton<TaskDetailsService>();
+        services.AddSingleton<TaskNotesService>();
         services.AddSingleton<TaskMoveService>();
         services.AddSingleton<DueDateService>();
         services.AddSingleton<BoardMemberService>();
@@ -62,6 +63,12 @@ public static class PlannerIntegration
             Results.Ok(await completion.CompleteAsync(taskId, ct)));
         app.MapGet("/tasks/{taskId}/details", async (string taskId, TaskDetailsService details, CancellationToken ct) =>
             Results.Ok(await details.GetAsync(taskId, ct)));
+        app.MapPut("/tasks/{taskId}/notes", async (string taskId, UpdateNotesRequest request,
+            TaskNotesService notes, CancellationToken ct) =>
+        {
+            await notes.UpdateAsync(taskId, request.Description, ct);
+            return Results.NoContent();
+        });
         app.MapPut("/tasks/{taskId}/bucket", async (string taskId, MoveTaskRequest request, TaskMoveService moves, CancellationToken ct) =>
         {
             await moves.MoveAsync(taskId, request.BucketId, ct);

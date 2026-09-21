@@ -20,7 +20,8 @@ public sealed class PlannerIntegrationTests
             .OfType<RouteEndpoint>().Select(endpoint => endpoint.RoutePattern.RawText).ToHashSet();
         foreach (var path in new[] { "/plans", "/settings", "/display", "/selected-plan", "/members", "/tasks",
             "/tasks/{taskId}/details", "/tasks/{taskId}/complete", "/tasks/{taskId}/bucket",
-            "/tasks/{taskId}/due-date", "/tasks/{taskId}/assignments", "/tasks/{taskId}/checklist/{itemId}/complete" })
+            "/tasks/{taskId}/due-date", "/tasks/{taskId}/assignments", "/tasks/{taskId}/notes",
+            "/tasks/{taskId}/checklist/{itemId}/complete" })
         {
             Assert.Contains(path, routes);
             Assert.Contains("/api/planner" + path, routes);

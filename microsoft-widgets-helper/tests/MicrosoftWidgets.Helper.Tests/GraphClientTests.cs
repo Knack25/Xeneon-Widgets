@@ -66,6 +66,24 @@ public sealed class GraphClientTests
         await CreateClient(handler).CompleteChecklistItemAsync("task", "item", "W/\"latest\"", CancellationToken.None);
     }
 
+    [Theory]
+    [InlineData("Updated notes", "{\"description\":\"Updated notes\"}")]
+    [InlineData("Line one\nLine two", "{\"description\":\"Line one\\nLine two\"}")]
+    [InlineData("", "{\"description\":\"\"}")]
+    public async Task UpdateTaskDescriptionAsync_PatchesOnlyDescriptionWithDetailsEtag(string description, string expectedBody)
+    {
+        var handler = new StubHandler(request =>
+        {
+            Assert.Equal(HttpMethod.Patch, request.Method);
+            Assert.EndsWith("/planner/tasks/task/details", request.RequestUri!.AbsolutePath);
+            Assert.Equal("W/\"details\"", request.Headers.IfMatch.Single().ToString());
+            Assert.Equal(expectedBody, request.Content!.ReadAsStringAsync().Result);
+            return "{}";
+        });
+
+        await CreateClient(handler).UpdateTaskDescriptionAsync("task", description, "W/\"details\"", CancellationToken.None);
+    }
+
     [Fact]
     public async Task GetBucketsAsync_MapsOrderHint()
     {

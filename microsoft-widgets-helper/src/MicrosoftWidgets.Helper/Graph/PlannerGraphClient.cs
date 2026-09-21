@@ -185,6 +185,16 @@ public sealed class PlannerGraphClient(HttpClient httpClient, IGraphTokenProvide
         using var response = await SendAsync(request, cancellationToken);
     }
 
+    public async Task UpdateTaskDescriptionAsync(string taskId, string description, string etag,
+        CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Patch,
+            $"planner/tasks/{Uri.EscapeDataString(taskId)}/details");
+        request.Headers.IfMatch.ParseAdd(etag);
+        request.Content = new StringContent(JsonSerializer.Serialize(new { description }), Encoding.UTF8, "application/json");
+        using var response = await SendAsync(request, cancellationToken);
+    }
+
     public async Task CompleteTaskAsync(string taskId, string etag, CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(HttpMethod.Patch, $"planner/tasks/{Uri.EscapeDataString(taskId)}");

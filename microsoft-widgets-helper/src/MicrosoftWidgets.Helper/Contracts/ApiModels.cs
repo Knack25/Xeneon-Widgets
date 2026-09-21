@@ -26,6 +26,7 @@ public sealed record MoveTaskRequest(string BucketId);
 public sealed record DueDateRequest(string? Date);
 public sealed record AssignmentsRequest(IReadOnlyList<string> UserIds);
 public sealed record CreateTaskRequest(string Title, string BucketId, string? Date, IReadOnlyList<string> UserIds);
+public sealed record UpdateNotesRequest(string Description);
 
 public sealed record BucketDisplay(
     string BucketId,
