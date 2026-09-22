@@ -121,6 +121,10 @@ public sealed class StorageTests
             read = Task.Run(() => store.ReadAsync<BlockingReadPayload>("replace-open-read", default));
             await started.Task;
 
+            var path = Path.Combine(root, "replace-open-read.json");
+            Assert.Throws<IOException>(() =>
+                new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete).Dispose());
+
             await store.WriteAsync("replace-open-read", new ConcurrentPayload(2, "replacement"), default)
                 .WaitAsync(TimeSpan.FromSeconds(2));
             release.TrySetResult();

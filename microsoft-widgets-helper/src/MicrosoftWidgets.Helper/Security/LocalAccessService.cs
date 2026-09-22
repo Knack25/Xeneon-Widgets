@@ -83,11 +83,8 @@ public sealed class LocalAccessService
         }
     }
 
-    internal async Task<string> IssueReplacementOwnerSessionAsync(CancellationToken cancellationToken)
+    internal string IssueReplacementOwnerSession(AccountLease lease)
     {
-        AccountLease? lease = accountState is null
-            ? null
-            : await accountState.GetIdentityAsync(requireAccount: false, cancellationToken);
         lock (gate)
         {
             var now = timeProvider.GetUtcNow();

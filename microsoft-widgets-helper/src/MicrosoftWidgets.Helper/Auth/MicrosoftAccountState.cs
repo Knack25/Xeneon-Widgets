@@ -122,6 +122,39 @@ public sealed class MicrosoftAccountState(IMicrosoftAccountIdentityProvider iden
         finally { gate.Release(); }
     }
 
+    // The completion runs while the account gate is held. It may acquire LocalAccessService's
+    // token gate; code holding that token gate must never call back into account state.
+    public async Task<TCompletion> TransitionAsync<T, TCompletion>(Func<Task<T>> transition,
+        Func<T, AccountLease, AccountLease, Task<TCompletion>> completion, CancellationToken cancellationToken,
+        bool forceInvalidate = false, Func<T, bool>? invalidateWhen = null)
+    {
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            var previous = await SynchronizeIdentityLockedAsync(false, cancellationToken);
+            T? result = default;
+            var completed = false;
+            AccountLease current;
+            try
+            {
+                result = await transition();
+                completed = true;
+            }
+            finally
+            {
+                if (forceInvalidate || completed && invalidateWhen?.Invoke(result!) == true)
+                {
+                    Reset();
+                    await ClearWidgetCredentialsAsync(CancellationToken.None);
+                }
+                current = await SynchronizeIdentityLockedAsync(false, CancellationToken.None);
+            }
+
+            return await completion(result!, previous, current);
+        }
+        finally { gate.Release(); }
+    }
+
     public bool IsCurrent(AccountLease lease) => lease.Key == account && lease.Generation == Interlocked.Read(ref generation);
 
     public void RequireCurrent(AccountLease lease)

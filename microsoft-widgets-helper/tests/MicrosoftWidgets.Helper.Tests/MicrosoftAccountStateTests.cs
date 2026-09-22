@@ -145,6 +145,41 @@ public sealed class MicrosoftAccountStateTests
         Assert.Equal("account_changed", error.Code);
     }
 
+    [Fact]
+    public async Task Owner_session_rotation_is_atomic_with_the_exact_account_transition()
+    {
+        var identities = new IdentityProvider(Identity("home-a", "tenant-a", "client-a", "user@example.com"));
+        var state = new MicrosoftAccountState(identities, new OutlookMemoryStore());
+        var access = new LocalAccessService(TimeProvider.System, state);
+        var enteredCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseCompletion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var rotation = state.TransitionAsync(
+            () =>
+            {
+                identities.Identity = Identity("home-b", "tenant-a", "client-a", "user@example.com");
+                return Task.FromResult(true);
+            },
+            async (_, previous, current) =>
+            {
+                Assert.NotEqual(previous, current);
+                enteredCompletion.TrySetResult();
+                await releaseCompletion.Task;
+                return access.IssueReplacementOwnerSession(current);
+            },
+            default);
+
+        await enteredCompletion.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var invalidation = state.InvalidateAsync(default);
+        Assert.False(invalidation.IsCompleted);
+
+        releaseCompletion.TrySetResult();
+        var replacement = await rotation;
+        await invalidation;
+
+        Assert.False(await access.ValidateOwnerSessionAsync(replacement, default));
+    }
+
     private static MicrosoftAccountIdentity Identity(string home, string tenant, string client, string username) =>
         new(home, tenant, client, username);
 

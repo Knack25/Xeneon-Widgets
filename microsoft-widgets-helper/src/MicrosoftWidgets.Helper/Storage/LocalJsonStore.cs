@@ -24,7 +24,7 @@ public sealed class LocalJsonStore(string rootDirectory) : ILocalJsonStore
         if (!File.Exists(path)) return default;
 
         await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
-            FileShare.ReadWrite | FileShare.Delete, 4096,
+            FileShare.Read | FileShare.Delete, 4096,
             FileOptions.Asynchronous | FileOptions.SequentialScan);
         return await JsonSerializer.DeserializeAsync<T>(stream, JsonOptions, cancellationToken);
     }

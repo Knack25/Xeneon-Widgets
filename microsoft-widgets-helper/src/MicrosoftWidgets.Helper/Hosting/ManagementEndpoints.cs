@@ -25,16 +25,20 @@ public static class ManagementEndpoints
             HttpResponse response, CancellationToken ct) =>
         {
             var previous = await auth.GetConfigurationAsync(ct);
-            var saved = await outlookAccount.TransitionAsync(() => auth.SaveConfigurationAsync(configuration, ct), ct,
-                invalidateWhen: value => previous != value);
-            if (previous != saved)
+            var outcome = await outlookAccount.TransitionAsync(
+                () => auth.SaveConfigurationAsync(configuration, ct),
+                (saved, _, current) => Task.FromResult((Saved: saved, Replacement: previous != saved
+                    ? access.IssueReplacementOwnerSession(current)
+                    : null)),
+                ct, invalidateWhen: value => previous != value);
+            if (outcome.Replacement is not null)
             {
                 await settings.UpdateSettingsAsync(selection =>
                     selection with { SelectedPlanId = null, SelectedPlanTitle = null }, ct);
                 response.Headers[LocalAccessHeaders.OwnerReplacement] =
-                    await access.IssueReplacementOwnerSessionAsync(ct);
+                    outcome.Replacement;
             }
-            return Results.Ok(saved);
+            return Results.Ok(outcome.Saved);
         });
         owner.MapGet("/auth/status", async (IMicrosoftAuthService auth, CancellationToken ct) =>
             Results.Ok(await auth.GetStatusAsync(ct)));
@@ -48,16 +52,19 @@ public static class ManagementEndpoints
         owner.MapPost("/auth/sign-in", async (IMicrosoftAuthService auth, MicrosoftAccountState outlookAccount,
             LocalAccessService access, HttpResponse response, CancellationToken ct) =>
         {
-            var previous = await outlookAccount.GetIdentityAsync(requireAccount: false, ct);
-            var result = await outlookAccount.TransitionAsync(() => auth.SignInAsync(ct), ct);
-            var current = await outlookAccount.GetIdentityAsync(requireAccount: false, ct);
-            if (previous != current)
+            var outcome = await outlookAccount.TransitionAsync(
+                () => auth.SignInAsync(ct),
+                (result, previous, current) => Task.FromResult((Result: result, Replacement: previous != current
+                    ? access.IssueReplacementOwnerSession(current)
+                    : null)),
+                ct);
+            if (outcome.Replacement is not null)
             {
                 response.Headers.CacheControl = "no-store";
                 response.Headers[LocalAccessHeaders.OwnerReplacement] =
-                    await access.IssueReplacementOwnerSessionAsync(ct);
+                    outcome.Replacement;
             }
-            return Results.Ok(result);
+            return Results.Ok(outcome.Result);
         });
         owner.MapPost("/auth/enable-task-chat", async (IMicrosoftAuthService auth, MicrosoftAccountState outlookAccount, CancellationToken ct) =>
             Results.Ok(await outlookAccount.TransitionAsync(() => auth.EnableTaskChatAsync(ct), ct)));
