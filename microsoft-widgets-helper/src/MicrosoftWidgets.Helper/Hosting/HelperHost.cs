@@ -24,21 +24,21 @@ public static class HelperHost
         return "http://localhost:8787/#" + fragment;
     }
 
-    public static void MapHelperHost(this WebApplication app)
+    public static void MapHelperHostManagement(this IEndpointRouteBuilder routes)
     {
-        app.MapGet("/installation", () => Results.Ok(new
+        routes.MapGet("/installation", () => Results.Ok(new
         {
             version = Version,
             plannerWidgetAvailable = File.Exists(PlannerPackagePath),
             outlookWidgetAvailable = File.Exists(OutlookPackagePath)
-        })).AddEndpointFilter<OwnerAuthorizationFilter>();
-        app.MapGet("/downloads/planner", () => File.Exists(PlannerPackagePath)
+        }));
+        routes.MapGet("/downloads/planner", () => File.Exists(PlannerPackagePath)
             ? Results.File(PlannerPackagePath, "application/octet-stream", "PlannerEdgeWidget.icuewidget")
             : Results.NotFound(new { message = "The widget package is not included in this build. Download it from the release page." }));
-        app.MapGet("/downloads/outlook", () => File.Exists(OutlookPackagePath)
+        routes.MapGet("/downloads/outlook", () => File.Exists(OutlookPackagePath)
             ? Results.File(OutlookPackagePath, "application/octet-stream", "OutlookEdgeWidget.icuewidget")
             : Results.NotFound(new { message = "The Outlook widget package is not included in this build." }));
-        app.MapPost("/host/stop", (HttpContext context, IHostApplicationLifetime lifetime) =>
+        routes.MapPost("/host/stop", (HttpContext context, IHostApplicationLifetime lifetime) =>
         {
             context.Response.OnCompleted(() =>
             {

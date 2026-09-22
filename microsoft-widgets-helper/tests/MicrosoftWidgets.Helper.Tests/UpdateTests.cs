@@ -56,20 +56,6 @@ public sealed class UpdateTests
         finally { Directory.Delete(folder, true); }
     }
 
-    [Theory]
-    [InlineData("http://localhost:8787", true)]
-    [InlineData("http://localhost:9999", false)]
-    [InlineData("null", false)]
-    [InlineData("https://evil.example", false)]
-    public void InstallEndpoint_OnlyAcceptsSetupOrigin(string origin, bool allowed)
-    {
-        var context = new DefaultHttpContext();
-        context.Request.Host = new HostString("localhost", 8787);
-        context.Request.Headers.Origin = origin;
-        context.Request.Headers["X-Microsoft-Widgets-Update"] = "1";
-        Assert.Equal(allowed, UpdateEndpoints.IsSetupRequest(context.Request));
-    }
-
     private sealed class Handler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => Task.FromResult(respond(request));

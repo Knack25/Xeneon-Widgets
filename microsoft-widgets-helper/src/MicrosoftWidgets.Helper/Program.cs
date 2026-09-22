@@ -21,10 +21,7 @@ if (args.FirstOrDefault() == "--apply-update")
 
 if (args.Contains("--stop"))
 {
-    using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-    try { await client.PostAsync("http://localhost:8787/host/stop", null); }
-    catch (HttpRequestException) { }
-    catch (TaskCanceledException) { }
+    await HelperControlPipe.RequestStopAsync(TimeSpan.FromSeconds(5));
     return;
 }
 
@@ -136,46 +133,7 @@ app.UseDefaultFiles();
 app.UseStaticFiles();
 app.MapGet("/health", () => Results.Ok(new { status = "ok", version = HelperHost.Version, service = "Microsoft Widgets Helper", integrations = new[] { "planner", "outlook" } }));
 app.MapLocalAccess();
-app.MapHelperHost();
-app.MapUpdates();
-app.MapGet("/configuration", async (IMicrosoftAuthService auth, CancellationToken ct) =>
-    Results.Ok(await auth.GetConfigurationAsync(ct))).AddEndpointFilter<OwnerAuthorizationFilter>();
-app.MapPut("/configuration", async (AzureAdOptions configuration, IMicrosoftAuthService auth,
-    IPlannerSettingsStore settings, OutlookAccountState outlookAccount, CancellationToken ct) =>
-{
-    var previous = await auth.GetConfigurationAsync(ct);
-    var saved = await outlookAccount.TransitionAsync(() => auth.SaveConfigurationAsync(configuration, ct), ct);
-    if (previous != saved)
-    {
-        await settings.UpdateSettingsAsync(selection =>
-            selection with { SelectedPlanId = null, SelectedPlanTitle = null }, ct);
-    }
-    return Results.Ok(saved);
-}).AddEndpointFilter<OwnerAuthorizationFilter>();
-app.MapGet("/auth/status", async (IMicrosoftAuthService auth, CancellationToken ct) =>
-    Results.Ok(await auth.GetStatusAsync(ct)));
-app.MapGet("/auth/capabilities", async (MicrosoftAuthCapabilityService capabilities, HttpResponse response, CancellationToken ct) =>
-{
-    response.Headers.CacheControl = "no-store";
-    return Results.Ok(await capabilities.GetAsync(ct));
-});
-app.MapGet("/auth/me", async (IPlannerGraphClient graph, CancellationToken ct) =>
-    Results.Ok(new { userId = await graph.GetCurrentUserIdAsync(ct) }));
-app.MapGet("/auth/sign-in", async (IMicrosoftAuthService auth, OutlookAccountState outlookAccount, CancellationToken ct) =>
-    Results.Ok(await outlookAccount.TransitionAsync(() => auth.SignInAsync(ct), ct)));
-app.MapPost("/auth/sign-in", async (IMicrosoftAuthService auth, OutlookAccountState outlookAccount, CancellationToken ct) =>
-    Results.Ok(await outlookAccount.TransitionAsync(() => auth.SignInAsync(ct), ct)));
-app.MapPost("/auth/enable-task-chat", async (IMicrosoftAuthService auth, OutlookAccountState outlookAccount, CancellationToken ct) =>
-    Results.Ok(await outlookAccount.TransitionAsync(() => auth.EnableTaskChatAsync(ct), ct)));
-app.MapPost("/auth/enable-assignee-names", async (IMicrosoftAuthService auth, OutlookAccountState outlookAccount, CancellationToken ct) =>
-    Results.Ok(await outlookAccount.TransitionAsync(() => auth.EnableAssigneeNamesAsync(ct), ct)));
-app.MapPost("/auth/enable-board-members", async (IMicrosoftAuthService auth, OutlookAccountState outlookAccount, CancellationToken ct) =>
-    Results.Ok(await outlookAccount.TransitionAsync(() => auth.EnableBoardMembersAsync(ct), ct)));
-app.MapPost("/auth/sign-out", async (IMicrosoftAuthService auth, OutlookAccountState outlookAccount, CancellationToken ct) =>
-{
-    await outlookAccount.TransitionAsync(async () => { await auth.SignOutAsync(ct); return true; }, ct, forceInvalidate: true);
-    return Results.NoContent();
-});
+app.MapManagementEndpoints();
 app.MapPlannerIntegration();
 app.MapOutlookIntegration();
 

@@ -7,6 +7,7 @@ namespace PlannerEdge.Helper.Hosting;
 public sealed class HelperControlPipe : BackgroundService
 {
     public const string OpenSetupCommand = "open-setup";
+    public const string StopCommand = "stop";
     internal const int MaximumMessageBytes = 64;
     internal static readonly PipeOptions ServerOptions = PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly;
     internal static readonly TimeSpan MessageTimeout = TimeSpan.FromSeconds(1);
@@ -16,28 +17,47 @@ public sealed class HelperControlPipe : BackgroundService
     private readonly ILogger<HelperControlPipe> logger;
     private readonly string pipeName;
     private readonly Action<LocalAccessService> openSetup;
+    private readonly Action stop;
 
     public HelperControlPipe(LocalAccessService access, ILogger<HelperControlPipe> logger)
-        : this(access, logger, ControlPipeName, HelperHost.OpenSetup)
+        : this(access, logger, ControlPipeName, HelperHost.OpenSetup, () => { })
+    {
+    }
+
+    public HelperControlPipe(LocalAccessService access, ILogger<HelperControlPipe> logger, IHostApplicationLifetime lifetime)
+        : this(access, logger, ControlPipeName, HelperHost.OpenSetup, lifetime.StopApplication)
     {
     }
 
     internal HelperControlPipe(LocalAccessService access, ILogger<HelperControlPipe> logger, string pipeName,
         Action<LocalAccessService> openSetup)
+        : this(access, logger, pipeName, openSetup, () => { })
+    {
+    }
+
+    internal HelperControlPipe(LocalAccessService access, ILogger<HelperControlPipe> logger, string pipeName,
+        Action<LocalAccessService> openSetup, Action stop)
     {
         this.access = access;
         this.logger = logger;
         this.pipeName = pipeName;
         this.openSetup = openSetup;
+        this.stop = stop;
     }
 
     public static async Task<bool> RequestOpenSetupAsync(CancellationToken cancellationToken = default)
+        => await RequestCommandAsync(OpenSetupCommand, ClientTimeout, cancellationToken);
+
+    public static async Task<bool> RequestStopAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
+        => await RequestCommandAsync(StopCommand, timeout, cancellationToken);
+
+    private static async Task<bool> RequestCommandAsync(string command, TimeSpan timeout, CancellationToken cancellationToken)
     {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(ClientTimeout);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(timeout);
         try
         {
-            return await SendCommandAsync(ControlPipeName, OpenSetupCommand, timeout.Token);
+            return await SendCommandAsync(ControlPipeName, command, deadline.Token);
         }
         catch (Exception error) when (error is IOException or TimeoutException or OperationCanceledException or UnauthorizedAccessException)
         {
@@ -97,9 +117,15 @@ public sealed class HelperControlPipe : BackgroundService
             try
             {
                 await pipe.ReadExactlyAsync(message, cancellationToken);
-                if (Encoding.UTF8.GetString(message) == OpenSetupCommand)
+                var command = Encoding.UTF8.GetString(message);
+                if (command == OpenSetupCommand)
                 {
                     openSetup(access);
+                    accepted = true;
+                }
+                else if (command == StopCommand)
+                {
+                    stop();
                     accepted = true;
                 }
             }

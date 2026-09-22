@@ -2,11 +2,9 @@ namespace PlannerEdge.Helper.Updates;
 
 public static class UpdateEndpoints
 {
-    public static void MapUpdates(this WebApplication app)
+    public static void MapUpdates(this IEndpointRouteBuilder routes)
     {
-        var group = app.MapGroup("/updates");
-        group.AddEndpointFilter(async (context, next) => IsSetupRequest(context.HttpContext.Request)
-            ? await next(context) : Results.StatusCode(403));
+        var group = routes.MapGroup("/updates");
         group.MapGet("", (UpdateService service) => Results.Ok(service.Status));
         group.MapPost("/check", async (UpdateService service, CancellationToken ct) =>
         {
@@ -23,11 +21,6 @@ public static class UpdateEndpoints
             : Results.Ok(new { message = "" }));
     }
 
-    public static bool IsSetupRequest(HttpRequest request) =>
-        request.Host.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase) && request.Host.Port == 8787 &&
-        request.Headers["X-Microsoft-Widgets-Update"] == "1" &&
-        (request.Headers.Origin.Count == 0 || request.Headers.Origin == "http://localhost:8787") &&
-        request.Headers["Sec-Fetch-Site"] != "cross-site";
 }
 
 public sealed record UpdateApproval(string Version);

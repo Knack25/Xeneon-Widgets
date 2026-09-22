@@ -6,8 +6,8 @@ let requestPending = false;
 let restarting = false;
 
 async function request(path, method = 'GET', body) {
-  const response = await fetch(path, {
-    method, headers: { 'X-Microsoft-Widgets-Update': '1', 'Content-Type': 'application/json' },
+  const response = await window.helperApi.fetch(path, {
+    method, headers: { 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined
   });
   const result = await response.json();

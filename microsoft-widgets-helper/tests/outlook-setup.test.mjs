@@ -18,9 +18,7 @@ function setup({ approval = true, error = null, discoveryErrors = [], statusErro
   const timers = [];
   const doc = { querySelector(id) { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); },
     createElement() { return new Element(); }, addEventListener() {}, dispatchEvent() {} };
-  vm.runInNewContext(source, {
-    document: doc, AbortController, CustomEvent: class {}, Date, setInterval(callback) { timers.push(callback); },
-    confirm: () => approval,
+  const helperApi = {
     fetch: async (path, options = {}) => {
       calls.push({ path, options });
       if (statusError && path.endsWith('/status')) return { ok: false, status: 401, json: async () => ({ error: { message: statusError } }) };
@@ -33,9 +31,19 @@ function setup({ approval = true, error = null, discoveryErrors = [], statusErro
         : path === '/installation' ? { outlookWidgetAvailable: true } : {};
       return { ok: true, status: 200, json: async () => value };
     }
+  };
+  vm.runInNewContext(source, {
+    document: doc, AbortController, CustomEvent: class {}, Date, setInterval(callback) { timers.push(callback); },
+    confirm: () => approval,
+    window: { helperApi },
+    fetch: () => { throw new Error('setup UI must use helperApi.fetch'); }
   });
   return { elements, calls, timers, setReady(value) { ready = value; } };
 }
+test('Outlook setup requests use the owner helper API', async () => {
+  const app = setup(); await settle();
+  assert.ok(app.calls.length > 0);
+});
 test('setup loads status without interactive consent or meeting launch', async () => {
   const app = setup(); await settle();
   assert.equal(app.calls.some(c => c.options.method === 'POST'), false);

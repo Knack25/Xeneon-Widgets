@@ -55,6 +55,59 @@ public sealed class HelperControlPipeTests
     }
 
     [Fact]
+    public async Task Same_user_stop_request_stops_the_owner_process()
+    {
+        var stopped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pipeName = "MicrosoftWidgets.Helper.Tests." + Guid.NewGuid().ToString("N");
+        var pipe = new HelperControlPipe(new LocalAccessService(TimeProvider.System), NullLogger<HelperControlPipe>.Instance,
+            pipeName, _ => { }, () => stopped.TrySetResult());
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        await pipe.StartAsync(timeout.Token);
+        try
+        {
+            Assert.True(await HelperControlPipe.SendCommandAsync(pipeName, HelperControlPipe.StopCommand, timeout.Token));
+            await stopped.Task.WaitAsync(timeout.Token);
+        }
+        finally
+        {
+            await pipe.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task Random_data_cannot_stop_the_owner_process()
+    {
+        var stopped = false;
+        var pipeName = "MicrosoftWidgets.Helper.Tests." + Guid.NewGuid().ToString("N");
+        var pipe = new HelperControlPipe(new LocalAccessService(TimeProvider.System), NullLogger<HelperControlPipe>.Instance,
+            pipeName, _ => { }, () => stopped = true);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        await pipe.StartAsync(timeout.Token);
+        try
+        {
+            Assert.False(await HelperControlPipe.SendCommandAsync(pipeName, "stop-now", timeout.Token));
+            Assert.False(stopped);
+        }
+        finally
+        {
+            await pipe.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
+    public async Task Stop_request_without_a_listener_respects_its_timeout()
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+        var started = TimeProvider.System.GetTimestamp();
+
+        Assert.False(await HelperControlPipe.RequestStopAsync(TimeSpan.FromMilliseconds(100), timeout.Token));
+
+        Assert.True(TimeProvider.System.GetElapsedTime(started) < TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
     public async Task Stalled_messages_cannot_block_later_owner_commands()
     {
         var invoked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

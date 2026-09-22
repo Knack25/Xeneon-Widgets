@@ -6,7 +6,7 @@ namespace PlannerEdge.Helper.Outlook;
 
 public static class OutlookIntegration
 {
-    private enum Access { Session, Bootstrap, Setup, Read, Connect }
+    private enum Access { Session, Bootstrap, Setup, Read, Connect, Owner }
     private sealed record OutlookAuthorization(Access Access);
     public static IServiceCollection AddOutlookIntegration(this IServiceCollection services)
     {
@@ -30,6 +30,38 @@ public static class OutlookIntegration
 
     public static void MapOutlookIntegration(this IEndpointRouteBuilder app)
     {
+        var routes = CreateRoutes(app);
+        routes.MapGet("/calendars", async (CalendarCatalogService catalog, CancellationToken ct) => Results.Ok(await catalog.GetAsync(ct)));
+        routes.MapGet("/preferences", async (OutlookPreferencesService preferences, CancellationToken ct) => Results.Ok(await preferences.GetAsync(ct)));
+        routes.MapPost("/view", async (ViewRequest request, CalendarViewService views, CancellationToken ct) => Results.Ok(await views.GetAsync(request, ct)));
+        routes.MapPost("/view/cached", async (ViewRequest request, CalendarViewService views, CancellationToken ct) => Results.Ok(await views.GetCachedAsync(request, ct)));
+        routes.MapPost("/event-details", async (EventRequest request, EventDetailsService details, CancellationToken ct) => Results.Ok(await details.GetAsync(request, ct)));
+        routes.MapPost("/join", async (EventRequest request, OutlookJoinService join, CancellationToken ct) => { await join.JoinAsync(request, ct); return Results.NoContent(); });
+        routes.MapPost("/pairings", async (PairingRequest request, OutlookAccessService access, CancellationToken ct) => Results.Ok(await access.CreatePairingAsync(request, ct))).WithMetadata(new OutlookAuthorization(Access.Bootstrap));
+        routes.MapPost("/pairings/{id}/poll", async (string id, PairingPollRequest request, OutlookAccessService access, CancellationToken ct) => Results.Ok(await access.PollAsync(id, request.RequestSecret, ct))).WithMetadata(new OutlookAuthorization(Access.Bootstrap));
+    }
+
+    public static void MapOutlookManagement(this IEndpointRouteBuilder app)
+    {
+        var routes = CreateRoutes(app);
+        routes.MapGet("/session", async (OutlookAccessService access, CancellationToken ct) => Results.Ok(new { token = await access.CreateSessionAsync(ct) })).WithMetadata(new OutlookAuthorization(Access.Owner));
+        routes.MapGet("/status", async (OutlookStatusService status, CancellationToken ct) => Results.Ok(await status.GetAsync(ct))).WithMetadata(new OutlookAuthorization(Access.Owner));
+        routes.MapPost("/connect", async (IMicrosoftAuthService auth, OutlookAccountState state, OutlookStatusService status, CancellationToken ct) =>
+        {
+            var response = await state.TransitionAsync(() => auth.ConnectOutlookAsync(ct), ct);
+            status.Refresh();
+            return Results.Ok(response);
+        }).WithMetadata(new OutlookAuthorization(Access.Owner));
+        routes.MapPost("/sources", async (SourceRequest request, CalendarCatalogService catalog, CancellationToken ct) => Results.Ok(await catalog.AddAsync(request.OwnerEmail, ct))).WithMetadata(new OutlookAuthorization(Access.Owner));
+        routes.MapPost("/sources/{key}/remove", async (string key, CalendarCatalogService catalog, CancellationToken ct) => { await catalog.RemoveAsync(key, ct); return Results.NoContent(); }).WithMetadata(new OutlookAuthorization(Access.Owner));
+        routes.MapGet("/pairings", async (OutlookAccessService access, CancellationToken ct) => Results.Ok(await access.GetPendingAsync(ct))).WithMetadata(new OutlookAuthorization(Access.Owner));
+        routes.MapPost("/pairings/{id}/approve", async (string id, OutlookAccessService access, CancellationToken ct) => { await access.ApproveAsync(id, ct); return Results.NoContent(); }).WithMetadata(new OutlookAuthorization(Access.Owner));
+        routes.MapPost("/pairings/revoke", async (RevokePairingRequest request, OutlookAccessService access, CancellationToken ct) => { await access.RevokeAsync(request.CredentialId, ct); return Results.NoContent(); }).WithMetadata(new OutlookAuthorization(Access.Owner));
+        routes.MapGet("/paired", async (OutlookAccessService access, CancellationToken ct) => Results.Ok(await access.GetPairedAsync(ct))).WithMetadata(new OutlookAuthorization(Access.Owner));
+    }
+
+    private static RouteGroupBuilder CreateRoutes(IEndpointRouteBuilder app)
+    {
         var routes = app.MapGroup("/api/outlook");
         routes.WithMetadata(new OutlookAuthorization(Access.Read));
         routes.AddEndpointFilter(async (context, next) =>
@@ -48,6 +80,7 @@ public static class OutlookIntegration
                 var state = http.RequestServices.GetRequiredService<OutlookAccountState>();
                 var sameOrigin = OutlookAccessService.IsSameOrigin(request);
                 var session = request.Headers["X-Outlook-Session"].ToString();
+                if (role == Access.Owner) return await next(context);
                 var setupOnly = role is Access.Session or Access.Setup or Access.Connect;
                 if (setupOnly && !sameOrigin) return Error("forbidden", "Use the same-origin helper setup page.", 403);
                 if (role == Access.Session) return await next(context);
@@ -100,28 +133,7 @@ public static class OutlookIntegration
             }
         });
 
-        routes.MapGet("/session", async (OutlookAccessService access, CancellationToken ct) => Results.Ok(new { token = await access.CreateSessionAsync(ct) })).WithMetadata(new OutlookAuthorization(Access.Session));
-        routes.MapGet("/status", async (OutlookStatusService status, CancellationToken ct) => Results.Ok(await status.GetAsync(ct)));
-        routes.MapPost("/connect", async (IMicrosoftAuthService auth, OutlookAccountState state, OutlookStatusService status, CancellationToken ct) =>
-        {
-            var response = await state.TransitionAsync(() => auth.ConnectOutlookAsync(ct), ct);
-            status.Refresh();
-            return Results.Ok(response);
-        }).WithMetadata(new OutlookAuthorization(Access.Connect));
-        routes.MapGet("/calendars", async (CalendarCatalogService catalog, CancellationToken ct) => Results.Ok(await catalog.GetAsync(ct)));
-        routes.MapGet("/preferences", async (OutlookPreferencesService preferences, CancellationToken ct) => Results.Ok(await preferences.GetAsync(ct)));
-        routes.MapPost("/view", async (ViewRequest request, CalendarViewService views, CancellationToken ct) => Results.Ok(await views.GetAsync(request, ct)));
-        routes.MapPost("/view/cached", async (ViewRequest request, CalendarViewService views, CancellationToken ct) => Results.Ok(await views.GetCachedAsync(request, ct)));
-        routes.MapPost("/event-details", async (EventRequest request, EventDetailsService details, CancellationToken ct) => Results.Ok(await details.GetAsync(request, ct)));
-        routes.MapPost("/join", async (EventRequest request, OutlookJoinService join, CancellationToken ct) => { await join.JoinAsync(request, ct); return Results.NoContent(); });
-        routes.MapPost("/sources", async (SourceRequest request, CalendarCatalogService catalog, CancellationToken ct) => Results.Ok(await catalog.AddAsync(request.OwnerEmail, ct))).WithMetadata(new OutlookAuthorization(Access.Setup));
-        routes.MapPost("/sources/{key}/remove", async (string key, CalendarCatalogService catalog, CancellationToken ct) => { await catalog.RemoveAsync(key, ct); return Results.NoContent(); }).WithMetadata(new OutlookAuthorization(Access.Setup));
-        routes.MapPost("/pairings", async (PairingRequest request, OutlookAccessService access, CancellationToken ct) => Results.Ok(await access.CreatePairingAsync(request, ct))).WithMetadata(new OutlookAuthorization(Access.Bootstrap));
-        routes.MapPost("/pairings/{id}/poll", async (string id, PairingPollRequest request, OutlookAccessService access, CancellationToken ct) => Results.Ok(await access.PollAsync(id, request.RequestSecret, ct))).WithMetadata(new OutlookAuthorization(Access.Bootstrap));
-        routes.MapGet("/pairings", async (OutlookAccessService access, CancellationToken ct) => Results.Ok(await access.GetPendingAsync(ct))).WithMetadata(new OutlookAuthorization(Access.Setup));
-        routes.MapPost("/pairings/{id}/approve", async (string id, OutlookAccessService access, CancellationToken ct) => { await access.ApproveAsync(id, ct); return Results.NoContent(); }).WithMetadata(new OutlookAuthorization(Access.Setup));
-        routes.MapPost("/pairings/revoke", async (RevokePairingRequest request, OutlookAccessService access, CancellationToken ct) => { await access.RevokeAsync(request.CredentialId, ct); return Results.NoContent(); }).WithMetadata(new OutlookAuthorization(Access.Setup));
-        routes.MapGet("/paired", async (OutlookAccessService access, CancellationToken ct) => Results.Ok(await access.GetPairedAsync(ct))).WithMetadata(new OutlookAuthorization(Access.Setup));
+        return routes;
     }
 
     private static IResult Error(string code, string message, int status) => Results.Json(new { error = new OutlookError(code, message) }, statusCode: status);

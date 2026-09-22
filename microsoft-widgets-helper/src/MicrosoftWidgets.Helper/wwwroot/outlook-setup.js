@@ -12,12 +12,12 @@
 
   async function request(path, method = 'GET', body, signal) {
     if (!session) {
-      const response = await fetch('/api/outlook/session', { cache: 'no-store' });
+      const response = await window.helperApi.fetch('/api/outlook/session', { cache: 'no-store' });
       const result = await response.json();
       if (!response.ok) throw new Error(result.message || 'Unable to open Outlook setup.');
       session = result.token;
     }
-    const response = await fetch(`/api/outlook${path}`, {
+    const response = await window.helperApi.fetch(`/api/outlook${path}`, {
       method, cache: 'no-store', signal,
       headers: { 'X-Outlook-Session': session, 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body)
@@ -140,7 +140,7 @@
   });
   document.addEventListener('microsoft-configuration-changed', () => { session = null; catalogLoaded = false; refresh(true); });
   document.addEventListener('microsoft-account-changed', () => { session = null; catalogLoaded = false; refresh(true); });
-  fetch('/installation', { cache: 'no-store' }).then(r => r.json()).then(value => {
+  window.helperApi.fetch('/installation', { cache: 'no-store' }).then(r => r.json()).then(value => {
     $('#outlook-download').hidden = !value.outlookWidgetAvailable;
     $('#outlook-package-status').textContent = value.outlookWidgetAvailable ? 'Outlook widget package is ready.' : 'The Outlook widget package is not included in this build.';
   }).catch(() => { $('#outlook-package-status').textContent = 'Unable to check the Outlook package.'; });

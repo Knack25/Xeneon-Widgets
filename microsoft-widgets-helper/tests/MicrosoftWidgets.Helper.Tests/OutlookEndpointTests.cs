@@ -5,11 +5,13 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using PlannerEdge.Helper.Auth;
 using PlannerEdge.Helper.Contracts;
 using PlannerEdge.Helper.Outlook;
+using PlannerEdge.Helper.Security;
 using PlannerEdge.Helper.Storage;
 
 namespace MicrosoftWidgets.Helper.Tests;
@@ -24,12 +26,12 @@ public sealed class OutlookEndpointTests
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("api/outlook/calendars")).StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("api/outlook/view", new { calendarKeys = Array.Empty<string>(), start = "2026-09-01T00:00:00Z", end = "2026-09-08T00:00:00Z" })).StatusCode);
         client.DefaultRequestHeaders.Add("Origin", "null");
-        Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync("api/outlook/session")).StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync("api/outlook/pairings/unknown/approve", new { })).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync("api/outlook/session")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync("api/outlook/pairings/unknown/approve", new { })).StatusCode);
         client.DefaultRequestHeaders.Remove("Origin");
         client.DefaultRequestHeaders.Add("Origin", client.BaseAddress!.GetLeftPart(UriPartial.Authority));
+        client.DefaultRequestHeaders.Add(LocalAccessHeaders.Owner, host.OwnerSession);
         var session = await client.GetFromJsonAsync<JsonElement>("api/outlook/session");
-        client.DefaultRequestHeaders.Add("X-Outlook-Session", session.GetProperty("token").GetString());
         var status = await client.GetFromJsonAsync<JsonElement>("api/outlook/status");
         Assert.False(status.GetProperty("configured").GetBoolean());
         Assert.False(status.GetProperty("signedIn").GetBoolean());
@@ -44,8 +46,8 @@ public sealed class OutlookEndpointTests
         await using var host = await OutlookTestHost.StartAsync(true);
         using var setup = host.Client;
         setup.DefaultRequestHeaders.Add("Origin", setup.BaseAddress!.GetLeftPart(UriPartial.Authority));
+        setup.DefaultRequestHeaders.Add(LocalAccessHeaders.Owner, host.OwnerSession);
         var session = await setup.GetFromJsonAsync<JsonElement>("api/outlook/session");
-        setup.DefaultRequestHeaders.Add("X-Outlook-Session", session.GetProperty("token").GetString());
         using var native = new HttpClient { BaseAddress = setup.BaseAddress };
         native.DefaultRequestHeaders.Add("Origin", "null");
         var secret = new string('z', 64);
@@ -55,9 +57,9 @@ public sealed class OutlookEndpointTests
         var poll = await (await native.PostAsJsonAsync($"api/outlook/pairings/{id}/poll", new { requestSecret = secret })).Content.ReadFromJsonAsync<JsonElement>();
         native.DefaultRequestHeaders.Authorization = new("Bearer", poll.GetProperty("credential").GetString());
         foreach (var path in new[] { "api/outlook/Session", "api/OUTLOOK/session/", "api/outlook/Paired/", "api/outlook/Pairings" })
-            Assert.Equal(HttpStatusCode.Forbidden, (await native.GetAsync(path)).StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden, (await native.PostAsJsonAsync($"api/outlook/Pairings/{id}/Approve/", new { })).StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden, (await native.GetAsync("api/outlook/paired")).StatusCode);
+            Assert.Equal(HttpStatusCode.Unauthorized, (await native.GetAsync(path)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await native.PostAsJsonAsync($"api/outlook/Pairings/{id}/Approve/", new { })).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await native.GetAsync("api/outlook/paired")).StatusCode);
         var calendars = await native.GetFromJsonAsync<CalendarDescriptor[]>("api/outlook/calendars");
         var key = Assert.Single(calendars!).Key;
         var view = await (await native.PostAsJsonAsync("api/outlook/view", new ViewRequest([key], "2026-09-01T00:00:00Z", "2026-09-08T00:00:00Z"))).Content.ReadFromJsonAsync<CalendarViewResponse>();
@@ -175,11 +177,12 @@ public sealed class OutlookEndpointTests
     }
 }
 
-internal sealed class OutlookTestHost(WebApplication app, HttpClient client, OutlookHandler handler, OutlookFakeLauncher launcher) : IAsyncDisposable
+internal sealed class OutlookTestHost(WebApplication app, HttpClient client, OutlookHandler handler, OutlookFakeLauncher launcher, string ownerSession) : IAsyncDisposable
 {
     public HttpClient Client { get; } = client;
     public OutlookHandler Handler { get; } = handler;
     public OutlookFakeLauncher Launcher { get; } = launcher;
+    public string OwnerSession { get; } = ownerSession;
     public IServiceProvider Services => app.Services;
     public static async Task<OutlookTestHost> StartAsync(bool signedIn = false, IOutlookTokenProvider? tokens = null, Action<Uri>? onGraphRequest = null, Action<Microsoft.AspNetCore.Http.HttpContext>? beforeRequest = null)
     {
@@ -199,6 +202,7 @@ internal sealed class OutlookTestHost(WebApplication app, HttpClient client, Out
             };
         });
         var launcher = new OutlookFakeLauncher();
+        builder.Services.AddSingleton<LocalAccessService>();
         builder.Services.AddSingleton<IMicrosoftAuthService>(auth);
         builder.Services.AddSingleton<ILocalJsonStore>(new OutlookMemoryStore());
         builder.Services.AddSingleton<IOutlookMeetingLauncher>(launcher);
@@ -208,9 +212,12 @@ internal sealed class OutlookTestHost(WebApplication app, HttpClient client, Out
         var app = builder.Build();
         if (beforeRequest is not null) app.Use(async (context, next) => { beforeRequest(context); await next(context); });
         app.MapOutlookIntegration();
+        app.MapGroup("").AddEndpointFilter<OwnerAuthorizationFilter>().MapOutlookManagement();
         await app.StartAsync();
         var address = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();
-        return new(app, new HttpClient { BaseAddress = new(address) }, handler, launcher);
+        var access = app.Services.GetRequiredService<LocalAccessService>();
+        var owner = access.ExchangeBootstrap(access.CreateBootstrap().Token);
+        return new(app, new HttpClient { BaseAddress = new(address) }, handler, launcher, owner);
     }
     public async ValueTask DisposeAsync() { Client.Dispose(); await app.StopAsync(); await app.DisposeAsync(); }
 }
