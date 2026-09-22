@@ -1,3 +1,4 @@
+using PlannerEdge.Helper.Auth;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
@@ -19,7 +20,7 @@ public sealed class OutlookMeetingLauncher : IOutlookMeetingLauncher
     }
 }
 
-public sealed class OutlookJoinService(EventDetailsService details, OutlookAccountState state, IOutlookMeetingLauncher launcher, TimeProvider clock)
+public sealed class OutlookJoinService(EventDetailsService details, MicrosoftAccountState state, IOutlookMeetingLauncher launcher, TimeProvider clock)
 {
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly Dictionary<string, DateTimeOffset> launched = [];

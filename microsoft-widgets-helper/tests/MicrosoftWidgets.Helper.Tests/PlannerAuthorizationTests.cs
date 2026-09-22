@@ -52,7 +52,7 @@ public sealed class PlannerAuthorizationTests
     {
         await using var host = await StartAsync();
         var pairing = host.App.Services.GetRequiredService<WidgetPairingService>();
-        var state = host.App.Services.GetRequiredService<OutlookAccountState>();
+        var state = host.App.Services.GetRequiredService<MicrosoftAccountState>();
         var scope = access == "outlook" ? WidgetScope.Outlook : WidgetScope.Planner;
         var pending = await pairing.CreateAsync(scope, new("instance", new string('x', 64)), await state.GetAsync(default), default);
         await pairing.ApproveAsync(pending.Id, default);
@@ -240,7 +240,7 @@ public sealed class PlannerAuthorizationTests
         if (invalidateBeforeResult) routes.AddEndpointFilter(async (context, next) =>
         {
             var result = await next(context);
-            await context.HttpContext.RequestServices.GetRequiredService<OutlookAccountState>().InvalidateAsync(default);
+            await context.HttpContext.RequestServices.GetRequiredService<MicrosoftAccountState>().InvalidateAsync(default);
             return result;
         });
         routes.MapPlannerIntegration();
@@ -255,7 +255,7 @@ public sealed class PlannerAuthorizationTests
     {
         const string secret = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
         var pairing = host.App.Services.GetRequiredService<WidgetPairingService>();
-        var state = host.App.Services.GetRequiredService<OutlookAccountState>();
+        var state = host.App.Services.GetRequiredService<MicrosoftAccountState>();
         var pending = await pairing.CreateAsync(WidgetScope.Planner, new("instance", secret), await state.GetAsync(default), default);
         await pairing.ApproveAsync(pending.Id, default);
         return (await pairing.PollAsync(pending.Id, secret, default)).Credential!;

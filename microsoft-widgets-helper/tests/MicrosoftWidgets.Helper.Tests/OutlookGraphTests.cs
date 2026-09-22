@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using PlannerEdge.Helper.Auth;
 using PlannerEdge.Helper.Outlook;
 
 namespace MicrosoftWidgets.Helper.Tests;
@@ -72,8 +73,9 @@ internal sealed class OutlookRetryHandler(TimeSpan delay) : HttpMessageHandler
 internal sealed class OutlookTokens : IOutlookTokenProvider
 {
     public string Account { get; set; } = "account-a";
+    public MicrosoftAccountIdentity Identity => new(Account, "test-tenant", "test-client", Account + "@example.com");
     public Task<string> GetTokenAsync(CancellationToken ct) => Task.FromResult("test-token");
-    public Task<string> GetAccountKeyAsync(CancellationToken ct) => Task.FromResult(Account);
+    public Task<MicrosoftAccountIdentity> GetAccountIdentityAsync(CancellationToken ct) => Task.FromResult(Identity);
 }
 
 internal sealed class OutlookHandler(Func<Uri, int, string> respond) : HttpMessageHandler

@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.Identity.Client;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -44,7 +45,7 @@ public sealed class OutlookEndpointTests
         blockResponse = true;
         var responseTask = host.Client.GetAsync(path);
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        await host.Services.GetRequiredService<OutlookAccountState>().InvalidateAsync(default);
+        await host.Services.GetRequiredService<MicrosoftAccountState>().InvalidateAsync(default);
         release.SetResult();
         var response = await responseTask;
 
@@ -75,7 +76,7 @@ public sealed class OutlookEndpointTests
         blockResponse = true;
         var responseTask = host.Client.PostAsJsonAsync(string.Format(route, pending.Id), new { requestSecret = secret });
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
-        await host.Services.GetRequiredService<OutlookAccountState>().InvalidateAsync(default);
+        await host.Services.GetRequiredService<MicrosoftAccountState>().InvalidateAsync(default);
         release.SetResult();
         var response = await responseTask;
 
@@ -369,7 +370,7 @@ public sealed class OutlookEndpointTests
         }
         await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
         var transitioned = false;
-        var state = host.Services.GetRequiredService<OutlookAccountState>();
+        var state = host.Services.GetRequiredService<MicrosoftAccountState>();
         Task transition = purge ? state.PurgeDataAsync(default) : state.TransitionAsync(() =>
         {
             tokens.Account = "account-b";
@@ -453,7 +454,11 @@ internal sealed class OutlookSwitchingTokens : IOutlookTokenProvider
     public bool SwitchOnSecondRead { get; set; }
     private int reads;
     public Task<string> GetTokenAsync(CancellationToken ct) => Task.FromResult("fake");
-    public Task<string> GetAccountKeyAsync(CancellationToken ct) => Task.FromResult(SwitchOnSecondRead && ++reads >= 2 ? "account-b" : "account-a");
+    public Task<MicrosoftAccountIdentity> GetAccountIdentityAsync(CancellationToken ct)
+    {
+        var account = SwitchOnSecondRead && ++reads >= 2 ? "account-b" : "account-a";
+        return Task.FromResult(new MicrosoftAccountIdentity(account, "test-tenant", "test-client", account + "@example.com"));
+    }
 }
 
 internal sealed class OutlookFakeLauncher : IOutlookMeetingLauncher
@@ -493,6 +498,9 @@ internal sealed class OutlookFakeAuth : IMicrosoftAuthService
     public Task<AzureAdOptions> GetConfigurationAsync(CancellationToken ct) => Task.FromResult(new AzureAdOptions { ClientId = SignedIn ? "test-client" : "" });
     public Task<AzureAdOptions> SaveConfigurationAsync(AzureAdOptions options, CancellationToken ct) => Task.FromResult(options);
     public Task<AuthStatusResponse> GetStatusAsync(CancellationToken ct) => Task.FromResult(new AuthStatusResponse(SignedIn, SignedIn ? "me" : null, SignedIn ? "me@example.com" : null));
+    public Task<MicrosoftAccountIdentity> GetAccountIdentityAsync(CancellationToken ct) => SignedIn
+        ? Task.FromResult(new MicrosoftAccountIdentity("test-home", "test-tenant", "test-client", "me@example.com"))
+        : throw new MsalUiRequiredException("no_account", "No account");
     public Task<AuthStatusResponse> ConnectOutlookAsync(CancellationToken ct) { SignedIn = true; return GetStatusAsync(ct); }
     public Task<AuthStatusResponse> SignInAsync(CancellationToken ct) => throw new NotSupportedException();
     public Task<AuthStatusResponse> EnableAssigneeNamesAsync(CancellationToken ct) => throw new NotSupportedException();

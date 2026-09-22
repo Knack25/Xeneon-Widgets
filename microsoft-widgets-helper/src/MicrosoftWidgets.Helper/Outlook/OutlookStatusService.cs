@@ -7,7 +7,7 @@ public sealed record OutlookStatusResponse(bool Configured, bool SignedIn, bool 
 public sealed class OutlookStatusService
 {
     private readonly IMicrosoftAuthService auth;
-    private readonly OutlookAccountState state;
+    private readonly MicrosoftAccountState state;
     private readonly CalendarCatalogService catalog;
     private readonly OutlookPreferencesService preferences;
     private readonly TimeProvider clock;
@@ -16,7 +16,7 @@ public sealed class OutlookStatusService
     private OutlookStatusResponse? cached;
     private DateTimeOffset expires;
     private OutlookError? preferencesWarning;
-    public OutlookStatusService(IMicrosoftAuthService auth, OutlookAccountState state, CalendarCatalogService catalog, OutlookPreferencesService preferences, TimeProvider clock, IOutlookTokenProvider tokens)
+    public OutlookStatusService(IMicrosoftAuthService auth, MicrosoftAccountState state, CalendarCatalogService catalog, OutlookPreferencesService preferences, TimeProvider clock, IOutlookTokenProvider tokens)
     {
         this.auth = auth; this.state = state; this.catalog = catalog; this.preferences = preferences; this.clock = clock;
         this.tokens = tokens;

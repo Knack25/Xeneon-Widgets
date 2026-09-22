@@ -48,6 +48,7 @@ builder.Services.AddSingleton<HelperControlPipe>();
 builder.Services.AddHostedService(provider => provider.GetRequiredService<HelperControlPipe>());
 builder.Services.AddSingleton<ILocalJsonStore>(_ => new LocalJsonStore(LocalPaths.AppDataRoot()));
 builder.Services.AddSingleton<IMicrosoftAuthService, MicrosoftAuthService>();
+builder.Services.AddSingleton<IMicrosoftAccountIdentityProvider>(provider => provider.GetRequiredService<IMicrosoftAuthService>());
 builder.Services.AddSingleton<MicrosoftAuthCapabilityService>();
 builder.Services.AddSingleton<IGraphTokenProvider>(provider => provider.GetRequiredService<IMicrosoftAuthService>());
 builder.Services.AddMemoryCache();

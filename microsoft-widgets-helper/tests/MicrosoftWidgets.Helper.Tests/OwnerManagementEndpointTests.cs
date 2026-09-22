@@ -147,6 +147,8 @@ internal sealed class OwnerManagementAuth : IMicrosoftAuthService
     public Task<AzureAdOptions> GetConfigurationAsync(CancellationToken ct) => Task.FromResult(new AzureAdOptions { ClientId = "11111111-1111-1111-1111-111111111111" });
     public Task<AzureAdOptions> SaveConfigurationAsync(AzureAdOptions configuration, CancellationToken ct) => Task.FromResult(configuration);
     public Task<AuthStatusResponse> GetStatusAsync(CancellationToken ct) => Task.FromResult(Status);
+    public Task<MicrosoftAccountIdentity> GetAccountIdentityAsync(CancellationToken ct) =>
+        Task.FromResult(new MicrosoftAccountIdentity("owner-home", "owner-tenant", "11111111-1111-1111-1111-111111111111", "owner@example.com"));
     public Task<AuthStatusResponse> SignInAsync(CancellationToken ct) => Task.FromResult(Status);
     public Task<AuthStatusResponse> ConnectOutlookAsync(CancellationToken ct) => Task.FromResult(Status);
     public Task<AuthStatusResponse> EnableTaskChatAsync(CancellationToken ct) => Task.FromResult(Status);

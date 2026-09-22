@@ -21,7 +21,7 @@ public static class ManagementEndpoints
         owner.MapGet("/configuration", async (IMicrosoftAuthService auth, CancellationToken ct) =>
             Results.Ok(await auth.GetConfigurationAsync(ct)));
         owner.MapPut("/configuration", async (AzureAdOptions configuration, IMicrosoftAuthService auth,
-            IPlannerSettingsStore settings, OutlookAccountState outlookAccount, CancellationToken ct) =>
+            IPlannerSettingsStore settings, MicrosoftAccountState outlookAccount, CancellationToken ct) =>
         {
             var previous = await auth.GetConfigurationAsync(ct);
             var saved = await outlookAccount.TransitionAsync(() => auth.SaveConfigurationAsync(configuration, ct), ct);
@@ -41,15 +41,15 @@ public static class ManagementEndpoints
         });
         owner.MapGet("/auth/me", async (IPlannerGraphClient graph, CancellationToken ct) =>
             Results.Ok(new { userId = await graph.GetCurrentUserIdAsync(ct) }));
-        owner.MapPost("/auth/sign-in", async (IMicrosoftAuthService auth, OutlookAccountState outlookAccount, CancellationToken ct) =>
+        owner.MapPost("/auth/sign-in", async (IMicrosoftAuthService auth, MicrosoftAccountState outlookAccount, CancellationToken ct) =>
             Results.Ok(await outlookAccount.TransitionAsync(() => auth.SignInAsync(ct), ct)));
-        owner.MapPost("/auth/enable-task-chat", async (IMicrosoftAuthService auth, OutlookAccountState outlookAccount, CancellationToken ct) =>
+        owner.MapPost("/auth/enable-task-chat", async (IMicrosoftAuthService auth, MicrosoftAccountState outlookAccount, CancellationToken ct) =>
             Results.Ok(await outlookAccount.TransitionAsync(() => auth.EnableTaskChatAsync(ct), ct)));
-        owner.MapPost("/auth/enable-assignee-names", async (IMicrosoftAuthService auth, OutlookAccountState outlookAccount, CancellationToken ct) =>
+        owner.MapPost("/auth/enable-assignee-names", async (IMicrosoftAuthService auth, MicrosoftAccountState outlookAccount, CancellationToken ct) =>
             Results.Ok(await outlookAccount.TransitionAsync(() => auth.EnableAssigneeNamesAsync(ct), ct)));
-        owner.MapPost("/auth/enable-board-members", async (IMicrosoftAuthService auth, OutlookAccountState outlookAccount, CancellationToken ct) =>
+        owner.MapPost("/auth/enable-board-members", async (IMicrosoftAuthService auth, MicrosoftAccountState outlookAccount, CancellationToken ct) =>
             Results.Ok(await outlookAccount.TransitionAsync(() => auth.EnableBoardMembersAsync(ct), ct)));
-        owner.MapPost("/auth/sign-out", async (IMicrosoftAuthService auth, OutlookAccountState outlookAccount, CancellationToken ct) =>
+        owner.MapPost("/auth/sign-out", async (IMicrosoftAuthService auth, MicrosoftAccountState outlookAccount, CancellationToken ct) =>
         {
             await outlookAccount.TransitionAsync(async () => { await auth.SignOutAsync(ct); return true; }, ct, forceInvalidate: true);
             return Results.NoContent();

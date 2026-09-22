@@ -9,6 +9,19 @@ namespace PlannerEdge.Helper.Tests;
 public sealed class MicrosoftAuthAcquisitionTests
 {
     [Fact]
+    public void IdentityUsesSelectedHomeAccountAndAuthenticatedTenant()
+    {
+        var account = new FakeAccount("home-account", "mutable@example.com", "configured-tenant");
+
+        var identity = MicrosoftAuthService.CreateIdentity(account, "authenticated-tenant", "client-id");
+
+        Assert.Equal("home-account", identity.HomeAccountId);
+        Assert.Equal("authenticated-tenant", identity.TenantId);
+        Assert.Equal("client-id", identity.ClientId);
+        Assert.Equal("mutable@example.com", identity.Username);
+    }
+
+    [Fact]
     public void PlannerAndConversationScopesRemainSeparated()
     {
         Assert.Equal(new[] { "User.Read", "Tasks.ReadWrite" }, MicrosoftAuthService.PlannerScopes);
@@ -161,5 +174,12 @@ public sealed class MicrosoftAuthAcquisitionTests
             ConnectionRequests.Add((values, requireExistingAccount));
             return Connect(values, requireExistingAccount, cancellationToken);
         }
+    }
+
+    private sealed class FakeAccount(string homeAccountId, string username, string tenantId) : IAccount
+    {
+        public string Username { get; } = username;
+        public string Environment => "login.microsoftonline.com";
+        public AccountId HomeAccountId { get; } = new(homeAccountId, Guid.NewGuid().ToString(), tenantId);
     }
 }

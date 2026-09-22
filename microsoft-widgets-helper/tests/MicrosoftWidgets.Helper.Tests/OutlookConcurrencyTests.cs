@@ -1,3 +1,4 @@
+using PlannerEdge.Helper.Auth;
 using System.Net;
 using System.Text;
 using PlannerEdge.Helper.Outlook;
@@ -47,7 +48,7 @@ public sealed class OutlookConcurrencyTests
             return """{"value":[]}""";
         });
         var tokens = new OutlookTokens();
-        var state = new OutlookAccountState(tokens, new OutlookMemoryStore());
+        var state = new MicrosoftAccountState(tokens, new OutlookMemoryStore());
         var clock = new OutlookClock();
         var graph = new OutlookGraphClient(new HttpClient(handler), tokens);
         var catalog = new CalendarCatalogService(graph, state, new OutlookSettingsStore(new OutlookMemoryStore()), clock);
@@ -79,7 +80,7 @@ public sealed class OutlookConcurrencyTests
             return """{"value":[{"id":"secret","subject":"Sensitive","start":{"dateTime":"2026-09-01T00:00:00","timeZone":"UTC"},"end":{"dateTime":"2026-09-02T00:00:00","timeZone":"UTC"}}]}""";
         });
         var tokens = new OutlookTokens();
-        var state = new OutlookAccountState(tokens, new OutlookMemoryStore());
+        var state = new MicrosoftAccountState(tokens, new OutlookMemoryStore());
         var graph = new OutlookGraphClient(new HttpClient(handler), tokens);
         var clock = new OutlookClock();
         var catalog = new CalendarCatalogService(graph, state, new OutlookSettingsStore(new OutlookMemoryStore()), clock);

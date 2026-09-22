@@ -1,3 +1,4 @@
+using PlannerEdge.Helper.Auth;
 using PlannerEdge.Helper.Contracts;
 using PlannerEdge.Helper.Graph;
 using PlannerEdge.Helper.Storage;
@@ -79,7 +80,7 @@ public static class PlannerIntegration
                 return;
             }
 
-            var state = http.RequestServices.GetRequiredService<OutlookAccountState>();
+            var state = http.RequestServices.GetRequiredService<MicrosoftAccountState>();
             using var binding = state.BindRequest(authorization.Lease!.Value);
             http.Items[WidgetAuthorizationFilter.PreauthorizedLeaseKey] = authorization.Lease.Value;
             try { await next(http); }

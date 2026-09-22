@@ -1,3 +1,4 @@
+using PlannerEdge.Helper.Auth;
 using PlannerEdge.Helper.Outlook;
 
 namespace PlannerEdge.Helper.Security;
@@ -11,9 +12,9 @@ public sealed class WidgetAuthorizationFilter(WidgetScope scope) : IEndpointFilt
         var http = context.HttpContext;
         try
         {
-            var state = http.RequestServices.GetRequiredService<OutlookAccountState>();
-            var preauthorized = http.Items.TryGetValue(PreauthorizedLeaseKey, out var value) && value is OutlookAccountLease;
-            OutlookAccountLease? lease = value is OutlookAccountLease existing ? existing : null;
+            var state = http.RequestServices.GetRequiredService<MicrosoftAccountState>();
+            var preauthorized = http.Items.TryGetValue(PreauthorizedLeaseKey, out var value) && value is AccountLease;
+            AccountLease? lease = value is AccountLease existing ? existing : null;
             if (lease is null)
             {
                 var authorization = await AuthorizeAsync(http, scope);
@@ -34,8 +35,8 @@ public sealed class WidgetAuthorizationFilter(WidgetScope scope) : IEndpointFilt
     {
         if (!OutlookAccessService.IsLocalHost(http.Request)) return new(null, Results.BadRequest());
         if (!IsAllowedOrigin(http.Request)) return new(null, Results.StatusCode(StatusCodes.Status403Forbidden));
-        var state = http.RequestServices.GetRequiredService<OutlookAccountState>();
-        OutlookAccountLease? lease = null;
+        var state = http.RequestServices.GetRequiredService<MicrosoftAccountState>();
+        AccountLease? lease = null;
         var owner = http.Request.Headers[LocalAccessHeaders.Owner].ToString();
         if (OutlookAccessService.IsSameOrigin(http.Request) &&
             http.RequestServices.GetRequiredService<LocalAccessService>().ValidateOwnerSession(owner))
@@ -52,5 +53,5 @@ public sealed class WidgetAuthorizationFilter(WidgetScope scope) : IEndpointFilt
         return origin.Length == 0 || OutlookAccessService.IsSameOrigin(request) || WidgetOriginPolicy.IsAllowed(origin);
     }
 
-    internal sealed record WidgetAuthorizationDecision(OutlookAccountLease? Lease, IResult? Failure);
+    internal sealed record WidgetAuthorizationDecision(AccountLease? Lease, IResult? Failure);
 }

@@ -1,3 +1,4 @@
+using PlannerEdge.Helper.Auth;
 using System.Globalization;
 
 namespace PlannerEdge.Helper.Outlook;
@@ -14,7 +15,7 @@ public sealed class CalendarViewService
     private readonly record struct CacheKey(string Account, string Calendar, DateTimeOffset Start, DateTimeOffset End);
     private readonly OutlookGraphClient graph;
     private readonly CalendarCatalogService catalog;
-    private readonly OutlookAccountState state;
+    private readonly MicrosoftAccountState state;
     private readonly TimeProvider clock;
     private readonly object sync = new();
     private readonly Dictionary<CacheKey, Snapshot> cache = [];
@@ -22,7 +23,7 @@ public sealed class CalendarViewService
     private readonly Dictionary<string, long> sourceVersions = [];
     private long use;
 
-    public CalendarViewService(OutlookGraphClient graph, CalendarCatalogService catalog, OutlookAccountState state, TimeProvider clock)
+    public CalendarViewService(OutlookGraphClient graph, CalendarCatalogService catalog, MicrosoftAccountState state, TimeProvider clock)
     {
         this.graph = graph; this.catalog = catalog; this.state = state; this.clock = clock;
         state.Invalidated += () => { lock (sync) { cache.Clear(); foreach (var flight in flights.Values) flight.Cancellation.Cancel(); flights.Clear(); sourceVersions.Clear(); } };
@@ -75,7 +76,7 @@ public sealed class CalendarViewService
         return (start, end);
     }
 
-    private async Task<(EventSummary[] Events, SourceStatus Status)> ReadSourceAsync(OutlookAccountLease lease, CacheKey key, CancellationToken ct)
+    private async Task<(EventSummary[] Events, SourceStatus Status)> ReadSourceAsync(AccountLease lease, CacheKey key, CancellationToken ct)
     {
         try
         {
@@ -130,7 +131,7 @@ public sealed class CalendarViewService
         }
     }
 
-    private async Task<Snapshot> FetchAsync(OutlookAccountLease lease, CacheKey key, CalendarSource source, long version, CancellationToken ct)
+    private async Task<Snapshot> FetchAsync(AccountLease lease, CacheKey key, CalendarSource source, long version, CancellationToken ct)
     {
         var route = source.ViewRoute + "?startDateTime=" + Uri.EscapeDataString(key.Start.ToString("O")) + "&endDateTime=" + Uri.EscapeDataString(key.End.ToString("O")) +
             "&$select=id,subject,start,end,isAllDay,sensitivity,isCancelled&$top=250";
@@ -160,7 +161,7 @@ public sealed class CalendarViewService
         }
     }
 
-    internal string ResolveReference(OutlookAccountLease lease, EventRequest request)
+    internal string ResolveReference(AccountLease lease, EventRequest request)
     {
         lock (sync)
         {

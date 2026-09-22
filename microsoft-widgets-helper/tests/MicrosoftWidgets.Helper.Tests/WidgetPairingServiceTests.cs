@@ -1,3 +1,4 @@
+using PlannerEdge.Helper.Auth;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -120,11 +121,11 @@ public sealed class WidgetPairingServiceTests
         Assert.Equal(1, stored!.Version);
         var entry = Assert.Single(stored.Credentials);
         Assert.Equal(WidgetScope.Outlook, entry.Scope);
-        Assert.Equal("account-a", entry.AccountKey);
+        Assert.Equal(MicrosoftAccountState.Key(f.Tokens.Identity), entry.AccountKey);
         Assert.Equal(f.Clock.GetUtcNow(), entry.CreatedAt);
         Assert.DoesNotContain(credential, JsonSerializer.Serialize(stored));
         Assert.DoesNotContain(Secret, JsonSerializer.Serialize(stored));
-        var restarted = new WidgetPairingService(new OutlookAccountState(f.Tokens, f.Store), f.Clock);
+        var restarted = new WidgetPairingService(new MicrosoftAccountState(f.Tokens, f.Store), f.Clock);
         Assert.NotNull(await restarted.AuthenticateAsync(WidgetScope.Outlook, credential, default));
     }
 
@@ -239,7 +240,7 @@ public sealed class WidgetPairingServiceTests
         try { Assert.False(action.IsCompleted); }
         finally { release.SetResult(); }
         await transition;
-        if (operation == "authenticate") Assert.Null(await (Task<OutlookAccountLease?>)action);
+        if (operation == "authenticate") Assert.Null(await (Task<AccountLease?>)action);
         else await Assert.ThrowsAsync<OutlookException>(() => action);
     }
 
@@ -266,7 +267,7 @@ public sealed class WidgetPairingServiceTests
         public OutlookTokens Tokens { get; } = new();
         public OutlookClock Clock { get; } = new();
         public ILocalJsonStore Store { get; }
-        public OutlookAccountState State { get; }
+        public MicrosoftAccountState State { get; }
         public WidgetPairingService Service { get; }
         public Fixture(ILocalJsonStore? store = null)
         {

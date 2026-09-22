@@ -1,3 +1,4 @@
+using PlannerEdge.Helper.Auth;
 using PlannerEdge.Helper.Outlook;
 using System.Security.Cryptography;
 using System.Text;
@@ -6,8 +7,8 @@ namespace PlannerEdge.Helper.Security;
 
 public sealed class WidgetPairingService
 {
-    private sealed record Pending(WidgetPendingPairing Info, string SecretHash, OutlookAccountLease Lease, bool Approved = false);
-    private readonly OutlookAccountState state;
+    private sealed record Pending(WidgetPendingPairing Info, string SecretHash, AccountLease Lease, bool Approved = false);
+    private readonly MicrosoftAccountState state;
     private readonly TimeProvider clock;
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly object sync = new();
@@ -15,14 +16,14 @@ public sealed class WidgetPairingService
     private readonly Dictionary<string, DateTimeOffset> polls = [];
     private readonly Queue<DateTimeOffset> bootstrap = new();
 
-    public WidgetPairingService(OutlookAccountState state, TimeProvider clock)
+    public WidgetPairingService(MicrosoftAccountState state, TimeProvider clock)
     {
         this.state = state;
         this.clock = clock;
         state.Invalidated += () => { lock (sync) { pending.Clear(); polls.Clear(); } };
     }
 
-    public async Task<PairingCreated> CreateAsync(WidgetScope scope, PairingRequest request, OutlookAccountLease lease, CancellationToken ct)
+    public async Task<PairingCreated> CreateAsync(WidgetScope scope, PairingRequest request, AccountLease lease, CancellationToken ct)
     {
         if (!Enum.IsDefined(scope) || string.IsNullOrWhiteSpace(request.InstanceId) || request.InstanceId.Length > 200 || request.InstanceId.Any(char.IsControl) ||
             string.IsNullOrEmpty(request.RequestSecret) || request.RequestSecret.Length is < 32 or > 256 || request.RequestSecret.Any(char.IsControl))
@@ -53,7 +54,7 @@ public sealed class WidgetPairingService
         return await PollAsync(id, secret, lease, ct);
     }
 
-    public async Task<PairingResult> PollAsync(string id, string secret, OutlookAccountLease lease, CancellationToken ct)
+    public async Task<PairingResult> PollAsync(string id, string secret, AccountLease lease, CancellationToken ct)
     {
         await gate.WaitAsync(ct);
         try
@@ -110,7 +111,7 @@ public sealed class WidgetPairingService
         await ApproveAsync(id, lease, ct);
     }
 
-    public async Task ApproveAsync(string id, OutlookAccountLease lease, CancellationToken ct)
+    public async Task ApproveAsync(string id, AccountLease lease, CancellationToken ct)
     {
         await state.ExecuteAuthorizedAsync(lease, () =>
         {
@@ -125,7 +126,7 @@ public sealed class WidgetPairingService
         return GetPending(lease);
     }
 
-    public IReadOnlyList<WidgetPendingPairing> GetPending(OutlookAccountLease lease)
+    public IReadOnlyList<WidgetPendingPairing> GetPending(AccountLease lease)
     {
         lock (sync) { state.RequireCurrent(lease); Prune(); return pending.Values.Where(p => p.Lease == lease && !p.Approved).Select(p => p.Info).ToArray(); }
     }
@@ -136,7 +137,7 @@ public sealed class WidgetPairingService
         return await GetPairedAsync(lease, ct);
     }
 
-    public async Task<IReadOnlyList<WidgetPairedInstance>> GetPairedAsync(OutlookAccountLease lease, CancellationToken ct)
+    public async Task<IReadOnlyList<WidgetPairedInstance>> GetPairedAsync(AccountLease lease, CancellationToken ct)
     {
         var credentials = await state.ReadWidgetCredentialsAsync(lease, ct);
         return credentials.Where(c => c.AccountKey == lease.Key).Select(c => new WidgetPairedInstance(c.CredentialId, c.InstanceId, c.Scope)).ToArray();
@@ -148,7 +149,7 @@ public sealed class WidgetPairingService
         await RevokeAsync(id, lease, ct);
     }
 
-    public async Task RevokeAsync(string id, OutlookAccountLease lease, CancellationToken ct)
+    public async Task RevokeAsync(string id, AccountLease lease, CancellationToken ct)
     {
         await gate.WaitAsync(ct);
         try
@@ -166,7 +167,7 @@ public sealed class WidgetPairingService
         finally { gate.Release(); }
     }
 
-    public async Task<OutlookAccountLease?> AuthenticateAsync(WidgetScope scope, string credential, CancellationToken ct)
+    public async Task<AccountLease?> AuthenticateAsync(WidgetScope scope, string credential, CancellationToken ct)
     {
         if (!Enum.IsDefined(scope) || string.IsNullOrEmpty(credential) || credential.Length > 256) return null;
         try
@@ -178,9 +179,9 @@ public sealed class WidgetPairingService
         catch (OutlookException) { return null; }
     }
 
-    private Pending RequirePending(string id, OutlookAccountLease lease) => pending.TryGetValue(id, out var value) && value.Lease == lease
+    private Pending RequirePending(string id, AccountLease lease) => pending.TryGetValue(id, out var value) && value.Lease == lease
         ? value : throw new OutlookException("pairing_expired", "This pairing request expired. Create a new request.", 404);
-    private Pending RevalidateApproved(string id, string secret, OutlookAccountLease lease, Pending expected)
+    private Pending RevalidateApproved(string id, string secret, AccountLease lease, Pending expected)
     {
         Prune();
         state.RequireCurrent(lease);

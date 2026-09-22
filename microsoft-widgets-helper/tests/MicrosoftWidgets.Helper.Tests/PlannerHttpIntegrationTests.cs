@@ -1,3 +1,4 @@
+using PlannerEdge.Helper.Auth;
 using System.Net;
 using System.Net.Sockets;
 using Microsoft.AspNetCore.Builder;
@@ -158,7 +159,7 @@ public sealed class PlannerHttpIntegrationTests
         Assert.Equal(HttpStatusCode.Unauthorized, deleteResponse.StatusCode);
         Assert.Empty(graph.Deletes);
         var pairing = app.Services.GetRequiredService<WidgetPairingService>();
-        var lease = await app.Services.GetRequiredService<OutlookAccountState>().GetAsync(default);
+        var lease = await app.Services.GetRequiredService<MicrosoftAccountState>().GetAsync(default);
         var pair = await pairing.CreateAsync(WidgetScope.Planner, new("native", new string('x', 64)), lease, default);
         await pairing.ApproveAsync(pair.Id, default);
         client.DefaultRequestHeaders.Add(LocalAccessHeaders.Credential, (await pairing.PollAsync(pair.Id, new string('x', 64), default)).Credential);

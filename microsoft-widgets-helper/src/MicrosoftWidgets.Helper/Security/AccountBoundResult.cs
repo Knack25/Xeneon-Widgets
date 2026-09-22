@@ -1,8 +1,9 @@
+using PlannerEdge.Helper.Auth;
 using PlannerEdge.Helper.Outlook;
 
 namespace PlannerEdge.Helper.Security;
 
-public sealed class AccountBoundResult(IResult inner, OutlookAccountState state, OutlookAccountLease lease) : IResult
+public sealed class AccountBoundResult(IResult inner, MicrosoftAccountState state, AccountLease lease) : IResult
 {
     public async Task ExecuteAsync(HttpContext http)
     {

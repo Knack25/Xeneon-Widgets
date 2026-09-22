@@ -1,3 +1,4 @@
+using PlannerEdge.Helper.Auth;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -6,7 +7,7 @@ namespace PlannerEdge.Helper.Outlook;
 public sealed class CalendarCatalogService
 {
     private readonly OutlookGraphClient graph;
-    private readonly OutlookAccountState state;
+    private readonly MicrosoftAccountState state;
     private readonly OutlookSettingsStore settings;
     private readonly TimeProvider clock;
     private readonly SemaphoreSlim gate = new(1, 1);
@@ -16,7 +17,7 @@ public sealed class CalendarCatalogService
     private IReadOnlyList<OutlookError> discoveryErrors = [];
     public IReadOnlyList<OutlookError> DiscoveryErrors { get { lock (sync) return discoveryErrors; } }
 
-    public CalendarCatalogService(OutlookGraphClient graph, OutlookAccountState state, OutlookSettingsStore settings, TimeProvider clock)
+    public CalendarCatalogService(OutlookGraphClient graph, MicrosoftAccountState state, OutlookSettingsStore settings, TimeProvider clock)
     {
         this.graph = graph; this.state = state; this.settings = settings; this.clock = clock;
         state.Invalidated += () => { lock (sync) { sources = []; fetchedAt = default; discoveryErrors = []; } };
@@ -158,7 +159,7 @@ public sealed class CalendarCatalogService
         finally { gate.Release(); }
     }
 
-    private static CalendarSource Add(Dictionary<string, CalendarSource> target, OutlookAccountLease lease, JsonElement item, string route, string kind, string? owner, string? groupName = null)
+    private static CalendarSource Add(Dictionary<string, CalendarSource> target, AccountLease lease, JsonElement item, string route, string kind, string? owner, string? groupName = null)
     {
         RequireId(item);
         var key = OutlookTokenProvider.Hash(lease.Key + "\n" + route);

@@ -17,7 +17,7 @@ public sealed record AzureAdOptions
     public string Tenant { get; init; } = "organizations";
 }
 
-public interface IMicrosoftAuthService : IGraphTokenProvider
+public interface IMicrosoftAuthService : IGraphTokenProvider, IMicrosoftAccountIdentityProvider
 {
     Task<string> GetTokenForScopesAsync(IEnumerable<string> scopes, CancellationToken cancellationToken);
     Task<AzureAdOptions> GetConfigurationAsync(CancellationToken cancellationToken);
@@ -47,6 +47,7 @@ public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILoc
     private readonly Func<IEnumerable<string>, bool, CancellationToken, Task<AuthStatusResponse>>? connect;
     private IPublicClientApplication? app;
     private AzureAdOptions? currentConfiguration;
+    private MicrosoftAccountIdentity? currentIdentity;
 
     internal MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILocalJsonStore jsonStore,
         Func<IEnumerable<string>, CancellationToken, Task<string>> acquireToken,
@@ -74,6 +75,7 @@ public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILoc
             await jsonStore.WriteAsync("microsoft-auth", normalized, cancellationToken);
             app = configuredApp;
             currentConfiguration = normalized;
+            currentIdentity = null;
             return normalized;
         }
         finally { configurationGate.Release(); }
@@ -139,7 +141,28 @@ public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILoc
         var client = await RequireAppAsync(cancellationToken);
         var account = (await client.GetAccountsAsync()).FirstOrDefault()
             ?? throw new MsalUiRequiredException("no_account", "No Microsoft account is signed in.");
-        return (await client.AcquireTokenSilent(scopes, account).ExecuteAsync(cancellationToken)).AccessToken;
+        var result = await client.AcquireTokenSilent(scopes, account).ExecuteAsync(cancellationToken);
+        await CaptureIdentityAsync(result, cancellationToken);
+        return result.AccessToken;
+    }
+
+    public async Task<MicrosoftAccountIdentity> GetAccountIdentityAsync(CancellationToken cancellationToken)
+    {
+        var client = await RequireAppAsync(cancellationToken);
+        var configuration = currentConfiguration!;
+        var account = (await client.GetAccountsAsync()).FirstOrDefault()
+            ?? throw new MsalUiRequiredException("no_account", "No Microsoft account is signed in.");
+        if (currentIdentity is { } current && SameAccount(current, account, configuration.ClientId))
+            return current with { Username = account.Username };
+        var stored = await jsonStore.ReadAsync<StoredMicrosoftAccountIdentity>("microsoft-account-identity", cancellationToken);
+        if (stored is not null && string.Equals(stored.HomeAccountId, account.HomeAccountId.Identifier, StringComparison.Ordinal) &&
+            string.Equals(stored.ClientId, configuration.ClientId, StringComparison.OrdinalIgnoreCase))
+        {
+            currentIdentity = new(stored.HomeAccountId, stored.TenantId, stored.ClientId, account.Username);
+            return currentIdentity;
+        }
+        var result = await client.AcquireTokenSilent(PlannerScopes, account).ExecuteAsync(cancellationToken);
+        return await CaptureIdentityAsync(result, cancellationToken);
     }
 
     public async Task<AuthStatusResponse> GetStatusAsync(CancellationToken cancellationToken)
@@ -202,8 +225,29 @@ public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILoc
                 return request.ExecuteAsync(ct);
             }, cancellationToken);
         await RetainAccountAsync(client, result.Account);
+        await CaptureIdentityAsync(result, cancellationToken);
         return new AuthStatusResponse(true, result.Account.Username, result.Account.Username);
     }
+
+    internal static MicrosoftAccountIdentity CreateIdentity(IAccount account, string tenantId, string clientId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(account.HomeAccountId.Identifier);
+        ArgumentException.ThrowIfNullOrWhiteSpace(tenantId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(clientId);
+        return new(account.HomeAccountId.Identifier, tenantId, clientId, account.Username);
+    }
+
+    private async Task<MicrosoftAccountIdentity> CaptureIdentityAsync(AuthenticationResult result, CancellationToken cancellationToken)
+    {
+        var identity = CreateIdentity(result.Account, result.TenantId, currentConfiguration!.ClientId);
+        currentIdentity = identity;
+        await jsonStore.WriteAsync("microsoft-account-identity", StoredMicrosoftAccountIdentity.From(identity), cancellationToken);
+        return identity;
+    }
+
+    private static bool SameAccount(MicrosoftAccountIdentity identity, IAccount account, string clientId) =>
+        string.Equals(identity.HomeAccountId, account.HomeAccountId.Identifier, StringComparison.Ordinal) &&
+        string.Equals(identity.ClientId, clientId, StringComparison.OrdinalIgnoreCase);
 
     internal static async Task<T> AcquireSilentFirstAsync<T>(Func<CancellationToken, Task<T>> silent,
         Func<MsalUiRequiredException, CancellationToken, Task<T>> interactive, CancellationToken cancellationToken)
@@ -234,6 +278,8 @@ public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILoc
             cancellationToken.ThrowIfCancellationRequested();
             await app.RemoveAsync(account);
         }
+        currentIdentity = null;
+        await jsonStore.WriteAsync<StoredMicrosoftAccountIdentity?>("microsoft-account-identity", null, cancellationToken);
     }
 
     private async Task<IPublicClientApplication> RequireAppAsync(CancellationToken cancellationToken)
