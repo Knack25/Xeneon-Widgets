@@ -11,7 +11,7 @@ public sealed class HelperControlPipe : BackgroundService
     internal const int MaximumMessageBytes = 64;
     internal static readonly PipeOptions ServerOptions = PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly;
     internal static readonly TimeSpan MessageTimeout = TimeSpan.FromSeconds(1);
-    private const string ControlPipeName = "Knack25.MicrosoftWidgetsHelper.Control.v1";
+    internal const string ControlPipeName = "Knack25.MicrosoftWidgetsHelper.Control.v1";
     private static readonly TimeSpan ClientTimeout = TimeSpan.FromSeconds(3);
     private readonly LocalAccessService access;
     private readonly ILogger<HelperControlPipe> logger;
@@ -46,18 +46,21 @@ public sealed class HelperControlPipe : BackgroundService
     }
 
     public static async Task<bool> RequestOpenSetupAsync(CancellationToken cancellationToken = default)
-        => await RequestCommandAsync(OpenSetupCommand, ClientTimeout, cancellationToken);
+        => await RequestCommandAsync(ControlPipeName, OpenSetupCommand, ClientTimeout, cancellationToken);
 
     public static async Task<bool> RequestStopAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
-        => await RequestCommandAsync(StopCommand, timeout, cancellationToken);
+        => await RequestStopAsync(ControlPipeName, timeout, cancellationToken);
 
-    private static async Task<bool> RequestCommandAsync(string command, TimeSpan timeout, CancellationToken cancellationToken)
+    internal static async Task<bool> RequestStopAsync(string pipeName, TimeSpan timeout, CancellationToken cancellationToken = default)
+        => await RequestCommandAsync(pipeName, StopCommand, timeout, cancellationToken);
+
+    private static async Task<bool> RequestCommandAsync(string pipeName, string command, TimeSpan timeout, CancellationToken cancellationToken)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(timeout);
         try
         {
-            return await SendCommandAsync(ControlPipeName, command, deadline.Token);
+            return await SendCommandAsync(pipeName, command, deadline.Token);
         }
         catch (Exception error) when (error is IOException or TimeoutException or OperationCanceledException or UnauthorizedAccessException)
         {
@@ -111,6 +114,7 @@ public sealed class HelperControlPipe : BackgroundService
     {
         var lengthBuffer = new byte[1];
         var accepted = false;
+        Action? afterAcknowledgement = null;
         if (await pipe.ReadAsync(lengthBuffer, cancellationToken) == 1 && lengthBuffer[0] is > 0 and <= MaximumMessageBytes)
         {
             var message = new byte[lengthBuffer[0]];
@@ -125,8 +129,8 @@ public sealed class HelperControlPipe : BackgroundService
                 }
                 else if (command == StopCommand)
                 {
-                    stop();
                     accepted = true;
+                    afterAcknowledgement = stop;
                 }
             }
             catch (EndOfStreamException)
@@ -137,5 +141,6 @@ public sealed class HelperControlPipe : BackgroundService
 
         await pipe.WriteAsync(new byte[] { accepted ? (byte)1 : (byte)0 }, cancellationToken);
         await pipe.FlushAsync(cancellationToken);
+        afterAcknowledgement?.Invoke();
     }
 }

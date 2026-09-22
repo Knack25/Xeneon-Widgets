@@ -64,7 +64,10 @@ public sealed class OwnerManagementEndpointTests
         Assert.Equal(HttpStatusCode.Unauthorized, widget.StatusCode);
 
         using var owner = await host.SendAsync(method, path, owner: host.OwnerSession);
-        Assert.NotEqual(HttpStatusCode.Unauthorized, owner.StatusCode);
+        var ownerCode = (int)owner.StatusCode;
+        Assert.True(owner.StatusCode != HttpStatusCode.Unauthorized &&
+            (ownerCode is >= 200 and < 300 or >= 400 and < 500),
+            $"Expected an owner-authorized business response but received {ownerCode}: {await owner.Content.ReadAsStringAsync()}");
     }
 
     [Fact]

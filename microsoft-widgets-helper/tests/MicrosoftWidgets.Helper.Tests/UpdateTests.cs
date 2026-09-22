@@ -1,6 +1,9 @@
 using System.Net;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging.Abstractions;
+using PlannerEdge.Helper.Hosting;
+using PlannerEdge.Helper.Security;
 using PlannerEdge.Helper.Updates;
 
 namespace PlannerEdge.Helper.Tests;
@@ -156,6 +159,38 @@ public sealed class UpdateTests
         instance.Dispose();
         await waiting;
         Assert.True(waiting.IsCompletedSuccessfully);
+    }
+
+    [Fact]
+    public async Task Update_recovery_stops_the_existing_helper_through_the_same_user_pipe()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), "MicrosoftWidgets.Helper.Tests." + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        var target = Path.Combine(folder, "not-an-executable.txt");
+        var resultPath = Path.Combine(folder, "update-result.json");
+        await File.WriteAllTextAsync(target, "fixture");
+        var pipeName = "MicrosoftWidgets.Helper.Tests." + Guid.NewGuid().ToString("N");
+        var stopped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pipe = new HelperControlPipe(new LocalAccessService(TimeProvider.System), NullLogger<HelperControlPipe>.Instance,
+            pipeName, _ => { }, () => stopped.TrySetResult());
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        await pipe.StartAsync(timeout.Token);
+        try
+        {
+            await UpdateInstaller.ApplyAsync(
+                ["--apply-update", Path.Combine(folder, "missing-installer.exe"), target, "unused-hash", "0.4.0"],
+                resultPath,
+                "Local\\MicrosoftWidgetsTest-" + Guid.NewGuid(),
+                pipeName);
+
+            await stopped.Task.WaitAsync(timeout.Token);
+        }
+        finally
+        {
+            await pipe.StopAsync(CancellationToken.None);
+            Directory.Delete(folder, true);
+        }
     }
 
     [Fact]

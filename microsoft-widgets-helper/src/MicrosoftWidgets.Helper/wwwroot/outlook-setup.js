@@ -138,6 +138,32 @@
     } catch (error) { message.textContent = error.message; }
     finally { button.disabled = false; }
   });
+  $('#outlook-download').addEventListener('click', async event => {
+    event.preventDefault();
+    const link = event.currentTarget;
+    const packageStatus = $('#outlook-package-status');
+    link.setAttribute('aria-busy', 'true');
+    try {
+      const response = await window.helperApi.fetch(link.href, { cache: 'no-store' });
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({}));
+        throw new Error(result.message || 'Unable to download the Outlook widget package.');
+      }
+      const disposition = response.headers.get('Content-Disposition') || '';
+      const filename = disposition.match(/filename="([^"]+)"/i)?.[1] || disposition.match(/filename=([^;]+)/i)?.[1]?.trim();
+      if (!filename) throw new Error('The Outlook widget package filename is missing.');
+      const objectUrl = URL.createObjectURL(await response.blob());
+      const trigger = document.createElement('a');
+      trigger.href = objectUrl;
+      trigger.download = filename;
+      trigger.hidden = true;
+      document.body.append(trigger);
+      try { trigger.click(); }
+      finally { trigger.remove(); URL.revokeObjectURL(objectUrl); }
+      packageStatus.textContent = 'Outlook widget package downloaded.';
+    } catch (error) { packageStatus.textContent = error.message; }
+    finally { link.removeAttribute('aria-busy'); }
+  });
   document.addEventListener('microsoft-configuration-changed', () => { session = null; catalogLoaded = false; refresh(true); });
   document.addEventListener('microsoft-account-changed', () => { session = null; catalogLoaded = false; refresh(true); });
   window.helperApi.fetch('/installation', { cache: 'no-store' }).then(r => r.json()).then(value => {

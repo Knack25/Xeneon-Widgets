@@ -76,6 +76,27 @@ public sealed class HelperControlPipeTests
     }
 
     [Fact]
+    public async Task Stop_acknowledgement_is_flushed_before_shutdown_cancels_the_hosted_pipe()
+    {
+        using var stopping = new CancellationTokenSource();
+        using var requestTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var pipeName = "MicrosoftWidgets.Helper.Tests." + Guid.NewGuid().ToString("N");
+        var pipe = new HelperControlPipe(new LocalAccessService(TimeProvider.System), NullLogger<HelperControlPipe>.Instance,
+            pipeName, _ => { }, stopping.Cancel);
+
+        await pipe.StartAsync(stopping.Token);
+        try
+        {
+            Assert.True(await HelperControlPipe.RequestStopAsync(pipeName, TimeSpan.FromSeconds(2), requestTimeout.Token));
+            Assert.True(stopping.IsCancellationRequested);
+        }
+        finally
+        {
+            await pipe.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public async Task Random_data_cannot_stop_the_owner_process()
     {
         var stopped = false;
@@ -99,10 +120,11 @@ public sealed class HelperControlPipeTests
     [Fact]
     public async Task Stop_request_without_a_listener_respects_its_timeout()
     {
+        var pipeName = "MicrosoftWidgets.Helper.Tests." + Guid.NewGuid().ToString("N");
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
         var started = TimeProvider.System.GetTimestamp();
 
-        Assert.False(await HelperControlPipe.RequestStopAsync(TimeSpan.FromMilliseconds(100), timeout.Token));
+        Assert.False(await HelperControlPipe.RequestStopAsync(pipeName, TimeSpan.FromMilliseconds(100), timeout.Token));
 
         Assert.True(TimeProvider.System.GetElapsedTime(started) < TimeSpan.FromSeconds(1));
     }

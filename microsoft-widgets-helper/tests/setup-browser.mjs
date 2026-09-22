@@ -13,6 +13,7 @@ const calls = [];
 let connected = false;
 let permissionState = 'available';
 let configured = true;
+const failedDownloads = new Set();
 const bootstrapToken = 'fixture-bootstrap-token';
 const ownerSession = 'fixture-owner-session';
 const api = pathname => {
@@ -42,6 +43,22 @@ const server = http.createServer(async (request, response) => {
     }
     response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ token: ownerSession })); return;
   }
+  const downloadName = pathname === '/downloads/planner' ? 'PlannerEdgeWidget.icuewidget'
+    : pathname === '/downloads/outlook' ? 'OutlookEdgeWidget.icuewidget' : null;
+  if (downloadName) {
+    if (request.headers['x-microsoft-widgets-owner'] !== ownerSession) {
+      response.writeHead(401, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ message: 'Owner session required.' })); return;
+    }
+    if (failedDownloads.has(pathname)) {
+      response.writeHead(500, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ message: 'Fixture download failed.' })); return;
+    }
+    response.writeHead(200, {
+      'Content-Type': 'application/octet-stream',
+      'Content-Disposition': `attachment; filename="${downloadName}"`
+    });
+    response.end(`fixture:${downloadName}`);
+    return;
+  }
   const data = api(pathname);
   if (data !== null) {
     if (request.headers['x-microsoft-widgets-owner'] !== ownerSession) {
@@ -67,8 +84,13 @@ try {
   page.on('pageerror', error => errors.push(error.message));
   await page.addInitScript(() => {
     const replaceState = history.replaceState.bind(history);
+    const createObjectURL = URL.createObjectURL.bind(URL);
+    const revokeObjectURL = URL.revokeObjectURL.bind(URL);
     window.__replaceStateCalls = 0;
+    window.__objectUrls = { created: 0, revoked: 0 };
     history.replaceState = (...args) => { window.__replaceStateCalls++; return replaceState(...args); };
+    URL.createObjectURL = value => { window.__objectUrls.created++; return createObjectURL(value); };
+    URL.revokeObjectURL = value => { window.__objectUrls.revoked++; return revokeObjectURL(value); };
   });
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
   await page.locator('#tray-instructions').getByText('Open Microsoft Widgets Setup from the notification area or Start menu to continue.').waitFor();
@@ -92,6 +114,13 @@ try {
   assert.equal(await page.locator('#sign-in').isDisabled(), true);
   assert.equal(await page.locator('#board').inputValue(), 'fixture');
   assert.equal(calls.some(c => c.method === 'POST' && c.pathname !== '/api/local-access/session'), false);
+  const plannerDownload = await Promise.all([
+    page.waitForEvent('download', { timeout: 3000 }),
+    page.getByRole('link', { name: 'Download Planner widget' }).click()
+  ]).then(([download]) => download);
+  assert.equal(plannerDownload.suggestedFilename(), 'PlannerEdgeWidget.icuewidget');
+  assert.equal(calls.some(c => c.pathname === '/downloads/planner' && c.headers['x-microsoft-widgets-owner'] === ownerSession), true);
+  assert.deepEqual(await page.evaluate(() => window.__objectUrls), { created: 1, revoked: 1 });
   await page.getByRole('link', {name:'Outlook',exact:true}).click();
   await page.getByRole('button', { name: 'Connect Outlook', exact: true }).click();
   await page.locator('#outlook-status').filter({hasText:'Outlook is connected.'}).waitFor();
@@ -99,12 +128,20 @@ try {
   await page.getByText('Available calendars', { exact: true }).click();
   assert.match(await page.locator('#outlook-calendars').textContent(), /<script>Calendar label<\/script>/);
   assert.equal(await page.locator('#outlook-calendars script').count(), 0);
+  const outlookDownload = await Promise.all([
+    page.waitForEvent('download', { timeout: 3000 }),
+    page.getByRole('link', { name: 'Download Outlook widget' }).click()
+  ]).then(([download]) => download);
+  assert.equal(outlookDownload.suggestedFilename(), 'OutlookEdgeWidget.icuewidget');
+  assert.equal(calls.some(c => c.pathname === '/downloads/outlook' && c.headers['x-microsoft-widgets-owner'] === ownerSession), true);
+  assert.deepEqual(await page.evaluate(() => window.__objectUrls), { created: 2, revoked: 2 });
   for (const [width, height] of [[1280, 900], [390, 844]]) {
     await page.setViewportSize({ width, height });
     await page.locator('#outlook').scrollIntoViewIfNeeded();
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
     await page.screenshot({ path: path.join(output, `${width}.png`), fullPage: true });
     await page.getByRole('link', {name:'Settings',exact:true}).click();
+    await page.locator('#updates').waitFor();
     assert.equal(await page.locator('#updates').isVisible(), true);
     assert.equal(await page.locator('#client-id').isVisible(), false);
     await page.getByText('Application configuration', {exact:true}).click();
@@ -134,6 +171,16 @@ try {
   await page.getByRole('button', {name:'Assignee names enabled',exact:true}).waitFor();
   assert.equal(await page.locator('#enable-names').isDisabled(), true);
   assert.equal(calls.filter(c => c.pathname === '/auth/enable-assignee-names').length, 1);
+  failedDownloads.add('/downloads/planner');
+  await page.getByRole('link', {name:'Planner',exact:true}).click();
+  await page.getByRole('link', { name: 'Download Planner widget' }).click();
+  await page.locator('#widget-package-status').filter({ hasText: 'Fixture download failed.' }).waitFor();
+  assert.equal(new URL(page.url()).hash, '#planner');
+  failedDownloads.add('/downloads/outlook');
+  await page.getByRole('link', {name:'Outlook',exact:true}).click();
+  await page.getByRole('link', { name: 'Download Outlook widget' }).click();
+  await page.locator('#outlook-package-status').filter({ hasText: 'Fixture download failed.' }).waitFor();
+  assert.equal(new URL(page.url()).hash, '#outlook');
   configured = false;
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
   await page.locator('#client-id').waitFor();

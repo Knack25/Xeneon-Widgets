@@ -35,7 +35,10 @@ public sealed class UpdateInstaller : IUpdateInstaller
         using var process = Process.Start(start) ?? throw new InvalidOperationException("Unable to start the updater.");
     }
 
-    public static async Task ApplyAsync(string[] args)
+    public static Task ApplyAsync(string[] args) =>
+        ApplyAsync(args, ResultPath, HelperHost.InstanceMutexName, HelperControlPipe.ControlPipeName);
+
+    internal static async Task ApplyAsync(string[] args, string resultPath, string mutexName, string pipeName)
     {
         if (args.Length != 5) return;
         var installer = args[1];
@@ -56,21 +59,20 @@ public sealed class UpdateInstaller : IUpdateInstaller
         catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or System.ComponentModel.Win32Exception or InvalidOperationException) { }
         finally
         {
-            try { await File.WriteAllTextAsync(ResultPath, JsonSerializer.Serialize(new { message = result, finishedAt = DateTimeOffset.UtcNow })); }
+            try { await File.WriteAllTextAsync(resultPath, JsonSerializer.Serialize(new { message = result, finishedAt = DateTimeOffset.UtcNow })); }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
             if (File.Exists(target))
             {
                 // Setup may have exited before stopping the old helper. Restart it even on cancellation.
-                using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-                try { await client.PostAsync("http://localhost:8787/host/stop", null); }
-                catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException) { }
+                await HelperControlPipe.RequestStopAsync(pipeName, TimeSpan.FromSeconds(5), CancellationToken.None);
                 try
                 {
                     using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
-                    await WaitForInstanceExitAsync(HelperHost.InstanceMutexName, timeout.Token);
+                    await WaitForInstanceExitAsync(mutexName, timeout.Token);
                     using var process = Process.Start(new ProcessStartInfo(target, "--no-browser")
                     { UseShellExecute = false, CreateNoWindow = true, WorkingDirectory = Path.GetDirectoryName(target)! })
                         ?? throw new InvalidOperationException("Unable to restart the helper.");
+                    using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
                     var ready = false;
                     for (var attempt = 0; attempt < 30 && !process.HasExited; attempt++)
                     {
@@ -84,7 +86,7 @@ public sealed class UpdateInstaller : IUpdateInstaller
                 }
                 catch (Exception ex) when (ex is OperationCanceledException or InvalidOperationException or System.ComponentModel.Win32Exception)
                 {
-                    try { await File.WriteAllTextAsync(ResultPath, JsonSerializer.Serialize(new { message = "The helper could not restart automatically. Open Microsoft Widgets Setup from the Start menu.", finishedAt = DateTimeOffset.UtcNow })); }
+                    try { await File.WriteAllTextAsync(resultPath, JsonSerializer.Serialize(new { message = "The helper could not restart automatically. Open Microsoft Widgets Setup from the Start menu.", finishedAt = DateTimeOffset.UtcNow })); }
                     catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
                 }
             }

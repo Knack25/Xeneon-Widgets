@@ -52,6 +52,34 @@ async function loadInstallation() {
   document.querySelector('#widget-package-status').textContent = installation.plannerWidgetAvailable
     ? 'Planner widget package is ready.' : 'Install the latest Microsoft Widgets release to get the widget package.';
 }
+async function downloadPackage(link, status) {
+  const response = await window.helperApi.fetch(link.href, { cache: 'no-store' });
+  if (!response.ok) {
+    const result = await response.json().catch(() => ({}));
+    throw new Error(result.message || 'Unable to download the Planner widget package.');
+  }
+  const disposition = response.headers.get('Content-Disposition') || '';
+  const filename = disposition.match(/filename="([^"]+)"/i)?.[1] || disposition.match(/filename=([^;]+)/i)?.[1]?.trim();
+  if (!filename) throw new Error('The Planner widget package filename is missing.');
+  const objectUrl = URL.createObjectURL(await response.blob());
+  const trigger = document.createElement('a');
+  trigger.href = objectUrl;
+  trigger.download = filename;
+  trigger.hidden = true;
+  document.body.append(trigger);
+  try { trigger.click(); }
+  finally { trigger.remove(); URL.revokeObjectURL(objectUrl); }
+  status.textContent = 'Planner widget package downloaded.';
+}
+document.querySelector('#download-widget').addEventListener('click', async event => {
+  event.preventDefault();
+  const link = event.currentTarget;
+  const status = document.querySelector('#widget-package-status');
+  link.setAttribute('aria-busy', 'true');
+  try { await downloadPackage(link, status); }
+  catch (error) { status.textContent = error.message; }
+  finally { link.removeAttribute('aria-busy'); }
+});
 document.querySelector('#stop-helper').addEventListener('click', async () => {
   if (!confirm('Stop the helper? Microsoft widgets will stop refreshing until you start it again.')) return;
   const response = await fetch('/host/stop', {method:'POST'}).catch(() => null);
