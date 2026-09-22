@@ -20,6 +20,38 @@ namespace PlannerEdge.Helper.Tests;
 
 public sealed class PlannerHttpIntegrationTests
 {
+    public static TheoryData<string, string> LegacyPlannerRoutes => new()
+    {
+        { "GET", "/plans" },
+        { "GET", "/settings" },
+        { "PUT", "/settings" },
+        { "PUT", "/selected-plan" },
+        { "GET", "/display" },
+        { "GET", "/display/cached" },
+        { "GET", "/view-preferences/plan" },
+        { "PUT", "/view-preferences/plan" },
+        { "GET", "/members" },
+        { "POST", "/tasks" },
+        { "POST", "/tasks/task/complete" },
+        { "GET", "/tasks/task/details" },
+        { "PUT", "/tasks/task/notes" },
+        { "GET", "/tasks/task/chat" },
+        { "POST", "/tasks/task/chat" },
+        { "PUT", "/tasks/task/bucket" },
+        { "PUT", "/tasks/task/due-date" },
+        { "PUT", "/tasks/task/title" },
+        { "PUT", "/tasks/task/progress" },
+        { "PUT", "/tasks/task/priority" },
+        { "PUT", "/tasks/task/start-date" },
+        { "PUT", "/tasks/task/labels" },
+        { "PUT", "/tasks/task/assignments" },
+        { "POST", "/tasks/task/checklist" },
+        { "PUT", "/tasks/task/checklist/item" },
+        { "DELETE", "/tasks/task/checklist/item" },
+        { "PUT", "/tasks/task/checklist/item/position" },
+        { "POST", "/tasks/task/checklist/item/complete" }
+    };
+
     [Fact]
     public async Task Attacker_host_cannot_read_static_health_or_integration_routes()
     {
@@ -57,6 +89,12 @@ public sealed class PlannerHttpIntegrationTests
         AssertHeader(setup, "X-Content-Type-Options", "nosniff");
         AssertHeader(setup, "Content-Security-Policy", "frame-ancestors 'none'");
         AssertHeader(setup, "X-Frame-Options", "DENY");
+        var policy = Assert.Single(setup.Headers.GetValues("Content-Security-Policy"));
+        foreach (var directiveName in new[] { "script-src", "style-src" })
+        {
+            var directive = Assert.Single(policy.Split(';'), value => value.TrimStart().StartsWith(directiveName, StringComparison.Ordinal));
+            Assert.DoesNotContain("'unsafe-inline'", directive, StringComparison.Ordinal);
+        }
 
         foreach (var path in new[] { "/board/index.html", "/outlook/index.html" })
         {
@@ -65,6 +103,19 @@ public sealed class PlannerHttpIntegrationTests
             Assert.False(preview.Headers.Contains("Content-Security-Policy"));
             Assert.False(preview.Headers.Contains("X-Frame-Options"));
         }
+    }
+
+    [Theory]
+    [MemberData(nameof(LegacyPlannerRoutes))]
+    public async Task Legacy_planner_route_responses_are_not_cached(string method, string path)
+    {
+        await using var host = await BoundaryTestHost.StartAsync();
+        using var request = new HttpRequestMessage(new HttpMethod(method), path);
+
+        using var response = await host.Client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        AssertHeader(response, "Cache-Control", "no-store");
     }
 
     [Fact]
@@ -172,6 +223,7 @@ internal sealed class BoundaryTestHost(WebApplication app, HttpClient client, st
         app.MapGet("/api/planner/plans", () => Results.Text("planner-secret"));
         app.MapGet("/api/outlook/session", () => Results.Text("outlook-secret"));
         app.MapGet("/auth/status", () => Results.Text("account-secret"));
+        app.MapFallback(() => Results.Text("legacy-route-secret"));
         await app.StartAsync();
 
         return new(app, new HttpClient { BaseAddress = new Uri("http://127.0.0.1:" + port + "/") }, staticRoot);

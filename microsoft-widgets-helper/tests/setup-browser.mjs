@@ -38,7 +38,11 @@ const server = http.createServer(async (request, response) => {
   if (data !== null) { response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify(data)); return; }
   const file = path.join(root, pathname === '/' ? 'index.html' : pathname.slice(1));
   if (!file.startsWith(root)) { response.writeHead(403); response.end(); return; }
-  try { response.writeHead(200, { 'Content-Type': pathname.endsWith('.js') ? 'text/javascript' : 'text/html' }); response.end(await readFile(file)); }
+  const contentType = pathname.endsWith('.js') ? 'text/javascript' : pathname.endsWith('.css') ? 'text/css' : 'text/html';
+  try { response.writeHead(200, {
+    'Content-Type': contentType,
+    'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+  }); response.end(await readFile(file)); }
   catch { response.end(''); }
 });
 await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));

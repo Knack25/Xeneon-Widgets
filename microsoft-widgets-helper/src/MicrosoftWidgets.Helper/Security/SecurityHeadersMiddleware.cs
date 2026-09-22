@@ -6,6 +6,17 @@ namespace PlannerEdge.Helper.Security;
 
 public sealed class SecurityHeadersMiddleware(RequestDelegate next, int expectedPort)
 {
+    private static readonly PathString[] LegacyPlannerPaths =
+    [
+        "/plans",
+        "/settings",
+        "/selected-plan",
+        "/display",
+        "/view-preferences",
+        "/members",
+        "/tasks"
+    ];
+
     public async Task InvokeAsync(HttpContext context)
     {
         if (!LoopbackRequestPolicy.IsAllowed(context, expectedPort))
@@ -20,7 +31,7 @@ public sealed class SecurityHeadersMiddleware(RequestDelegate next, int expected
         if (IsSensitivePath(context.Request.Path)) context.Response.Headers.CacheControl = "no-store";
         if (IsSetupPath(context.Request.Path))
         {
-            context.Response.Headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
+            context.Response.Headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
             context.Response.Headers["X-Frame-Options"] = "DENY";
         }
 
@@ -34,7 +45,8 @@ public sealed class SecurityHeadersMiddleware(RequestDelegate next, int expected
         path.StartsWithSegments("/configuration") ||
         path.StartsWithSegments("/downloads") ||
         path.StartsWithSegments("/host") ||
-        path.StartsWithSegments("/updates");
+        path.StartsWithSegments("/updates") ||
+        LegacyPlannerPaths.Any(path.StartsWithSegments);
 
     private static bool IsSetupPath(PathString path) =>
         string.Equals(path.Value, "/", StringComparison.Ordinal) ||
