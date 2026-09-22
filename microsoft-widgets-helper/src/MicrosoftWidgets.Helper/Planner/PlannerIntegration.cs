@@ -18,6 +18,7 @@ public static class PlannerIntegration
     {
         services.AddSingleton<IPlannerSettingsStore, PlannerSettingsStore>();
         services.AddSingleton<PlannerDataLifecycle>();
+        services.AddHostedService(provider => provider.GetRequiredService<PlannerDataLifecycle>());
         services.AddHttpClient<IPlannerGraphClient, PlannerGraphClient>(client =>
             client.BaseAddress = new Uri("https://graph.microsoft.com/v1.0/"));
         services.AddSingleton<PlannerBoardService>();
@@ -73,6 +74,12 @@ public static class PlannerIntegration
             if (authorization.Failure is not null)
             {
                 await authorization.Failure.ExecuteAsync(http);
+                return;
+            }
+            if (!http.RequestServices.GetRequiredService<PlannerDataLifecycle>().ReadyForWork)
+            {
+                await Results.Json(new { error = new { code = "planner_recovery", message = "Planner data cleanup is still in progress." } },
+                    statusCode: StatusCodes.Status503ServiceUnavailable).ExecuteAsync(http);
                 return;
             }
 

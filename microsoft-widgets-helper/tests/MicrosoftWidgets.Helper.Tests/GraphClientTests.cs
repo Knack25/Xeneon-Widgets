@@ -323,6 +323,38 @@ public sealed class GraphClientTests
     }
 
     [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Late_bucket_format_result_is_not_published_after_account_switch(bool successfulFormat)
+    {
+        var identities = new MicrosoftAccountStateTests.IdentityProvider(new MicrosoftAccountIdentity(
+            "home-one", "tenant", "client", "one@example.com"));
+        var state = new MicrosoftAccountState(identities, new OutlookMemoryStore());
+        var handler = new DelayedFormatHandler(successfulFormat);
+        var client = new PlannerGraphClient(
+            new HttpClient(handler) { BaseAddress = new Uri("https://graph.microsoft.com/v1.0/") },
+            new StaticTokenProvider(), state);
+        var firstLease = await state.GetAsync(default);
+        Task<IReadOnlyList<GraphTask>> stale;
+        using (state.BindRequest(firstLease))
+            stale = client.GetTasksAsync("plan", default);
+        await handler.FirstFormatStarted.WaitAsync(TimeSpan.FromSeconds(5));
+
+        identities.Identity = identities.Identity with { HomeAccountId = "home-two" };
+        await state.InvalidateAsync(default);
+        handler.ReleaseFirstFormat();
+        await Assert.ThrowsAsync<OutlookException>(() => stale);
+
+        var secondLease = await state.GetAsync(default);
+        IReadOnlyList<GraphTask> current;
+        using (state.BindRequest(secondLease))
+            current = await client.GetTasksAsync("plan", default);
+
+        Assert.Equal(2, handler.FormatReads);
+        Assert.Equal("new-account-hint", Assert.Single(current).BucketOrderHint);
+    }
+
+    [Theory]
     [InlineData(HttpStatusCode.Unauthorized)]
     [InlineData(HttpStatusCode.Forbidden)]
     public async Task GetTasksAsync_RethrowsAuthorizationFailureFromBucketFormat(HttpStatusCode status)
@@ -555,6 +587,38 @@ public sealed class GraphClientTests
     private static PlannerGraphClient CreateClient(HttpMessageHandler handler, IGraphTokenProvider? tokenProvider = null) => new(
         new HttpClient(handler) { BaseAddress = new Uri("https://graph.microsoft.com/v1.0/") },
         tokenProvider ?? new StaticTokenProvider());
+
+    private sealed class DelayedFormatHandler(bool successfulFirstFormat) : HttpMessageHandler
+    {
+        private readonly TaskCompletionSource firstFormatStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource releaseFirstFormat = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int formatReads;
+        public Task FirstFormatStarted => firstFormatStarted.Task;
+        public int FormatReads => Volatile.Read(ref formatReads);
+        public void ReleaseFirstFormat() => releaseFirstFormat.TrySetResult();
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            if (!request.RequestUri!.AbsolutePath.EndsWith("/bucketTaskBoardFormat"))
+                return Json("""{"value":[{"id":"one","title":"First","planId":"plan","percentComplete":0}]}""");
+            var read = Interlocked.Increment(ref formatReads);
+            if (read == 1)
+            {
+                firstFormatStarted.TrySetResult();
+                await releaseFirstFormat.Task.WaitAsync(cancellationToken);
+                return successfulFirstFormat
+                    ? Json("""{"orderHint":"old-account-hint"}""")
+                    : new HttpResponseMessage(HttpStatusCode.InternalServerError) { Content = new StringContent("failed") };
+            }
+            return Json("""{"orderHint":"new-account-hint"}""");
+        }
+
+        private static HttpResponseMessage Json(string body) => new(HttpStatusCode.OK)
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json")
+        };
+    }
 
     private sealed class StaticTokenProvider : IGraphTokenProvider
     {

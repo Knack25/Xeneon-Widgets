@@ -13,7 +13,7 @@ public sealed class PlannerGraphClient : IPlannerGraphClient
     private readonly HttpClient httpClient;
     private readonly IGraphTokenProvider tokenProvider;
     private readonly MicrosoftAccountState? accountState;
-    private readonly ConcurrentDictionary<string, (string? Hint, DateTimeOffset Expires)> orderHints = new();
+    private readonly ConcurrentDictionary<string, OrderHintEntry> orderHints = new();
     private readonly SemaphoreSlim formatGate = new(4);
 
     public PlannerGraphClient(HttpClient httpClient, IGraphTokenProvider tokenProvider, MicrosoftAccountState accountState)
@@ -21,7 +21,6 @@ public sealed class PlannerGraphClient : IPlannerGraphClient
         this.httpClient = httpClient;
         this.tokenProvider = tokenProvider;
         this.accountState = accountState;
-        accountState.Invalidated += orderHints.Clear;
     }
 
     internal PlannerGraphClient(HttpClient httpClient, IGraphTokenProvider tokenProvider)
@@ -94,12 +93,13 @@ public sealed class PlannerGraphClient : IPlannerGraphClient
 
     public async Task<IReadOnlyList<GraphTask>> GetTasksAsync(string planId, CancellationToken cancellationToken)
     {
+        var lease = accountState is null ? (AccountLease?)null : await accountState.GetAsync(cancellationToken);
         var tasks = new List<GraphTask>();
         await foreach (var item in GetCollectionAsync($"planner/plans/{Uri.EscapeDataString(planId)}/tasks", cancellationToken))
             tasks.Add(ToTask(item));
         return await Task.WhenAll(tasks.Select(async task => task with
         {
-            BucketOrderHint = await GetBucketOrderHintAsync(task.Id, cancellationToken)
+            BucketOrderHint = await GetBucketOrderHintAsync(task.Id, lease, cancellationToken)
         }));
     }
 
@@ -128,14 +128,19 @@ public sealed class PlannerGraphClient : IPlannerGraphClient
         return labels;
     }
 
-    private async Task<string?> GetBucketOrderHintAsync(string taskId, CancellationToken cancellationToken)
+    private async Task<string?> GetBucketOrderHintAsync(string taskId, AccountLease? lease,
+        CancellationToken cancellationToken)
     {
-        if (orderHints.TryGetValue(taskId, out var cached) && cached.Expires > DateTimeOffset.UtcNow)
+        if (orderHints.TryGetValue(taskId, out var previous) && previous.Lease != lease)
+            orderHints.TryRemove(new KeyValuePair<string, OrderHintEntry>(taskId, previous));
+        if (orderHints.TryGetValue(taskId, out var cached) && cached.Lease == lease &&
+            cached.Expires > DateTimeOffset.UtcNow)
             return cached.Hint;
         await formatGate.WaitAsync(cancellationToken);
         try
         {
-            if (orderHints.TryGetValue(taskId, out cached) && cached.Expires > DateTimeOffset.UtcNow)
+            if (orderHints.TryGetValue(taskId, out cached) && cached.Lease == lease &&
+                cached.Expires > DateTimeOffset.UtcNow)
                 return cached.Hint;
             try
             {
@@ -143,7 +148,7 @@ public sealed class PlannerGraphClient : IPlannerGraphClient
                     $"planner/tasks/{Uri.EscapeDataString(taskId)}/bucketTaskBoardFormat"), cancellationToken);
                 using var document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellationToken), cancellationToken: cancellationToken);
                 var hint = document.RootElement.TryGetProperty("orderHint", out var value) ? value.GetString() : null;
-                orderHints[taskId] = (hint, DateTimeOffset.UtcNow.AddMinutes(5));
+                await PublishOrderHintAsync(taskId, lease, hint, TimeSpan.FromMinutes(5), cancellationToken);
                 return hint;
             }
             catch (GraphApiException error) when (error.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
@@ -152,7 +157,7 @@ public sealed class PlannerGraphClient : IPlannerGraphClient
             }
             catch (Exception error) when (error is GraphApiException or HttpRequestException or System.Text.Json.JsonException)
             {
-                orderHints[taskId] = (null, DateTimeOffset.UtcNow.AddMinutes(1));
+                await PublishOrderHintAsync(taskId, lease, null, TimeSpan.FromMinutes(1), cancellationToken);
                 return null;
             }
         }
@@ -493,6 +498,30 @@ public sealed class PlannerGraphClient : IPlannerGraphClient
             return httpClient.SendAsync(request, cancellationToken);
         return accountState.ExecuteBoundAsync(() => httpClient.SendAsync(request, cancellationToken), cancellationToken);
     }
+
+    private void RequireCurrent(AccountLease? lease)
+    {
+        if (lease is { } value) accountState!.RequireCurrent(value);
+    }
+
+    private async Task PublishOrderHintAsync(string taskId, AccountLease? lease, string? hint,
+        TimeSpan lifetime, CancellationToken cancellationToken)
+    {
+        var entry = new OrderHintEntry(lease, hint, DateTimeOffset.UtcNow.Add(lifetime));
+        if (lease is null)
+        {
+            orderHints[taskId] = entry;
+            return;
+        }
+
+        await accountState!.ExecuteAuthorizedAsync(lease.Value, () =>
+        {
+            orderHints[taskId] = entry;
+            return Task.CompletedTask;
+        }, cancellationToken);
+    }
+
+    private sealed record OrderHintEntry(AccountLease? Lease, string? Hint, DateTimeOffset Expires);
 
     private static void ValidateConversationContinuation(Uri uri, string escapedGroup, string escapedThread)
     {

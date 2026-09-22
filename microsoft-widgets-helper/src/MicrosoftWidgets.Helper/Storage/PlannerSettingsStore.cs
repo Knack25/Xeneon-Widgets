@@ -162,11 +162,26 @@ public sealed class PlannerSettingsStore(
     public Task MarkPurgeRequiredAsync(CancellationToken cancellationToken) =>
         jsonStore.WriteAsync(PurgeMarkerFileName, new PlannerPurgeMarker(1, true), cancellationToken);
 
-    public async Task<bool> IsPurgeRequiredAsync(CancellationToken cancellationToken) =>
-        await jsonStore.ReadAsync<PlannerPurgeMarker>(PurgeMarkerFileName, cancellationToken) is { Version: 1, Required: true };
+    public async Task<bool> IsPurgeRequiredAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            // Missing or malformed state is an unclean/uncertain previous runtime.
+            return await jsonStore.ReadAsync<PlannerPurgeMarker>(PurgeMarkerFileName, cancellationToken)
+                is not { Version: 1, Required: false };
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return true;
+        }
+        catch (InvalidCastException)
+        {
+            return true;
+        }
+    }
 
     public Task ClearPurgeRequiredAsync(CancellationToken cancellationToken) =>
-        jsonStore.DeleteAsync(PurgeMarkerFileName, cancellationToken);
+        jsonStore.WriteAsync(PurgeMarkerFileName, new PlannerPurgeMarker(1, false), cancellationToken);
 
     private async Task<SettingsDto> LoadSettingsCoreAsync(AccountLease lease, CancellationToken cancellationToken)
     {

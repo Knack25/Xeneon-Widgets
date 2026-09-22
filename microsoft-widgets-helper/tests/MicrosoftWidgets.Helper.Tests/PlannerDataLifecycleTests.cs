@@ -11,6 +11,121 @@ namespace PlannerEdge.Helper.Tests;
 public sealed class PlannerDataLifecycleTests
 {
     [Fact]
+    public async Task Unclean_runtime_marker_forces_purge_on_next_start()
+    {
+        var json = new FaultingPlannerJsonStore();
+        var account = new MicrosoftAccountState(new MutableIdentity(), json);
+        await account.GetAsync(default);
+        var settings = new PlannerSettingsStore(json, account,
+            new FakeTimeProvider(DateTimeOffset.Parse("2026-09-22T12:00:00Z")));
+        await settings.ClearPurgeRequiredAsync(default);
+        var first = new PlannerDataLifecycle(account, settings, new MemoryCache(new MemoryCacheOptions()));
+        await first.StartAsync(default);
+        await settings.SaveSettingsAsync(new SettingsDto("plan", "Board", true), default);
+
+        Assert.True(await settings.IsPurgeRequiredAsync(default));
+
+        var restarted = new PlannerDataLifecycle(account, settings, new MemoryCache(new MemoryCacheOptions()));
+        await restarted.StartAsync(default);
+
+        Assert.False(json.Contains("settings"));
+        await restarted.StopAsync(default);
+    }
+
+    [Fact]
+    public async Task Missing_or_malformed_runtime_marker_is_treated_as_unclean()
+    {
+        foreach (var marker in new object?[] { null, "malformed" })
+        {
+            var json = new FaultingPlannerJsonStore();
+            var account = new MicrosoftAccountState(new MutableIdentity(), json);
+            await account.GetAsync(default);
+            var settings = new PlannerSettingsStore(json, account,
+                new FakeTimeProvider(DateTimeOffset.Parse("2026-09-22T12:00:00Z")));
+            await settings.SaveSettingsAsync(new SettingsDto("plan", "Board", true), default);
+            if (marker is not null) json.Set("planner-purge-required", marker);
+            var lifecycle = new PlannerDataLifecycle(account, settings, new MemoryCache(new MemoryCacheOptions()));
+
+            await lifecycle.StartAsync(default);
+
+            Assert.False(json.Contains("settings"));
+            await lifecycle.StopAsync(default);
+        }
+    }
+
+    [Fact]
+    public async Task Purge_worker_retries_beyond_five_failures_until_recovery()
+    {
+        var json = new FaultingPlannerJsonStore();
+        var account = new MicrosoftAccountState(new MutableIdentity(), json);
+        await account.GetAsync(default);
+        var settings = new PlannerSettingsStore(json, account,
+            new FakeTimeProvider(DateTimeOffset.Parse("2026-09-22T12:00:00Z")));
+        await settings.ClearPurgeRequiredAsync(default);
+        var lifecycle = new PlannerDataLifecycle(account, settings, new MemoryCache(new MemoryCacheOptions()));
+        await lifecycle.StartAsync(default);
+        await settings.SaveSettingsAsync(new SettingsDto("plan", "Board", true), default);
+        json.DeleteFailuresRemaining = 7;
+
+        await account.InvalidateAsync(default);
+        await WaitUntilAsync(() => json.DeleteAttempts >= 8 && !lifecycle.PurgeRequired, 10);
+
+        Assert.False(json.Contains("settings"));
+        await lifecycle.StopAsync(default);
+    }
+
+    [Fact]
+    public async Task Shutdown_waits_for_required_cleanup_before_marking_runtime_clean()
+    {
+        var json = new FaultingPlannerJsonStore();
+        var account = new MicrosoftAccountState(new MutableIdentity(), json);
+        await account.GetAsync(default);
+        var settings = new PlannerSettingsStore(json, account,
+            new FakeTimeProvider(DateTimeOffset.Parse("2026-09-22T12:00:00Z")));
+        await settings.ClearPurgeRequiredAsync(default);
+        var lifecycle = new PlannerDataLifecycle(account, settings, new MemoryCache(new MemoryCacheOptions()));
+        await lifecycle.StartAsync(default);
+        await settings.SaveSettingsAsync(new SettingsDto("plan", "Board", true), default);
+        json.BlockDeletes = true;
+        await account.InvalidateAsync(default);
+        await json.DeleteStarted.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var stop = lifecycle.StopAsync(default);
+        Assert.False(stop.IsCompleted);
+        Assert.True(await settings.IsPurgeRequiredAsync(default));
+
+        json.ReleaseDeletes();
+        await stop.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(await settings.IsPurgeRequiredAsync(default));
+        Assert.False(json.Contains("settings"));
+    }
+
+    [Fact]
+    public async Task Shutdown_timeout_leaves_runtime_marked_unclean()
+    {
+        var json = new FaultingPlannerJsonStore();
+        var account = new MicrosoftAccountState(new MutableIdentity(), json);
+        await account.GetAsync(default);
+        var settings = new PlannerSettingsStore(json, account,
+            new FakeTimeProvider(DateTimeOffset.Parse("2026-09-22T12:00:00Z")));
+        await settings.ClearPurgeRequiredAsync(default);
+        var lifecycle = new PlannerDataLifecycle(account, settings, new MemoryCache(new MemoryCacheOptions()));
+        await lifecycle.StartAsync(default);
+        await settings.SaveSettingsAsync(new SettingsDto("plan", "Board", true), default);
+        json.BlockDeletes = true;
+        await account.InvalidateAsync(default);
+        await json.DeleteStarted.WaitAsync(TimeSpan.FromSeconds(5));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => lifecycle.StopAsync(timeout.Token));
+
+        Assert.True(await settings.IsPurgeRequiredAsync(default));
+        Assert.True(json.Contains("settings"));
+        json.ReleaseDeletes();
+        await lifecycle.RetryPendingPurgeAsync(default);
+    }
+
+    [Fact]
     public async Task InvalidationContinuesPastFailedPlannerPurgeAndRetriesUntilFilesAreRemoved()
     {
         var identity = new MutableIdentity();
@@ -56,10 +171,13 @@ public sealed class PlannerDataLifecycleTests
 
             var lifecycle = new PlannerDataLifecycle(account, settings,
                 new MemoryCache(new MemoryCacheOptions()));
+            await lifecycle.StartAsync(default);
             await WaitUntilAsync(() => !lifecycle.PurgeRequired &&
                 !File.Exists(Path.Combine(root, "settings.json")) &&
                 !File.Exists(Path.Combine(root, "cached-display.json")));
 
+            Assert.True(await settings.IsPurgeRequiredAsync(default));
+            await lifecycle.StopAsync(default);
             Assert.False(await settings.IsPurgeRequiredAsync(default));
         }
         finally
@@ -248,9 +366,9 @@ public sealed class PlannerDataLifecycleTests
     private static PlanViewPreferences Preferences() =>
         new(true, new PlannerFilterSettings([], [], [], [], [], null));
 
-    private static async Task WaitUntilAsync(Func<bool> condition)
+    private static async Task WaitUntilAsync(Func<bool> condition, int seconds = 5)
     {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(seconds));
         while (!condition()) await Task.Delay(20, timeout.Token);
     }
 
@@ -338,8 +456,16 @@ public sealed class PlannerDataLifecycleTests
         private readonly TaskCompletionSource firstFailedDelete =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         public bool FailDeletes { get; set; }
+        public int DeleteFailuresRemaining { get; set; }
+        public int DeleteAttempts { get; private set; }
+        public bool BlockDeletes { get; set; }
+        private readonly TaskCompletionSource deleteStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource releaseDeletes = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public Task FirstFailedDelete => firstFailedDelete.Task;
+        public Task DeleteStarted => deleteStarted.Task;
         public bool Contains(string name) => values.ContainsKey(name);
+        public void Set(string name, object? value) => values[name] = value;
+        public void ReleaseDeletes() => releaseDeletes.TrySetResult();
 
         public Task<T?> ReadAsync<T>(string name, CancellationToken cancellationToken) =>
             Task.FromResult(values.TryGetValue(name, out var value) ? (T?)value : default);
@@ -350,15 +476,21 @@ public sealed class PlannerDataLifecycleTests
             return Task.CompletedTask;
         }
 
-        public Task DeleteAsync(string name, CancellationToken cancellationToken)
+        public async Task DeleteAsync(string name, CancellationToken cancellationToken)
         {
-            if (FailDeletes)
+            DeleteAttempts++;
+            if (BlockDeletes)
             {
+                deleteStarted.TrySetResult();
+                await releaseDeletes.Task.WaitAsync(cancellationToken);
+            }
+            if (FailDeletes || DeleteFailuresRemaining > 0)
+            {
+                if (DeleteFailuresRemaining > 0) DeleteFailuresRemaining--;
                 firstFailedDelete.TrySetResult();
                 throw new IOException("disk unavailable");
             }
             values.Remove(name);
-            return Task.CompletedTask;
         }
     }
 
