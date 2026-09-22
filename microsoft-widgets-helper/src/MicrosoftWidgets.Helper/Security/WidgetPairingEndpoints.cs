@@ -8,21 +8,43 @@ public static class WidgetPairingEndpoints
     {
         var routes = CreateRoutes(app);
         routes.MapPost("", async (ScopedPairingRequest request, WidgetPairingService service, OutlookAccountState state, CancellationToken ct) =>
-            Results.Ok(await service.CreateAsync(request.Scope, new(request.InstanceId, request.RequestSecret), await state.GetAsync(ct), ct)));
-        routes.MapPost("/{id}/poll", async (string id, PairingPollRequest request, WidgetPairingService service, CancellationToken ct) =>
-            Results.Ok(await service.PollAsync(id, request.RequestSecret, ct)));
+        {
+            var lease = await state.GetAsync(ct);
+            return new AccountBoundResult(Results.Ok(await service.CreateAsync(request.Scope, new(request.InstanceId, request.RequestSecret), lease, ct)), state, lease);
+        });
+        routes.MapPost("/{id}/poll", async (string id, PairingPollRequest request, WidgetPairingService service, OutlookAccountState state, CancellationToken ct) =>
+        {
+            var lease = await state.GetAsync(ct);
+            return new AccountBoundResult(Results.Ok(await service.PollAsync(id, request.RequestSecret, lease, ct)), state, lease);
+        });
     }
 
     // Called only on the owner's management group, alongside the Outlook compatibility routes.
     public static void MapWidgetPairingManagement(this IEndpointRouteBuilder owner)
     {
         var routes = CreateRoutes(owner);
-        routes.MapGet("", async (WidgetPairingService service, CancellationToken ct) => Results.Ok(await service.GetPendingAsync(ct)));
-        routes.MapGet("/paired", async (WidgetPairingService service, CancellationToken ct) => Results.Ok(await service.GetPairedAsync(ct)));
-        routes.MapPost("/{id}/approve", async (string id, WidgetPairingService service, CancellationToken ct) =>
-        { await service.ApproveAsync(id, ct); return Results.NoContent(); });
-        routes.MapPost("/revoke", async (RevokePairingRequest request, WidgetPairingService service, CancellationToken ct) =>
-        { await service.RevokeAsync(request.CredentialId, ct); return Results.NoContent(); });
+        routes.MapGet("", async (WidgetPairingService service, OutlookAccountState state, CancellationToken ct) =>
+        {
+            var lease = await state.GetIdentityAsync(false, ct);
+            return new AccountBoundResult(Results.Ok(service.GetPending(lease)), state, lease);
+        });
+        routes.MapGet("/paired", async (WidgetPairingService service, OutlookAccountState state, CancellationToken ct) =>
+        {
+            var lease = await state.GetIdentityAsync(false, ct);
+            return new AccountBoundResult(Results.Ok(await service.GetPairedAsync(lease, ct)), state, lease);
+        });
+        routes.MapPost("/{id}/approve", async (string id, WidgetPairingService service, OutlookAccountState state, CancellationToken ct) =>
+        {
+            var lease = await state.GetAsync(ct);
+            await service.ApproveAsync(id, lease, ct);
+            return new AccountBoundResult(Results.NoContent(), state, lease);
+        });
+        routes.MapPost("/revoke", async (RevokePairingRequest request, WidgetPairingService service, OutlookAccountState state, CancellationToken ct) =>
+        {
+            var lease = await state.GetAsync(ct);
+            await service.RevokeAsync(request.CredentialId, lease, ct);
+            return new AccountBoundResult(Results.NoContent(), state, lease);
+        });
     }
 
     private static RouteGroupBuilder CreateRoutes(IEndpointRouteBuilder app)

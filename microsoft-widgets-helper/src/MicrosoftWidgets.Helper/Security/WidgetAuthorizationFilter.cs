@@ -25,7 +25,7 @@ public sealed class WidgetAuthorizationFilter(WidgetScope scope) : IEndpointFilt
             var result = await next(context);
             await state.GetIdentityAsync(false, http.RequestAborted);
             state.RequireCurrent(lease.Value);
-            return result is IResult response ? new AuthorizedWidgetResult(response, state, lease.Value) : Results.StatusCode(503);
+            return result is IResult response ? new AccountBoundResult(response, state, lease.Value) : Results.StatusCode(503);
         }
         catch (OutlookException ex) { return Results.Json(new { error = ex.Error }, statusCode: ex.StatusCode); }
     }
@@ -34,21 +34,5 @@ public sealed class WidgetAuthorizationFilter(WidgetScope scope) : IEndpointFilt
     {
         var origin = request.Headers.Origin.ToString();
         return origin.Length == 0 || OutlookAccessService.IsSameOrigin(request) || WidgetOriginPolicy.IsAllowed(origin);
-    }
-
-    private sealed class AuthorizedWidgetResult(IResult inner, OutlookAccountState state, OutlookAccountLease lease) : IResult
-    {
-        public async Task ExecuteAsync(HttpContext http)
-        {
-            try
-            {
-                using var binding = state.BindRequest(lease);
-                await state.ExecuteAuthorizedAsync(lease, () => inner.ExecuteAsync(http), http.RequestAborted);
-            }
-            catch (OutlookException ex) when (!http.Response.HasStarted)
-            {
-                await Results.Json(new { error = ex.Error }, statusCode: ex.StatusCode).ExecuteAsync(http);
-            }
-        }
     }
 }

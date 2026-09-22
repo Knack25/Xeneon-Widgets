@@ -136,8 +136,9 @@ public sealed class PlannerHttpIntegrationTests
         var address = app.Services.GetRequiredService<IServer>().Features
             .Get<IServerAddressesFeature>()!.Addresses.Single();
         using var client = new HttpClient { BaseAddress = new Uri(address) };
+        var origin = client.BaseAddress.GetLeftPart(UriPartial.Authority);
         using var preflight = new HttpRequestMessage(HttpMethod.Options, "/tasks/task/checklist/item");
-        preflight.Headers.Add("Origin", "http://localhost:8787");
+        preflight.Headers.Add("Origin", origin);
         preflight.Headers.Add("Access-Control-Request-Method", "DELETE");
 
         using var preflightResponse = await client.SendAsync(preflight);
@@ -146,7 +147,7 @@ public sealed class PlannerHttpIntegrationTests
             .Single().Split(',').Select(value => value.Trim()));
 
         using var delete = new HttpRequestMessage(HttpMethod.Delete, "/tasks/task/checklist/item");
-        delete.Headers.Add("Origin", "http://localhost:8787");
+        delete.Headers.Add("Origin", origin);
         using var deleteResponse = await client.SendAsync(delete);
 
         Assert.Equal(HttpStatusCode.NoContent, deleteResponse.StatusCode);

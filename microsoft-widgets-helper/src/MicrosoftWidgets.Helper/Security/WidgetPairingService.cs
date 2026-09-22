@@ -50,6 +50,11 @@ public sealed class WidgetPairingService
     public async Task<PairingResult> PollAsync(string id, string secret, CancellationToken ct)
     {
         var lease = await state.GetAsync(ct);
+        return await PollAsync(id, secret, lease, ct);
+    }
+
+    public async Task<PairingResult> PollAsync(string id, string secret, OutlookAccountLease lease, CancellationToken ct)
+    {
         await gate.WaitAsync(ct);
         try
         {
@@ -68,16 +73,28 @@ public sealed class WidgetPairingService
                 if (!request.Approved) return new("pending");
             }
             var credentials = await state.ReadWidgetCredentialsAsync(lease, ct);
+            lock (sync) request = RevalidateApproved(id, secret, lease, request);
             var credential = Hash("widget-pairing-v1\n" + request.Info.Scope + "\n" + id + "\n" + secret);
             if (credentials.Any(c => c.AccountKey == lease.Key && c.Scope == request.Info.Scope && Matches(c.Hash, credential)))
                 return new("approved", credential);
             var retained = credentials.Where(c => !(c.AccountKey == lease.Key && c.Scope == request.Info.Scope && c.InstanceId == request.Info.InstanceId)).ToArray();
             if (retained.Length >= 100) throw new OutlookException("pairing_limit", "Revoke an unused widget pairing before adding another.", 400);
             var entry = new StoredWidgetCredential(RandomToken(), request.Info.Scope, request.Info.InstanceId, lease.Key, Hash(credential), clock.GetUtcNow());
+            lock (sync) request = RevalidateApproved(id, secret, lease, request);
             await state.SaveWidgetCredentialsAsync(lease, [.. retained, entry], ct);
+            Exception? invalidated = null;
             lock (sync)
             {
-                state.RequireCurrent(lease);
+                try { RevalidateApproved(id, secret, lease, request); }
+                catch (Exception ex) { invalidated = ex; }
+            }
+            if (invalidated is not null)
+            {
+                await state.SaveWidgetCredentialsAsync(lease, credentials, CancellationToken.None);
+                throw invalidated;
+            }
+            lock (sync)
+            {
                 // A replaced request must not restore its old credential by polling again.
                 RemoveRequests(p => p.Info.Id != id && p.Lease == lease && p.Info.Scope == entry.Scope && p.Info.InstanceId == entry.InstanceId);
                 polls.Remove(id);
@@ -90,6 +107,11 @@ public sealed class WidgetPairingService
     public async Task ApproveAsync(string id, CancellationToken ct)
     {
         var lease = await state.GetAsync(ct);
+        await ApproveAsync(id, lease, ct);
+    }
+
+    public async Task ApproveAsync(string id, OutlookAccountLease lease, CancellationToken ct)
+    {
         await state.ExecuteAuthorizedAsync(lease, () =>
         {
             lock (sync) { Prune(); var request = RequirePending(id, lease); pending[id] = request with { Approved = true }; }
@@ -100,12 +122,22 @@ public sealed class WidgetPairingService
     public async Task<IReadOnlyList<WidgetPendingPairing>> GetPendingAsync(CancellationToken ct)
     {
         var lease = await state.GetIdentityAsync(false, ct);
+        return GetPending(lease);
+    }
+
+    public IReadOnlyList<WidgetPendingPairing> GetPending(OutlookAccountLease lease)
+    {
         lock (sync) { state.RequireCurrent(lease); Prune(); return pending.Values.Where(p => p.Lease == lease && !p.Approved).Select(p => p.Info).ToArray(); }
     }
 
     public async Task<IReadOnlyList<WidgetPairedInstance>> GetPairedAsync(CancellationToken ct)
     {
         var lease = await state.GetIdentityAsync(false, ct);
+        return await GetPairedAsync(lease, ct);
+    }
+
+    public async Task<IReadOnlyList<WidgetPairedInstance>> GetPairedAsync(OutlookAccountLease lease, CancellationToken ct)
+    {
         var credentials = await state.ReadWidgetCredentialsAsync(lease, ct);
         return credentials.Where(c => c.AccountKey == lease.Key).Select(c => new WidgetPairedInstance(c.CredentialId, c.InstanceId, c.Scope)).ToArray();
     }
@@ -113,6 +145,11 @@ public sealed class WidgetPairingService
     public async Task RevokeAsync(string id, CancellationToken ct)
     {
         var lease = await state.GetAsync(ct);
+        await RevokeAsync(id, lease, ct);
+    }
+
+    public async Task RevokeAsync(string id, OutlookAccountLease lease, CancellationToken ct)
+    {
         await gate.WaitAsync(ct);
         try
         {
@@ -143,6 +180,16 @@ public sealed class WidgetPairingService
 
     private Pending RequirePending(string id, OutlookAccountLease lease) => pending.TryGetValue(id, out var value) && value.Lease == lease
         ? value : throw new OutlookException("pairing_expired", "This pairing request expired. Create a new request.", 404);
+    private Pending RevalidateApproved(string id, string secret, OutlookAccountLease lease, Pending expected)
+    {
+        Prune();
+        state.RequireCurrent(lease);
+        var current = RequirePending(id, lease);
+        if (current != expected || !current.Approved || current.Info.ExpiresAt <= clock.GetUtcNow() ||
+            string.IsNullOrEmpty(secret) || secret.Length > 256 || !Matches(current.SecretHash, secret))
+            throw new OutlookException("pairing_expired", "This pairing request expired. Create a new request.", 404);
+        return current;
+    }
     private void RemoveRequests(Func<Pending, bool> predicate)
     {
         foreach (var id in pending.Where(p => predicate(p.Value)).Select(p => p.Key).ToArray()) { pending.Remove(id); polls.Remove(id); }

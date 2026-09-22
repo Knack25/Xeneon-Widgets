@@ -110,7 +110,7 @@ public sealed class WidgetPairingServiceTests
     [Fact]
     public async Task VersionedStoreContainsOnlyHashesAndLegacyCredentialIsNeverPromoted()
     {
-        var f = new Fixture();
+        var f = new Fixture(new JsonRoundTripStore());
         await f.Store.WriteAsync("outlook-account", "account-a", default);
         await f.Store.WriteAsync("outlook-credentials", new[] { new StoredOutlookCredential("old", "instance", "account-a", Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("legacy")))) }, default);
         Assert.Null(await f.Service.AuthenticateAsync(WidgetScope.Outlook, "legacy", default));
@@ -126,6 +126,63 @@ public sealed class WidgetPairingServiceTests
         Assert.DoesNotContain(Secret, JsonSerializer.Serialize(stored));
         var restarted = new WidgetPairingService(new OutlookAccountState(f.Tokens, f.Store), f.Clock);
         Assert.NotNull(await restarted.AuthenticateAsync(WidgetScope.Outlook, credential, default));
+    }
+
+    [Fact]
+    public async Task ApprovedPollThatExpiresDuringCredentialReadDoesNotMintOrPersistCredential()
+    {
+        var store = new BlockingCredentialStore();
+        var f = new Fixture(store);
+        var pending = await f.Create();
+        await f.Service.ApproveAsync(pending.Id, default);
+        store.BlockRead = true;
+
+        var poll = f.Service.PollAsync(pending.Id, Secret, default);
+        await store.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        f.Clock.Advance(TimeSpan.FromMinutes(5));
+        store.Release.SetResult();
+
+        var error = await Assert.ThrowsAsync<OutlookException>(() => poll);
+        Assert.Equal("pairing_expired", error.Code);
+        var stored = await store.ReadAsync<WidgetCredentialStore>("widget-credentials", default);
+        Assert.True(stored is null || stored.Credentials.Length == 0);
+    }
+
+    [Fact]
+    public async Task ReplacementThatExpiresDuringCredentialWriteRestoresPreviousCredential()
+    {
+        var store = new BlockingCredentialStore();
+        var f = new Fixture(store);
+        var previous = await f.Pair(WidgetScope.Outlook, "instance");
+        var pending = await f.Create(WidgetScope.Outlook, "instance");
+        await f.Service.ApproveAsync(pending.Id, default);
+        store.Block = true;
+
+        var poll = f.Service.PollAsync(pending.Id, Secret, default);
+        await store.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        f.Clock.Advance(TimeSpan.FromMinutes(5));
+        store.Release.SetResult();
+
+        var error = await Assert.ThrowsAsync<OutlookException>(() => poll);
+        Assert.Equal("pairing_expired", error.Code);
+        Assert.NotNull(await f.Service.AuthenticateAsync(WidgetScope.Outlook, previous, default));
+        Assert.Single(await f.Service.GetPairedAsync(default));
+    }
+
+    [Fact]
+    public async Task AuthenticationRejectsAccountChangeAfterLeaseCaptureDuringCredentialRead()
+    {
+        var store = new BlockingCredentialStore();
+        var f = new Fixture(store);
+        var credential = await f.Pair(WidgetScope.Outlook, "instance");
+        store.BlockRead = true;
+
+        var authentication = f.Service.AuthenticateAsync(WidgetScope.Outlook, credential, default);
+        await store.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        f.Tokens.Account = "account-b";
+        store.Release.SetResult();
+
+        Assert.Null(await authentication);
     }
 
     [Fact]
@@ -231,13 +288,36 @@ public sealed class WidgetPairingServiceTests
     {
         private readonly OutlookMemoryStore inner = new();
         public bool Block { get; set; }
+        public bool BlockRead { get; set; }
         public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public Task<T?> ReadAsync<T>(string name, CancellationToken ct) => inner.ReadAsync<T>(name, ct);
+        public async Task<T?> ReadAsync<T>(string name, CancellationToken ct)
+        {
+            if (BlockRead && name == "widget-credentials")
+            {
+                BlockRead = false;
+                Entered.SetResult();
+                await Release.Task.WaitAsync(ct);
+            }
+            return await inner.ReadAsync<T>(name, ct);
+        }
         public async Task WriteAsync<T>(string name, T value, CancellationToken ct)
         {
             if (Block && name == "widget-credentials") { Block = false; Entered.SetResult(); await Release.Task.WaitAsync(ct); }
             await inner.WriteAsync(name, value, ct);
+        }
+    }
+
+    private sealed class JsonRoundTripStore : ILocalJsonStore
+    {
+        private static readonly JsonSerializerOptions Options = new(JsonSerializerDefaults.Web);
+        private readonly Dictionary<string, string> values = [];
+        public Task<T?> ReadAsync<T>(string name, CancellationToken ct) => Task.FromResult(
+            values.TryGetValue(name, out var json) ? JsonSerializer.Deserialize<T>(json, Options) : default);
+        public Task WriteAsync<T>(string name, T value, CancellationToken ct)
+        {
+            values[name] = JsonSerializer.Serialize(value, Options);
+            return Task.CompletedTask;
         }
     }
 }

@@ -21,6 +21,88 @@ namespace MicrosoftWidgets.Helper.Tests;
 public sealed class OutlookEndpointTests
 {
     [Theory]
+    [InlineData("api/local-access/pairings/paired")]
+    [InlineData("api/outlook/paired")]
+    public async Task ManagementPairingResponsesFailClosedWhenAccountChangesBeforeSerialization(string path)
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var blockResponse = false;
+        await using var host = await OutlookTestHost.StartAsync(true, beforeResult: async _ =>
+        {
+            if (!blockResponse) return;
+            entered.SetResult();
+            await release.Task;
+        });
+        var access = host.Services.GetRequiredService<OutlookAccessService>();
+        var pending = await access.CreatePairingAsync(new("sensitive-instance", new string('x', 64)), default);
+        await access.ApproveAsync(pending.Id, default);
+        await access.PollAsync(pending.Id, new string('x', 64), default);
+        host.Client.DefaultRequestHeaders.Add(LocalAccessHeaders.Owner, host.OwnerSession);
+        host.Client.DefaultRequestHeaders.Add("Origin", host.Client.BaseAddress!.GetLeftPart(UriPartial.Authority));
+
+        blockResponse = true;
+        var responseTask = host.Client.GetAsync(path);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await host.Services.GetRequiredService<OutlookAccountState>().InvalidateAsync(default);
+        release.SetResult();
+        var response = await responseTask;
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.DoesNotContain("sensitive-instance", await response.Content.ReadAsStringAsync());
+    }
+
+    [Theory]
+    [InlineData("api/local-access/pairings/{0}/poll")]
+    [InlineData("api/outlook/pairings/{0}/poll")]
+    public async Task PublicPollResponsesFailClosedWhenAccountChangesBeforeSerialization(string route)
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var blockResponse = false;
+        await using var host = await OutlookTestHost.StartAsync(true, beforeResult: async _ =>
+        {
+            if (!blockResponse) return;
+            entered.SetResult();
+            await release.Task;
+        });
+        var access = host.Services.GetRequiredService<OutlookAccessService>();
+        var secret = new string('x', 64);
+        var pending = await access.CreatePairingAsync(new("native", secret), default);
+        await access.ApproveAsync(pending.Id, default);
+        var credential = (await access.PollAsync(pending.Id, secret, default)).Credential!;
+
+        blockResponse = true;
+        var responseTask = host.Client.PostAsJsonAsync(string.Format(route, pending.Id), new { requestSecret = secret });
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await host.Services.GetRequiredService<OutlookAccountState>().InvalidateAsync(default);
+        release.SetResult();
+        var response = await responseTask;
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.DoesNotContain(credential, await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task BrowserOriginMustExactlyMatchHelperOriginForActualAndPreflightRequests()
+    {
+        await using var host = await OutlookTestHost.StartAsync(true);
+        var access = host.Services.GetRequiredService<OutlookAccessService>();
+        var pending = await access.CreatePairingAsync(new("native", new string('x', 64)), default);
+        await access.ApproveAsync(pending.Id, default);
+        var credential = (await access.PollAsync(pending.Id, new string('x', 64), default)).Credential!;
+        host.Client.DefaultRequestHeaders.Add(LocalAccessHeaders.Credential, credential);
+        host.Client.DefaultRequestHeaders.Add("Origin", "http://localhost:9999");
+
+        Assert.Equal(HttpStatusCode.Forbidden, (await host.Client.GetAsync("api/outlook/calendars")).StatusCode);
+        using var preflight = new HttpRequestMessage(HttpMethod.Options, "api/outlook/calendars");
+        preflight.Headers.Add("Origin", "http://localhost:9999");
+        preflight.Headers.Add("Access-Control-Request-Method", "GET");
+        preflight.Headers.Add("Access-Control-Request-Headers", LocalAccessHeaders.Credential);
+        Assert.Equal(HttpStatusCode.Forbidden, (await host.Client.SendAsync(preflight)).StatusCode);
+    }
+
+    [Theory]
     [InlineData(true, HttpStatusCode.OK)]
     [InlineData(false, HttpStatusCode.Unauthorized)]
     public async Task BrowserGetPreviewUsesFetchMetadataAndStillRequiresOwnerSession(bool owner, HttpStatusCode expected)
@@ -309,7 +391,9 @@ internal sealed class OutlookTestHost(WebApplication app, HttpClient client, Out
     public OutlookFakeLauncher Launcher { get; } = launcher;
     public string OwnerSession { get; } = ownerSession;
     public IServiceProvider Services => app.Services;
-    public static async Task<OutlookTestHost> StartAsync(bool signedIn = false, IOutlookTokenProvider? tokens = null, Action<Uri>? onGraphRequest = null, Action<Microsoft.AspNetCore.Http.HttpContext>? beforeRequest = null)
+    public static async Task<OutlookTestHost> StartAsync(bool signedIn = false, IOutlookTokenProvider? tokens = null, Action<Uri>? onGraphRequest = null,
+        Action<Microsoft.AspNetCore.Http.HttpContext>? beforeRequest = null, ILocalJsonStore? store = null,
+        Func<Microsoft.AspNetCore.Http.HttpContext, Task>? beforeResult = null)
     {
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = "Testing" });
         builder.Logging.ClearProviders();
@@ -334,7 +418,7 @@ internal sealed class OutlookTestHost(WebApplication app, HttpClient client, Out
         var launcher = new OutlookFakeLauncher();
         builder.Services.AddSingleton<LocalAccessService>();
         builder.Services.AddSingleton<IMicrosoftAuthService>(auth);
-        builder.Services.AddSingleton<ILocalJsonStore>(new OutlookMemoryStore());
+        builder.Services.AddSingleton<ILocalJsonStore>(store ?? new OutlookMemoryStore());
         builder.Services.AddSingleton<IOutlookMeetingLauncher>(launcher);
         if (tokens is not null) builder.Services.AddSingleton(tokens);
         builder.Services.AddSingleton(sp => new OutlookGraphClient(new HttpClient(handler), sp.GetRequiredService<IOutlookTokenProvider>()));
@@ -343,10 +427,18 @@ internal sealed class OutlookTestHost(WebApplication app, HttpClient client, Out
         app.UseHelperSecurityBoundary();
         app.UseWidgetCors();
         if (beforeRequest is not null) app.Use(async (context, next) => { beforeRequest(context); await next(context); });
-        app.MapOutlookIntegration();
-        app.MapWidgetPairings();
-        app.MapGroup("").AddEndpointFilter<OwnerAuthorizationFilter>().MapWidgetPairingManagement();
-        app.MapGroup("").AddEndpointFilter<OwnerAuthorizationFilter>().MapOutlookManagement();
+        var routes = app.MapGroup("");
+        if (beforeResult is not null)
+            routes.AddEndpointFilter(async (context, next) =>
+            {
+                var result = await next(context);
+                await beforeResult(context.HttpContext);
+                return result;
+            });
+        routes.MapOutlookIntegration();
+        routes.MapWidgetPairings();
+        routes.MapGroup("").AddEndpointFilter<OwnerAuthorizationFilter>().MapWidgetPairingManagement();
+        routes.MapGroup("").AddEndpointFilter<OwnerAuthorizationFilter>().MapOutlookManagement();
         await app.StartAsync();
         var address = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();
         var access = app.Services.GetRequiredService<LocalAccessService>();
