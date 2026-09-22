@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Net.Sockets;
 using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -9,6 +10,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using PlannerEdge.Helper.Auth;
+using PlannerEdge.Helper;
 using PlannerEdge.Helper.Contracts;
 using PlannerEdge.Helper.Outlook;
 using PlannerEdge.Helper.Security;
@@ -18,6 +20,129 @@ namespace MicrosoftWidgets.Helper.Tests;
 
 public sealed class OutlookEndpointTests
 {
+    [Theory]
+    [InlineData(true, HttpStatusCode.OK)]
+    [InlineData(false, HttpStatusCode.Unauthorized)]
+    public async Task BrowserGetPreviewUsesFetchMetadataAndStillRequiresOwnerSession(bool owner, HttpStatusCode expected)
+    {
+        await using var host = await OutlookTestHost.StartAsync(true);
+        host.Client.DefaultRequestHeaders.Add("Sec-Fetch-Site", "same-origin");
+        if (owner) host.Client.DefaultRequestHeaders.Add(LocalAccessHeaders.Owner, host.OwnerSession);
+        Assert.Equal(expected, (await host.Client.GetAsync("api/outlook/calendars")).StatusCode);
+        host.Client.DefaultRequestHeaders.Add("Origin", "null");
+        Assert.Equal(HttpStatusCode.Unauthorized, (await host.Client.GetAsync("api/outlook/calendars")).StatusCode);
+    }
+
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("{\"instanceId\":\"native\",\"requestSecret\":\"0123456789abcdef0123456789abcdef\"}")]
+    [InlineData("{\"scope\":\"other\",\"instanceId\":\"native\",\"requestSecret\":\"0123456789abcdef0123456789abcdef\"}")]
+    [InlineData("{\"scope\":500,\"instanceId\":\"native\",\"requestSecret\":\"0123456789abcdef0123456789abcdef\"}")]
+    public async Task SharedPairingRequiresAnExplicitKnownScope(string json)
+    {
+        await using var host = await OutlookTestHost.StartAsync(true);
+        var response = await host.Client.PostAsync("api/local-access/pairings", new StringContent(json, System.Text.Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task SharedPairingBootstrapRejectsForeignOriginAndHost()
+    {
+        await using var host = await OutlookTestHost.StartAsync(true);
+        var request = new { scope = "outlook", instanceId = "native", requestSecret = new string('x', 64) };
+        host.Client.DefaultRequestHeaders.Add("Origin", "https://evil.example");
+        Assert.Equal(HttpStatusCode.Forbidden, (await host.Client.PostAsJsonAsync("api/local-access/pairings", request)).StatusCode);
+        host.Client.DefaultRequestHeaders.Remove("Origin");
+        host.Client.DefaultRequestHeaders.Host = "evil.example:" + host.Client.BaseAddress!.Port;
+        Assert.Equal(HttpStatusCode.BadRequest, (await host.Client.PostAsJsonAsync("api/local-access/pairings", request)).StatusCode);
+    }
+
+    [Fact]
+    public async Task NativePreflightAllowsScopedCredentialHeader()
+    {
+        await using var host = await OutlookTestHost.StartAsync(true);
+        using var request = new HttpRequestMessage(HttpMethod.Options, "api/outlook/calendars");
+        request.Headers.Add("Origin", "null");
+        request.Headers.Add("Access-Control-Request-Method", "GET");
+        request.Headers.Add("Access-Control-Request-Headers", "X-Microsoft-Widgets-Credential");
+        var response = await host.Client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Contains("X-Microsoft-Widgets-Credential", string.Join(",", response.Headers.GetValues("Access-Control-Allow-Headers")));
+    }
+
+    [Fact]
+    public async Task OwnerAndWidgetCredentialsCannotBeSubstitutedIntoOtherHeaders()
+    {
+        await using var host = await OutlookTestHost.StartAsync(true);
+        var access = host.Services.GetRequiredService<OutlookAccessService>();
+        var pending = await access.CreatePairingAsync(new("native", new string('x', 64)), default);
+        await access.ApproveAsync(pending.Id, default);
+        var credential = (await access.PollAsync(pending.Id, new string('x', 64), default)).Credential!;
+        host.Client.DefaultRequestHeaders.Add("Origin", host.Client.BaseAddress!.GetLeftPart(UriPartial.Authority));
+        foreach (var (header, value) in new[] { (LocalAccessHeaders.Owner, credential), (LocalAccessHeaders.Credential, host.OwnerSession), ("Authorization", "Bearer " + credential), ("X-Outlook-Session", host.OwnerSession) })
+        {
+            host.Client.DefaultRequestHeaders.Add(header, value);
+            Assert.Equal(HttpStatusCode.Unauthorized, (await host.Client.GetAsync("api/outlook/calendars")).StatusCode);
+            host.Client.DefaultRequestHeaders.Remove(header);
+        }
+    }
+
+    [Fact]
+    public async Task OwnerPreviewUsesExistingOwnerSessionWithoutIssuingOutlookSessions()
+    {
+        await using var host = await OutlookTestHost.StartAsync(true);
+        host.Client.DefaultRequestHeaders.Add("Origin", host.Client.BaseAddress!.GetLeftPart(UriPartial.Authority));
+        Assert.Equal(HttpStatusCode.Unauthorized, (await host.Client.GetAsync("api/outlook/session")).StatusCode);
+        host.Client.DefaultRequestHeaders.Add(LocalAccessHeaders.Owner, host.OwnerSession);
+        var session = await host.Client.GetFromJsonAsync<JsonElement>("api/outlook/session");
+        Assert.Equal(host.OwnerSession, session.GetProperty("token").GetString());
+        Assert.Equal(HttpStatusCode.OK, (await host.Client.GetAsync("api/outlook/calendars")).StatusCode);
+        host.Client.DefaultRequestHeaders.Remove("Origin");
+        Assert.Equal(HttpStatusCode.Unauthorized, (await host.Client.GetAsync("api/outlook/calendars")).StatusCode);
+    }
+
+    [Theory]
+    [InlineData(null, true, HttpStatusCode.OK)]
+    [InlineData("null", true, HttpStatusCode.OK)]
+    [InlineData("file://", true, HttpStatusCode.OK)]
+    [InlineData(null, false, HttpStatusCode.Unauthorized)]
+    [InlineData("null", false, HttpStatusCode.Unauthorized)]
+    [InlineData("https://evil.example", true, HttpStatusCode.Forbidden)]
+    public async Task ScopedCredentialRequiresAuthenticationEvenForNativeOrigins(string? origin, bool valid, HttpStatusCode expected)
+    {
+        await using var host = await OutlookTestHost.StartAsync(true);
+        var access = host.Services.GetRequiredService<OutlookAccessService>();
+        var pending = await access.CreatePairingAsync(new("native", new string('x', 64)), default);
+        await access.ApproveAsync(pending.Id, default);
+        var credential = (await access.PollAsync(pending.Id, new string('x', 64), default)).Credential!;
+        if (origin is not null) host.Client.DefaultRequestHeaders.Add("Origin", origin);
+        host.Client.DefaultRequestHeaders.Add("X-Microsoft-Widgets-Credential", valid ? credential : "invalid");
+        Assert.Equal(expected, (await host.Client.GetAsync("api/outlook/calendars")).StatusCode);
+    }
+
+    [Fact]
+    public async Task SharedPairingRoutesExposeScopesAndRequireOwnerForManagement()
+    {
+        await using var host = await OutlookTestHost.StartAsync(true);
+        var secret = new string('q', 64);
+        var response = await host.Client.PostAsJsonAsync("api/local-access/pairings", new { scope = "planner", instanceId = "same", requestSecret = secret });
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var id = (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("id").GetString();
+        Assert.Equal(HttpStatusCode.Unauthorized, (await host.Client.GetAsync("api/local-access/pairings")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await host.Client.PostAsJsonAsync($"api/local-access/pairings/{id}/approve", new { })).StatusCode);
+        host.Client.DefaultRequestHeaders.Add(LocalAccessHeaders.Owner, host.OwnerSession);
+        host.Client.DefaultRequestHeaders.Add("Origin", host.Client.BaseAddress!.GetLeftPart(UriPartial.Authority));
+        var listed = await host.Client.GetFromJsonAsync<JsonElement>("api/local-access/pairings");
+        Assert.Equal("planner", listed[0].GetProperty("scope").GetString());
+        Assert.Equal(HttpStatusCode.NoContent, (await host.Client.PostAsJsonAsync($"api/local-access/pairings/{id}/approve", new { })).StatusCode);
+        host.Client.DefaultRequestHeaders.Remove(LocalAccessHeaders.Owner);
+        var poll = await (await host.Client.PostAsJsonAsync($"api/local-access/pairings/{id}/poll", new { requestSecret = secret })).Content.ReadFromJsonAsync<JsonElement>();
+        host.Client.DefaultRequestHeaders.Add("X-Microsoft-Widgets-Credential", poll.GetProperty("credential").GetString());
+        Assert.Equal(HttpStatusCode.Unauthorized, (await host.Client.GetAsync("api/outlook/calendars")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await host.Client.GetAsync("api/local-access/pairings/paired")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await host.Client.PostAsJsonAsync("api/local-access/pairings/revoke", new { credentialId = "anything" })).StatusCode);
+    }
+
     [Fact]
     public async Task ActualRoutesEnforceSetupBoundaryAndIssueNoDataToUnpairedClients()
     {
@@ -55,7 +180,7 @@ public sealed class OutlookEndpointTests
         var id = pending.GetProperty("id").GetString();
         Assert.Equal(HttpStatusCode.NoContent, (await setup.PostAsJsonAsync($"api/outlook/pairings/{id}/approve", new { })).StatusCode);
         var poll = await (await native.PostAsJsonAsync($"api/outlook/pairings/{id}/poll", new { requestSecret = secret })).Content.ReadFromJsonAsync<JsonElement>();
-        native.DefaultRequestHeaders.Authorization = new("Bearer", poll.GetProperty("credential").GetString());
+        native.DefaultRequestHeaders.Add(LocalAccessHeaders.Credential, poll.GetProperty("credential").GetString());
         foreach (var path in new[] { "api/outlook/Session", "api/OUTLOOK/session/", "api/outlook/Paired/", "api/outlook/Pairings" })
             Assert.Equal(HttpStatusCode.Unauthorized, (await native.GetAsync(path)).StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, (await native.PostAsJsonAsync($"api/outlook/Pairings/{id}/Approve/", new { })).StatusCode);
@@ -83,7 +208,7 @@ public sealed class OutlookEndpointTests
         var pending = await access.CreatePairingAsync(new("native", new string('x', 64)), default);
         await access.ApproveAsync(pending.Id, default);
         var credential = (await access.PollAsync(pending.Id, new string('x', 64), default)).Credential;
-        host.Client.DefaultRequestHeaders.Authorization = new("Bearer", credential);
+        host.Client.DefaultRequestHeaders.Add(LocalAccessHeaders.Credential, credential);
         tokens.SwitchOnSecondRead = true;
         var response = await host.Client.GetAsync("api/outlook/calendars");
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
@@ -102,7 +227,7 @@ public sealed class OutlookEndpointTests
         var access = host.Services.GetRequiredService<OutlookAccessService>();
         var pending = await access.CreatePairingAsync(new("native", new string('x', 64)), default);
         await access.ApproveAsync(pending.Id, default);
-        host.Client.DefaultRequestHeaders.Authorization = new("Bearer", (await access.PollAsync(pending.Id, new string('x', 64), default)).Credential);
+        host.Client.DefaultRequestHeaders.Add(LocalAccessHeaders.Credential, (await access.PollAsync(pending.Id, new string('x', 64), default)).Credential);
         var calendar = Assert.Single((await host.Client.GetFromJsonAsync<CalendarDescriptor[]>("api/outlook/calendars"))!);
         var view = await (await host.Client.PostAsJsonAsync("api/outlook/view", new ViewRequest([calendar.Key], "2026-09-01T00:00:00Z", "2026-09-08T00:00:00Z"))).Content.ReadFromJsonAsync<CalendarViewResponse>();
         switchDuringDetails = true;
@@ -122,7 +247,7 @@ public sealed class OutlookEndpointTests
         var access = host.Services.GetRequiredService<OutlookAccessService>();
         var pending = await access.CreatePairingAsync(new("native", new string('x', 64)), default);
         await access.ApproveAsync(pending.Id, default);
-        host.Client.DefaultRequestHeaders.Authorization = new("Bearer", (await access.PollAsync(pending.Id, new string('x', 64), default)).Credential);
+        host.Client.DefaultRequestHeaders.Add(LocalAccessHeaders.Credential, (await access.PollAsync(pending.Id, new string('x', 64), default)).Credential);
         var response = await host.Client.GetAsync("api/outlook/calendars");
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
         Assert.DoesNotContain("Calendar", await response.Content.ReadAsStringAsync());
@@ -146,7 +271,7 @@ public sealed class OutlookEndpointTests
         var access = host.Services.GetRequiredService<OutlookAccessService>();
         var pending = await access.CreatePairingAsync(new("native", new string('x', 64)), default);
         await access.ApproveAsync(pending.Id, default);
-        host.Client.DefaultRequestHeaders.Authorization = new("Bearer", (await access.PollAsync(pending.Id, new string('x', 64), default)).Credential);
+        host.Client.DefaultRequestHeaders.Add(LocalAccessHeaders.Credential, (await access.PollAsync(pending.Id, new string('x', 64), default)).Credential);
         Task<HttpResponseMessage> response;
         if (blockLaunch)
         {
@@ -188,7 +313,12 @@ internal sealed class OutlookTestHost(WebApplication app, HttpClient client, Out
     {
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = "Testing" });
         builder.Logging.ClearProviders();
-        builder.WebHost.UseUrls("http://127.0.0.1:0");
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        listener.Stop();
+        builder.WebHost.UseUrls("http://127.0.0.1:" + port);
+        builder.Configuration["HelperPort"] = port.ToString();
         var auth = new OutlookFakeAuth { SignedIn = signedIn };
         var handler = new OutlookHandler((uri, _) =>
         {
@@ -210,8 +340,12 @@ internal sealed class OutlookTestHost(WebApplication app, HttpClient client, Out
         builder.Services.AddSingleton(sp => new OutlookGraphClient(new HttpClient(handler), sp.GetRequiredService<IOutlookTokenProvider>()));
         builder.Services.AddOutlookIntegration();
         var app = builder.Build();
+        app.UseHelperSecurityBoundary();
+        app.UseWidgetCors();
         if (beforeRequest is not null) app.Use(async (context, next) => { beforeRequest(context); await next(context); });
         app.MapOutlookIntegration();
+        app.MapWidgetPairings();
+        app.MapGroup("").AddEndpointFilter<OwnerAuthorizationFilter>().MapWidgetPairingManagement();
         app.MapGroup("").AddEndpointFilter<OwnerAuthorizationFilter>().MapOutlookManagement();
         await app.StartAsync();
         var address = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();

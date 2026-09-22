@@ -7,17 +7,18 @@ public static class WidgetCorsExtensions
         return app.Use(async (context, next) =>
         {
             var origin = context.Request.Headers.Origin.ToString();
-            if (!string.IsNullOrEmpty(origin) && !WidgetOriginPolicy.IsAllowed(origin))
+            var sameOrigin = Outlook.OutlookAccessService.IsSameOrigin(context.Request);
+            if (!string.IsNullOrEmpty(origin) && !sameOrigin && !WidgetOriginPolicy.IsAllowed(origin))
             {
                 context.Response.StatusCode = StatusCodes.Status403Forbidden;
                 return;
             }
-            if (WidgetOriginPolicy.IsAllowed(origin))
+            if (origin.Length > 0 && (sameOrigin || WidgetOriginPolicy.IsAllowed(origin)))
             {
                 context.Response.Headers.AccessControlAllowOrigin = origin;
                 context.Response.Headers.Vary = "Origin";
                 context.Response.Headers.AccessControlAllowMethods = "GET, POST, PUT, DELETE, OPTIONS";
-                context.Response.Headers.AccessControlAllowHeaders = "Content-Type, Authorization, X-Outlook-Session";
+                context.Response.Headers.AccessControlAllowHeaders = "Content-Type, Authorization, X-Microsoft-Widgets-Credential, X-Microsoft-Widgets-Owner, X-Microsoft-Widgets-Bootstrap";
             }
             if (context.Request.Method == "OPTIONS")
             {

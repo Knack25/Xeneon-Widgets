@@ -17,6 +17,7 @@ public static class ManagementEndpoints
         owner.MapHelperHostManagement();
         owner.MapUpdates();
         owner.MapOutlookManagement();
+        owner.MapWidgetPairingManagement();
         owner.MapGet("/configuration", async (IMicrosoftAuthService auth, CancellationToken ct) =>
             Results.Ok(await auth.GetConfigurationAsync(ct)));
         owner.MapPut("/configuration", async (AzureAdOptions configuration, IMicrosoftAuthService auth,

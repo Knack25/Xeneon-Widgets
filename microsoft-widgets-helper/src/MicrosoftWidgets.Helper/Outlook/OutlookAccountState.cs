@@ -1,4 +1,5 @@
 using PlannerEdge.Helper.Storage;
+using PlannerEdge.Helper.Security;
 
 namespace PlannerEdge.Helper.Outlook;
 
@@ -27,7 +28,13 @@ public sealed class OutlookAccountState(IOutlookTokenProvider tokens, ILocalJson
 
     private async Task<OutlookAccountLease> SynchronizeIdentityLockedAsync(bool requireAccount, CancellationToken ct)
     {
-        if (!loaded) { persistedAccount = await store.ReadAsync<string>("outlook-account", ct); loaded = true; }
+        if (!loaded)
+        {
+            persistedAccount = await store.ReadAsync<string>("outlook-account", ct);
+            // Legacy credentials have no scope and must never authorize shared routes.
+            await store.WriteAsync("outlook-credentials", Array.Empty<StoredOutlookCredential>(), ct);
+            loaded = true;
+        }
         string key;
         OutlookException? failure = null;
         try { key = await tokens.GetAccountKeyAsync(ct); }
@@ -39,6 +46,7 @@ public sealed class OutlookAccountState(IOutlookTokenProvider tokens, ILocalJson
         if (persistedAccount != key)
         {
             await store.WriteAsync("outlook-credentials", Array.Empty<StoredOutlookCredential>(), ct);
+            await ClearWidgetCredentialsAsync(ct);
             await store.WriteAsync("outlook-account", key, ct);
             persistedAccount = key;
         }
@@ -63,6 +71,7 @@ public sealed class OutlookAccountState(IOutlookTokenProvider tokens, ILocalJson
                 {
                     Reset();
                     await store.WriteAsync("outlook-credentials", Array.Empty<StoredOutlookCredential>(), CancellationToken.None);
+                    await ClearWidgetCredentialsAsync(CancellationToken.None);
                 }
                 await SynchronizeIdentityLockedAsync(false, CancellationToken.None);
             }
@@ -87,10 +96,18 @@ public sealed class OutlookAccountState(IOutlookTokenProvider tokens, ILocalJson
 
     private sealed class RequestScope(Action restore) : IDisposable { public void Dispose() => restore(); }
 
-    internal async Task<StoredOutlookCredential[]> ReadCredentialsAsync(CancellationToken ct)
+    internal async Task<StoredWidgetCredential[]> ReadWidgetCredentialsAsync(OutlookAccountLease lease, CancellationToken ct)
     {
         await gate.WaitAsync(ct);
-        try { return await store.ReadAsync<StoredOutlookCredential[]>("outlook-credentials", ct) ?? []; }
+        try
+        {
+            RequireCurrent(lease);
+            await SynchronizeIdentityLockedAsync(false, ct);
+            var data = await store.ReadAsync<WidgetCredentialStore>("widget-credentials", ct);
+            await SynchronizeIdentityLockedAsync(false, ct);
+            RequireCurrent(lease);
+            return data is { Version: 1, Credentials: not null } ? data.Credentials : [];
+        }
         finally { gate.Release(); }
     }
 
@@ -116,6 +133,7 @@ public sealed class OutlookAccountState(IOutlookTokenProvider tokens, ILocalJson
         {
             Reset();
             await store.WriteAsync("outlook-credentials", Array.Empty<StoredOutlookCredential>(), cancellationToken);
+            await ClearWidgetCredentialsAsync(cancellationToken);
         }
         finally { gate.Release(); }
     }
@@ -134,12 +152,20 @@ public sealed class OutlookAccountState(IOutlookTokenProvider tokens, ILocalJson
         Invalidated?.Invoke();
     }
 
-    internal async Task SaveCredentialsAsync(OutlookAccountLease lease, StoredOutlookCredential[] credentials, CancellationToken ct)
+    internal async Task SaveWidgetCredentialsAsync(OutlookAccountLease lease, StoredWidgetCredential[] credentials, CancellationToken ct)
     {
         await gate.WaitAsync(ct);
-        try { RequireCurrent(lease); await store.WriteAsync("outlook-credentials", credentials, ct); }
+        try
+        {
+            RequireCurrent(lease);
+            await SynchronizeIdentityLockedAsync(false, ct);
+            RequireCurrent(lease);
+            await store.WriteAsync("widget-credentials", new WidgetCredentialStore(1, credentials), ct);
+        }
         finally { gate.Release(); }
     }
+
+    private Task ClearWidgetCredentialsAsync(CancellationToken ct) => store.WriteAsync("widget-credentials", new WidgetCredentialStore(1, []), ct);
 }
 
 public sealed record StoredOutlookCredential(string CredentialId, string InstanceId, string AccountKey, string Hash);

@@ -48,6 +48,10 @@ public sealed class OwnerManagementEndpointTests
         { "POST", "/api/outlook/pairings/pair/approve" },
         { "POST", "/api/outlook/pairings/revoke" },
         { "GET", "/api/outlook/paired" },
+        { "GET", "/api/local-access/pairings" },
+        { "GET", "/api/local-access/pairings/paired" },
+        { "POST", "/api/local-access/pairings/pair/approve" },
+        { "POST", "/api/local-access/pairings/revoke" },
         { "POST", "/host/stop" }
     };
 

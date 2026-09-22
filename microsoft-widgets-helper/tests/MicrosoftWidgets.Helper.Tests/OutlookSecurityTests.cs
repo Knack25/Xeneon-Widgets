@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Http;
 using PlannerEdge.Helper.Outlook;
+using PlannerEdge.Helper.Security;
 
 namespace MicrosoftWidgets.Helper.Tests;
 
@@ -11,7 +12,7 @@ public sealed class OutlookSecurityTests
         var tokens = new OutlookTokens();
         var store = new OutlookMemoryStore();
         var state = new OutlookAccountState(tokens, store);
-        var access = new OutlookAccessService(state, store, new OutlookClock());
+        var access = new OutlookAccessService(new WidgetPairingService(state, new OutlookClock()), state);
         var request = await access.CreatePairingAsync(new("native", new string('a', 64)), default);
         await access.ApproveAsync(request.Id, default);
         var credential = (await access.PollAsync(request.Id, new string('a', 64), default)).Credential!;
@@ -27,7 +28,7 @@ public sealed class OutlookSecurityTests
         var tokens = new OutlookTokens();
         var store = new OutlookMemoryStore();
         var state = new OutlookAccountState(tokens, store);
-        var access = new OutlookAccessService(state, store, new OutlookClock());
+        var access = new OutlookAccessService(new WidgetPairingService(state, new OutlookClock()), state);
         var secret = new string('a', 64);
         var request = await access.CreatePairingAsync(new("instance-one", secret), default);
         Assert.Equal("pending", (await access.PollAsync(request.Id, secret, default)).Status);
@@ -37,7 +38,8 @@ public sealed class OutlookSecurityTests
         Assert.Equal(credential, (await access.PollAsync(request.Id, secret, default)).Credential);
         Assert.True(await access.ValidateCredentialAsync(credential, default));
         Assert.False(await access.ValidateCredentialAsync("wrong", default));
-        var restarted = new OutlookAccessService(new OutlookAccountState(tokens, store), store, new OutlookClock());
+        var restartState = new OutlookAccountState(tokens, store);
+        var restarted = new OutlookAccessService(new WidgetPairingService(restartState, new OutlookClock()), restartState);
         Assert.True(await restarted.ValidateCredentialAsync(credential, default));
         tokens.Account = "account-b";
         Assert.False(await access.ValidateCredentialAsync(credential, default));
@@ -50,7 +52,7 @@ public sealed class OutlookSecurityTests
     {
         var store = new OutlookMemoryStore();
         var state = new OutlookAccountState(new OutlookTokens(), store);
-        var access = new OutlookAccessService(state, store, new OutlookClock());
+        var access = new OutlookAccessService(new WidgetPairingService(state, new OutlookClock()), state);
         async Task<string> Pair()
         {
             var request = await access.CreatePairingAsync(new("instance", new string('c', 64)), default);
@@ -70,7 +72,8 @@ public sealed class OutlookSecurityTests
     {
         var clock = new OutlookClock();
         var store = new OutlookMemoryStore();
-        var access = new OutlookAccessService(new OutlookAccountState(new OutlookTokens(), store), store, clock);
+        var state = new OutlookAccountState(new OutlookTokens(), store);
+        var access = new OutlookAccessService(new WidgetPairingService(state, clock), state);
         var request = await access.CreatePairingAsync(new("instance", new string('c', 64)), default);
         clock.Advance(TimeSpan.FromMinutes(5));
         await Assert.ThrowsAsync<OutlookException>(() => access.ApproveAsync(request.Id, default));

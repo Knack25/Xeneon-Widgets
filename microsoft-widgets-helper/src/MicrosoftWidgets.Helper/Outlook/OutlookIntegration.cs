@@ -1,12 +1,13 @@
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Identity.Client;
 using PlannerEdge.Helper.Auth;
+using PlannerEdge.Helper.Security;
 
 namespace PlannerEdge.Helper.Outlook;
 
 public static class OutlookIntegration
 {
-    private enum Access { Session, Bootstrap, Setup, Read, Connect, Owner }
+    private enum Access { Bootstrap, Read, Owner }
     private sealed record OutlookAuthorization(Access Access);
     public static IServiceCollection AddOutlookIntegration(this IServiceCollection services)
     {
@@ -21,6 +22,7 @@ public static class OutlookIntegration
         services.TryAddSingleton<CalendarViewService>();
         services.TryAddSingleton<OutlookPreferencesService>();
         services.TryAddSingleton<EventDetailsService>();
+        services.TryAddSingleton<WidgetPairingService>();
         services.TryAddSingleton<OutlookAccessService>();
         services.TryAddSingleton<OutlookStatusService>();
         services.TryAddSingleton<IOutlookMeetingLauncher, OutlookMeetingLauncher>();
@@ -44,7 +46,7 @@ public static class OutlookIntegration
     public static void MapOutlookManagement(this IEndpointRouteBuilder app)
     {
         var routes = CreateRoutes(app);
-        routes.MapGet("/session", async (OutlookAccessService access, CancellationToken ct) => Results.Ok(new { token = await access.CreateSessionAsync(ct) })).WithMetadata(new OutlookAuthorization(Access.Owner));
+        routes.MapGet("/session", (HttpContext http) => Results.Ok(new OwnerSessionResponse(http.Request.Headers[LocalAccessHeaders.Owner].ToString()))).WithMetadata(new OutlookAuthorization(Access.Owner));
         routes.MapGet("/status", async (OutlookStatusService status, CancellationToken ct) => Results.Ok(await status.GetAsync(ct))).WithMetadata(new OutlookAuthorization(Access.Owner));
         routes.MapPost("/connect", async (IMicrosoftAuthService auth, OutlookAccountState state, OutlookStatusService status, CancellationToken ct) =>
         {
@@ -72,51 +74,13 @@ public static class OutlookIntegration
             http.Response.Headers.Pragma = "no-cache";
             try
             {
-                if (!OutlookAccessService.IsLocalHost(request)) return Error("forbidden", "A local helper Host is required.", 403);
+                if (!OutlookAccessService.IsLocalHost(request)) return Error("forbidden", "A local helper Host is required.", 400);
                 if (HttpMethods.IsPost(request.Method) && (!request.HasJsonContentType() || request.ContentLength > 16384))
                     return Error("invalid_request", "Send a bounded JSON request.", 400);
-                var role = http.GetEndpoint()?.Metadata.GetMetadata<OutlookAuthorization>()?.Access ?? Access.Setup;
-                var access = http.RequestServices.GetRequiredService<OutlookAccessService>();
-                var state = http.RequestServices.GetRequiredService<OutlookAccountState>();
-                var sameOrigin = OutlookAccessService.IsSameOrigin(request);
-                var session = request.Headers["X-Outlook-Session"].ToString();
-                if (role == Access.Owner) return await next(context);
-                var setupOnly = role is Access.Session or Access.Setup or Access.Connect;
-                if (setupOnly && !sameOrigin) return Error("forbidden", "Use the same-origin helper setup page.", 403);
-                if (role == Access.Session) return await next(context);
-                OutlookAccountLease? authorizedLease = null;
-                if (setupOnly)
-                {
-                    authorizedLease = await access.AuthenticateSessionAsync(session, http.RequestAborted);
-                    if (authorizedLease is null) return Error("unauthorized", "Refresh the helper setup session.", 401);
-                }
-                else if (role != Access.Bootstrap)
-                {
-                    if (sameOrigin) authorizedLease = await access.AuthenticateSessionAsync(session, http.RequestAborted);
-                    if (authorizedLease is null)
-                    {
-                        var origin = request.Headers.Origin.ToString();
-                        if (origin.Length > 0 && !sameOrigin && !WidgetOriginPolicy.IsAllowed(origin)) return Error("forbidden", "This origin is not approved for Outlook.", 403);
-                        var authorization = request.Headers.Authorization.ToString();
-                        if (authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) authorizedLease = await access.AuthenticateCredentialAsync(authorization[7..], http.RequestAborted);
-                    }
-                    if (authorizedLease is null) return Error("unauthorized", "Pair this widget or refresh the helper session.", 401);
-                }
-                else
-                {
-                    var origin = request.Headers.Origin.ToString();
-                    if (origin.Length > 0 && !sameOrigin && !WidgetOriginPolicy.IsAllowed(origin)) return Error("forbidden", "This origin is not approved for pairing.", 403);
-                }
-                if (authorizedLease is null) return await next(context);
-                state.RequireCurrent(authorizedLease.Value);
-                // Connect is the explicitly authorized account transition; every other
-                // authenticated operation must retain its authorizing identity throughout.
-                if (role == Access.Connect) return await next(context);
-                using var scope = state.BindRequest(authorizedLease.Value);
-                var result = await next(context);
-                await state.GetIdentityAsync(false, http.RequestAborted);
-                state.RequireCurrent(authorizedLease.Value);
-                return result is IResult response ? new AuthorizedOutlookResult(response, state, authorizedLease.Value) : Error("unavailable", "Outlook returned an invalid local response.", 503);
+                if (!WidgetAuthorizationFilter.IsAllowedOrigin(request)) return Error("forbidden", "This origin is not approved.", 403);
+                var role = http.GetEndpoint()?.Metadata.GetMetadata<OutlookAuthorization>()?.Access ?? Access.Read;
+                if (role is Access.Owner or Access.Bootstrap) return await next(context);
+                return await new WidgetAuthorizationFilter(WidgetScope.Outlook).InvokeAsync(context, next);
             }
             catch (OutlookException ex) { return Results.Json(new { error = ex.Error }, statusCode: ex.StatusCode); }
             catch (MsalClientException ex) when (ex.ErrorCode is "authentication_canceled" or "user_canceled") { return Error("connect_cancelled", "Outlook connection was cancelled.", 400); }
@@ -138,15 +102,4 @@ public static class OutlookIntegration
 
     private static IResult Error(string code, string message, int status) => Results.Json(new { error = new OutlookError(code, message) }, statusCode: status);
 
-    private sealed class AuthorizedOutlookResult(IResult inner, OutlookAccountState state, OutlookAccountLease lease) : IResult
-    {
-        public async Task ExecuteAsync(HttpContext http)
-        {
-            try { await state.ExecuteAuthorizedAsync(lease, () => inner.ExecuteAsync(http), http.RequestAborted); }
-            catch (OutlookException ex) when (!http.Response.HasStarted)
-            {
-                await Results.Json(new { error = ex.Error }, statusCode: ex.StatusCode).ExecuteAsync(http);
-            }
-        }
-    }
 }

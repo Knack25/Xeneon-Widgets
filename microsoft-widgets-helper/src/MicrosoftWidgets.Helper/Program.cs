@@ -115,8 +115,8 @@ app.Use(async (context, next) =>
 
 app.Use(async (context, next) =>
 {
-    // Limit Outlook bodies before minimal-API JSON binding, including chunked requests.
-    if (context.Request.Path.StartsWithSegments("/api/outlook"))
+    // Limit Outlook and pairing bodies before JSON binding, including chunked requests.
+    if (context.Request.Path.StartsWithSegments("/api/outlook") || context.Request.Path.StartsWithSegments("/api/local-access/pairings"))
     {
         if (context.Request.ContentLength > 16384)
         {
@@ -133,6 +133,7 @@ app.UseDefaultFiles();
 app.UseStaticFiles();
 app.MapGet("/health", () => Results.Ok(new { status = "ok", version = HelperHost.Version, service = "Microsoft Widgets Helper", integrations = new[] { "planner", "outlook" } }));
 app.MapLocalAccess();
+app.MapWidgetPairings();
 app.MapManagementEndpoints();
 app.MapPlannerIntegration();
 app.MapOutlookIntegration();
