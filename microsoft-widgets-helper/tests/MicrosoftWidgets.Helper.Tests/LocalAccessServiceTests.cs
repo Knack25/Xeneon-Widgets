@@ -1,4 +1,7 @@
+using PlannerEdge.Helper.Auth;
 using PlannerEdge.Helper.Security;
+using AccountStateTests = MicrosoftWidgets.Helper.Tests.MicrosoftAccountStateTests;
+using MemoryStore = MicrosoftWidgets.Helper.Tests.OutlookMemoryStore;
 
 namespace PlannerEdge.Helper.Tests;
 
@@ -72,6 +75,36 @@ public sealed class LocalAccessServiceTests
         Assert.False(new LocalAccessService(new TestTimeProvider()).ValidateOwnerSession(session));
         access.InvalidateOwnerSessions();
         Assert.False(access.ValidateOwnerSession(session));
+    }
+
+    [Fact]
+    public async Task Account_invalidation_revokes_owner_sessions_and_pending_bootstraps()
+    {
+        var identities = new AccountStateTests.IdentityProvider(
+            new MicrosoftAccountIdentity("home-a", "tenant-a", "client-a", "user@example.com"));
+        var state = new MicrosoftAccountState(identities, new MemoryStore());
+        var access = new LocalAccessService(new TestTimeProvider(), state);
+        var owner = await access.ExchangeBootstrapAsync(access.CreateBootstrap().Token, default);
+        var pending = access.CreateBootstrap();
+
+        await state.InvalidateAsync(default);
+
+        Assert.False(await access.ValidateOwnerSessionAsync(owner, default));
+        await Assert.ThrowsAsync<LocalAccessException>(() => access.ExchangeBootstrapAsync(pending.Token, default));
+    }
+
+    [Fact]
+    public async Task First_account_discovery_does_not_consume_first_run_bootstrap()
+    {
+        var identities = new AccountStateTests.IdentityProvider(
+            new MicrosoftAccountIdentity("home-a", "tenant-a", "client-a", "user@example.com"));
+        var state = new MicrosoftAccountState(identities, new MemoryStore());
+        var access = new LocalAccessService(new TestTimeProvider(), state);
+        var bootstrap = access.CreateBootstrap();
+
+        var owner = await access.ExchangeBootstrapAsync(bootstrap.Token, default);
+
+        Assert.True(await access.ValidateOwnerSessionAsync(owner, default));
     }
 
     private static byte[] Base64UrlDecode(string token)

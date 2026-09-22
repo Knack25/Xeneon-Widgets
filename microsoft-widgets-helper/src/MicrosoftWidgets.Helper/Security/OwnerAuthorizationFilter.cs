@@ -7,6 +7,8 @@ public sealed class OwnerAuthorizationFilter(LocalAccessService access) : IEndpo
     public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
     {
         var token = context.HttpContext.Request.Headers[LocalAccessHeaders.Owner].ToString();
-        return access.ValidateOwnerSession(token) ? await next(context) : Results.Unauthorized();
+        return await access.ValidateOwnerSessionAsync(token, context.HttpContext.RequestAborted)
+            ? await next(context)
+            : Results.Unauthorized();
     }
 }

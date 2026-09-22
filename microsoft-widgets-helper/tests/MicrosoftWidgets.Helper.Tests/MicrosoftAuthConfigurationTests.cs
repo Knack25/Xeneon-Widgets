@@ -51,6 +51,33 @@ public sealed class MicrosoftAuthConfigurationTests
     }
 
     [Fact]
+    public async Task Actual_configuration_change_clears_persisted_identity()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "MicrosoftWidgetsTests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var store = new LocalJsonStore(root);
+            var clientId = Guid.NewGuid().ToString();
+            var firstTenant = Guid.NewGuid().ToString();
+            var secondTenant = Guid.NewGuid().ToString();
+            await store.WriteAsync("microsoft-account-identity",
+                new StoredMicrosoftAccountIdentity("home", firstTenant, clientId), default);
+            var service = new MicrosoftAuthService(
+                Options.Create(new AzureAdOptions { ClientId = clientId, Tenant = firstTenant }), store, root);
+            await service.GetConfigurationAsync(default);
+
+            await service.SaveConfigurationAsync(
+                new AzureAdOptions { ClientId = clientId, Tenant = secondTenant }, default);
+
+            Assert.Null(await store.ReadAsync<StoredMicrosoftAccountIdentity>("microsoft-account-identity", default));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task RejectsInvalidApplicationId()
     {
         var service = new MicrosoftAuthService(Options.Create(new AzureAdOptions()),

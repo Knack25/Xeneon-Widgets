@@ -73,6 +73,25 @@ public sealed class MicrosoftAccountStateTests
     }
 
     [Fact]
+    public async Task Forced_configuration_transition_invalidates_same_principal_and_tenant_alias()
+    {
+        var identity = Identity("home-a", "tenant-a", "client-a", "user@example.com");
+        var identities = new IdentityProvider(identity);
+        var store = new OutlookMemoryStore();
+        var state = new MicrosoftAccountState(identities, store);
+        var first = await state.GetAsync(default);
+        await store.WriteAsync("widget-credentials", new WidgetCredentialStore(1,
+            [new("credential", WidgetScope.Planner, "instance", first.Key, "hash", DateTimeOffset.UtcNow)]), default);
+
+        await state.TransitionAsync(() => Task.FromResult(true), default, forceInvalidate: true);
+
+        var second = await state.GetAsync(default);
+        Assert.True(second.Generation > first.Generation);
+        Assert.False(state.IsCurrent(first));
+        Assert.Empty((await store.ReadAsync<WidgetCredentialStore>("widget-credentials", default))!.Credentials);
+    }
+
+    [Fact]
     public async Task LegacyUsernameIdentityAndCredentialsAreDeletedDuringMigration()
     {
         var identities = new IdentityProvider(Identity("home-a", "tenant-a", "client-a", "user@example.com"));

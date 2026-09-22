@@ -71,8 +71,11 @@ public sealed class MicrosoftAccountState(IMicrosoftAccountIdentityProvider iden
         }
         if (account != key)
         {
-            if (account is not null) await ClearWidgetCredentialsAsync(ct);
-            Reset();
+            if (account is not null)
+            {
+                await ClearWidgetCredentialsAsync(ct);
+                Reset();
+            }
             account = key;
         }
         if (authorizedRequest.Value is { } required) RequireCurrent(required);
@@ -91,16 +94,24 @@ public sealed class MicrosoftAccountState(IMicrosoftAccountIdentityProvider iden
         loaded = true;
     }
 
-    public async Task<T> TransitionAsync<T>(Func<Task<T>> transition, CancellationToken cancellationToken, bool forceInvalidate = false)
+    public async Task<T> TransitionAsync<T>(Func<Task<T>> transition, CancellationToken cancellationToken,
+        bool forceInvalidate = false, Func<T, bool>? invalidateWhen = null)
     {
         await gate.WaitAsync(cancellationToken);
         try
         {
             await SynchronizeIdentityLockedAsync(false, cancellationToken);
-            try { return await transition(); }
+            T? result = default;
+            var completed = false;
+            try
+            {
+                result = await transition();
+                completed = true;
+                return result;
+            }
             finally
             {
-                if (forceInvalidate)
+                if (forceInvalidate || completed && invalidateWhen?.Invoke(result!) == true)
                 {
                     Reset();
                     await ClearWidgetCredentialsAsync(CancellationToken.None);

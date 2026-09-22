@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Net.Sockets;
 using System.Text;
 using Microsoft.AspNetCore.Builder;
@@ -83,11 +84,38 @@ public sealed class OwnerManagementEndpointTests
 
         Assert.True(response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.MethodNotAllowed);
     }
+
+    [Fact]
+    public async Task Configuration_change_revokes_owner_session_and_pending_bootstrap()
+    {
+        await using var host = await OwnerManagementTestHost.StartAsync();
+        var pending = host.Access.CreateBootstrap();
+        using var request = new HttpRequestMessage(HttpMethod.Put, "/configuration")
+        {
+            Content = JsonContent.Create(new AzureAdOptions
+            {
+                ClientId = "11111111-1111-1111-1111-111111111111",
+                Tenant = "22222222-2222-2222-2222-222222222222"
+            })
+        };
+        request.Headers.Add(LocalAccessHeaders.Owner, host.OwnerSession);
+
+        using var changed = await host.Client.SendAsync(request);
+        using var oldOwner = await host.SendAsync("GET", "/configuration", owner: host.OwnerSession);
+
+        Assert.Equal(HttpStatusCode.OK, changed.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, oldOwner.StatusCode);
+        await Assert.ThrowsAsync<LocalAccessException>(() =>
+            host.Access.ExchangeBootstrapAsync(pending.Token, default));
+    }
 }
 
-internal sealed class OwnerManagementTestHost(WebApplication app, HttpClient client, string ownerSession) : IAsyncDisposable
+internal sealed class OwnerManagementTestHost(WebApplication app, HttpClient client, string ownerSession,
+    LocalAccessService access) : IAsyncDisposable
 {
     public string OwnerSession { get; } = ownerSession;
+    public HttpClient Client => client;
+    public LocalAccessService Access { get; } = access;
 
     public static async Task<OwnerManagementTestHost> StartAsync()
     {
@@ -111,8 +139,8 @@ internal sealed class OwnerManagementTestHost(WebApplication app, HttpClient cli
         await app.StartAsync();
 
         var access = app.Services.GetRequiredService<LocalAccessService>();
-        var owner = access.ExchangeBootstrap(access.CreateBootstrap().Token);
-        return new(app, new HttpClient { BaseAddress = new Uri("http://127.0.0.1:" + port + "/") }, owner);
+        var owner = await access.ExchangeBootstrapAsync(access.CreateBootstrap().Token, default);
+        return new(app, new HttpClient { BaseAddress = new Uri("http://127.0.0.1:" + port + "/") }, owner, access);
     }
 
     public async Task<HttpResponseMessage> SendAsync(string method, string path, string? owner = null, string? authorization = null)

@@ -6,6 +6,30 @@ namespace PlannerEdge.Helper.Tests;
 public sealed class StorageTests
 {
     [Fact]
+    public async Task LocalJsonStore_serializes_concurrent_writes_to_the_same_key()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "MicrosoftWidgetsTests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var store = new LocalJsonStore(root);
+            var payloads = Enumerable.Range(0, 32)
+                .Select(index => new ConcurrentPayload(index, new string((char)('A' + index % 26), 256 * 1024)))
+                .ToArray();
+
+            await Task.WhenAll(payloads.Select(payload =>
+                store.WriteAsync("microsoft-account-identity", payload, default)));
+
+            var stored = await store.ReadAsync<ConcurrentPayload>("microsoft-account-identity", default);
+            Assert.NotNull(stored);
+            Assert.Contains(stored, payloads);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task SettingsStore_LoadsLegacyThreeFieldSettings()
     {
         var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
@@ -183,4 +207,6 @@ public sealed class StorageTests
             return Task.CompletedTask;
         }
     }
+
+    private sealed record ConcurrentPayload(int Sequence, string Content);
 }

@@ -39,7 +39,8 @@ public sealed class WidgetAuthorizationFilter(WidgetScope scope) : IEndpointFilt
         AccountLease? lease = null;
         var owner = http.Request.Headers[LocalAccessHeaders.Owner].ToString();
         if (OutlookAccessService.IsSameOrigin(http.Request) &&
-            http.RequestServices.GetRequiredService<LocalAccessService>().ValidateOwnerSession(owner))
+            await http.RequestServices.GetRequiredService<LocalAccessService>()
+                .ValidateOwnerSessionAsync(owner, http.RequestAborted))
             lease = await state.GetAsync(http.RequestAborted);
         if (lease is null)
             lease = await http.RequestServices.GetRequiredService<WidgetPairingService>().AuthenticateAsync(

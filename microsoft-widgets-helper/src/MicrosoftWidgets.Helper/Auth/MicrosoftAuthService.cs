@@ -17,6 +17,12 @@ public sealed record AzureAdOptions
     public string Tenant { get; init; } = "organizations";
 }
 
+internal sealed record MicrosoftTokenAcquisition(
+    string AccessToken,
+    string HomeAccountId,
+    string TenantId,
+    string Username);
+
 public interface IMicrosoftAuthService : IGraphTokenProvider, IMicrosoftAccountIdentityProvider
 {
     Task<string> GetTokenForScopesAsync(IEnumerable<string> scopes, CancellationToken cancellationToken);
@@ -45,9 +51,13 @@ public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILoc
     private readonly SemaphoreSlim configurationGate = new(1, 1);
     private readonly Func<IEnumerable<string>, CancellationToken, Task<string>>? acquireToken;
     private readonly Func<IEnumerable<string>, bool, CancellationToken, Task<AuthStatusResponse>>? connect;
+    private readonly Func<AzureAdOptions, IEnumerable<string>, CancellationToken, Task<MicrosoftTokenAcquisition>>?
+        acquireConfiguredToken;
+    private readonly Func<AzureAdOptions, CancellationToken, Task<MicrosoftAccountIdentity>>? acquireConfiguredIdentity;
     private IPublicClientApplication? app;
     private AzureAdOptions? currentConfiguration;
     private MicrosoftAccountIdentity? currentIdentity;
+    private long configurationRevision;
 
     internal MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILocalJsonStore jsonStore,
         Func<IEnumerable<string>, CancellationToken, Task<string>> acquireToken,
@@ -56,6 +66,15 @@ public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILoc
     {
         this.acquireToken = acquireToken;
         this.connect = connect;
+    }
+
+    internal MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILocalJsonStore jsonStore,
+        Func<AzureAdOptions, IEnumerable<string>, CancellationToken, Task<MicrosoftTokenAcquisition>>? acquireConfiguredToken,
+        Func<AzureAdOptions, CancellationToken, Task<MicrosoftAccountIdentity>>? acquireConfiguredIdentity,
+        string? cacheDirectory = null) : this(defaults, jsonStore, cacheDirectory)
+    {
+        this.acquireConfiguredToken = acquireConfiguredToken;
+        this.acquireConfiguredIdentity = acquireConfiguredIdentity;
     }
 
     public async Task<AzureAdOptions> GetConfigurationAsync(CancellationToken cancellationToken)
@@ -72,10 +91,12 @@ public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILoc
         {
             if (currentConfiguration == normalized) return normalized;
             var configuredApp = await CreateAppAsync(normalized);
+            await jsonStore.WriteAsync<StoredMicrosoftAccountIdentity?>("microsoft-account-identity", null, cancellationToken);
             await jsonStore.WriteAsync("microsoft-auth", normalized, cancellationToken);
             app = configuredApp;
             currentConfiguration = normalized;
             currentIdentity = null;
+            configurationRevision++;
             return normalized;
         }
         finally { configurationGate.Release(); }
@@ -137,32 +158,44 @@ public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILoc
 
     public async Task<string> GetTokenForScopesAsync(IEnumerable<string> scopes, CancellationToken cancellationToken)
     {
+        if (acquireConfiguredToken is not null)
+        {
+            var configuredSnapshot = await CaptureConfigurationAsync(requireApp: false, cancellationToken);
+            var acquired = await acquireConfiguredToken(configuredSnapshot.Configuration, scopes, cancellationToken);
+            var identity = new MicrosoftAccountIdentity(acquired.HomeAccountId, acquired.TenantId,
+                configuredSnapshot.Configuration.ClientId, acquired.Username);
+            await CommitIdentityAsync(identity, configuredSnapshot, cancellationToken);
+            return acquired.AccessToken;
+        }
         if (acquireToken is not null) return await acquireToken(scopes, cancellationToken);
-        var client = await RequireAppAsync(cancellationToken);
+        var snapshot = await CaptureConfigurationAsync(requireApp: true, cancellationToken);
+        var client = snapshot.Client!;
         var account = (await client.GetAccountsAsync()).FirstOrDefault()
             ?? throw new MsalUiRequiredException("no_account", "No Microsoft account is signed in.");
         var result = await client.AcquireTokenSilent(scopes, account).ExecuteAsync(cancellationToken);
-        await CaptureIdentityAsync(result, cancellationToken);
+        await CaptureIdentityAsync(result, snapshot, cancellationToken);
         return result.AccessToken;
     }
 
     public async Task<MicrosoftAccountIdentity> GetAccountIdentityAsync(CancellationToken cancellationToken)
     {
-        var client = await RequireAppAsync(cancellationToken);
-        var configuration = currentConfiguration!;
+        if (acquireConfiguredIdentity is not null)
+        {
+            var configuredSnapshot = await CaptureConfigurationAsync(requireApp: false, cancellationToken);
+            var acquired = await acquireConfiguredIdentity(configuredSnapshot.Configuration, cancellationToken);
+            if (!string.Equals(acquired.ClientId, configuredSnapshot.Configuration.ClientId, StringComparison.OrdinalIgnoreCase))
+                throw new OutlookException("account_changed", "The Microsoft account changed. Reconnect the widget.", 401);
+            return await CommitIdentityAsync(acquired, configuredSnapshot, cancellationToken);
+        }
+        var snapshot = await CaptureConfigurationAsync(requireApp: true, cancellationToken);
+        var client = snapshot.Client!;
+        var configuration = snapshot.Configuration;
         var account = (await client.GetAccountsAsync()).FirstOrDefault()
             ?? throw new MsalUiRequiredException("no_account", "No Microsoft account is signed in.");
-        if (currentIdentity is { } current && SameAccount(current, account, configuration.ClientId))
-            return current with { Username = account.Username };
-        var stored = await jsonStore.ReadAsync<StoredMicrosoftAccountIdentity>("microsoft-account-identity", cancellationToken);
-        if (stored is not null && string.Equals(stored.HomeAccountId, account.HomeAccountId.Identifier, StringComparison.Ordinal) &&
-            string.Equals(stored.ClientId, configuration.ClientId, StringComparison.OrdinalIgnoreCase))
-        {
-            currentIdentity = new(stored.HomeAccountId, stored.TenantId, stored.ClientId, account.Username);
-            return currentIdentity;
-        }
+        if (snapshot.Identity is { } current && SameAccount(current, account, configuration.ClientId))
+            return await RevalidateCachedIdentityAsync(current with { Username = account.Username }, snapshot, cancellationToken);
         var result = await client.AcquireTokenSilent(PlannerScopes, account).ExecuteAsync(cancellationToken);
-        return await CaptureIdentityAsync(result, cancellationToken);
+        return await CaptureIdentityAsync(result, snapshot, cancellationToken);
     }
 
     public async Task<AuthStatusResponse> GetStatusAsync(CancellationToken cancellationToken)
@@ -209,7 +242,8 @@ public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILoc
 
     private async Task<AuthStatusResponse> ConnectAsync(IEnumerable<string> scopes, bool requireExistingAccount, CancellationToken cancellationToken)
     {
-        var client = await RequireAppAsync(cancellationToken);
+        var snapshot = await CaptureConfigurationAsync(requireApp: true, cancellationToken);
+        var client = snapshot.Client!;
         var account = (await client.GetAccountsAsync()).FirstOrDefault();
         if (requireExistingAccount && account is null)
             throw new MsalUiRequiredException("no_account", "Sign in to Microsoft first.");
@@ -225,7 +259,7 @@ public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILoc
                 return request.ExecuteAsync(ct);
             }, cancellationToken);
         await RetainAccountAsync(client, result.Account);
-        await CaptureIdentityAsync(result, cancellationToken);
+        await CaptureIdentityAsync(result, snapshot, cancellationToken);
         return new AuthStatusResponse(true, result.Account.Username, result.Account.Username);
     }
 
@@ -237,12 +271,45 @@ public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILoc
         return new(account.HomeAccountId.Identifier, tenantId, clientId, account.Username);
     }
 
-    private async Task<MicrosoftAccountIdentity> CaptureIdentityAsync(AuthenticationResult result, CancellationToken cancellationToken)
+    private Task<MicrosoftAccountIdentity> CaptureIdentityAsync(AuthenticationResult result,
+        AuthConfigurationSnapshot snapshot, CancellationToken cancellationToken)
     {
-        var identity = CreateIdentity(result.Account, result.TenantId, currentConfiguration!.ClientId);
-        currentIdentity = identity;
-        await jsonStore.WriteAsync("microsoft-account-identity", StoredMicrosoftAccountIdentity.From(identity), cancellationToken);
-        return identity;
+        var identity = CreateIdentity(result.Account, result.TenantId, snapshot.Configuration.ClientId);
+        return CommitIdentityAsync(identity, snapshot, cancellationToken);
+    }
+
+    private async Task<MicrosoftAccountIdentity> CommitIdentityAsync(MicrosoftAccountIdentity identity,
+        AuthConfigurationSnapshot snapshot, CancellationToken cancellationToken)
+    {
+        await configurationGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (configurationRevision != snapshot.Revision || currentConfiguration != snapshot.Configuration ||
+                snapshot.Client is not null && !ReferenceEquals(app, snapshot.Client))
+                throw new OutlookException("account_changed", "The Microsoft account changed. Reconnect the widget.", 401);
+            if (!string.Equals(identity.ClientId, snapshot.Configuration.ClientId, StringComparison.OrdinalIgnoreCase))
+                throw new OutlookException("account_changed", "The Microsoft account changed. Reconnect the widget.", 401);
+            await jsonStore.WriteAsync("microsoft-account-identity", StoredMicrosoftAccountIdentity.From(identity), cancellationToken);
+            currentIdentity = identity;
+            return identity;
+        }
+        finally { configurationGate.Release(); }
+    }
+
+    private async Task<MicrosoftAccountIdentity> RevalidateCachedIdentityAsync(MicrosoftAccountIdentity identity,
+        AuthConfigurationSnapshot snapshot, CancellationToken cancellationToken)
+    {
+        await configurationGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (configurationRevision != snapshot.Revision || currentConfiguration != snapshot.Configuration ||
+                !ReferenceEquals(app, snapshot.Client) || currentIdentity is null ||
+                MicrosoftAccountState.Key(currentIdentity) != MicrosoftAccountState.Key(identity))
+                throw new OutlookException("account_changed", "The Microsoft account changed. Reconnect the widget.", 401);
+            currentIdentity = identity;
+            return identity;
+        }
+        finally { configurationGate.Release(); }
     }
 
     private static bool SameAccount(MicrosoftAccountIdentity identity, IAccount account, string clientId) =>
@@ -271,20 +338,40 @@ public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILoc
 
     public async Task SignOutAsync(CancellationToken cancellationToken)
     {
-        await EnsureInitializedAsync(cancellationToken);
-        if (app is null) return;
-        foreach (var account in await app.GetAccountsAsync())
+        var snapshot = await CaptureConfigurationAsync(requireApp: false, cancellationToken);
+        if (snapshot.Client is null) return;
+        foreach (var account in await snapshot.Client.GetAccountsAsync())
         {
             cancellationToken.ThrowIfCancellationRequested();
-            await app.RemoveAsync(account);
+            await snapshot.Client.RemoveAsync(account);
         }
-        currentIdentity = null;
-        await jsonStore.WriteAsync<StoredMicrosoftAccountIdentity?>("microsoft-account-identity", null, cancellationToken);
+        await configurationGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (configurationRevision != snapshot.Revision || !ReferenceEquals(app, snapshot.Client))
+                throw new OutlookException("account_changed", "The Microsoft account changed. Reconnect the widget.", 401);
+            currentIdentity = null;
+            await jsonStore.WriteAsync<StoredMicrosoftAccountIdentity?>("microsoft-account-identity", null, cancellationToken);
+        }
+        finally { configurationGate.Release(); }
     }
 
-    private async Task<IPublicClientApplication> RequireAppAsync(CancellationToken cancellationToken)
+    private async Task<AuthConfigurationSnapshot> CaptureConfigurationAsync(bool requireApp,
+        CancellationToken cancellationToken)
     {
         await EnsureInitializedAsync(cancellationToken);
-        return app ?? throw new InvalidOperationException("Microsoft client ID is not configured.");
+        await configurationGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (requireApp && app is null) throw new InvalidOperationException("Microsoft client ID is not configured.");
+            return new(app, currentConfiguration!, currentIdentity, configurationRevision);
+        }
+        finally { configurationGate.Release(); }
     }
+
+    private sealed record AuthConfigurationSnapshot(
+        IPublicClientApplication? Client,
+        AzureAdOptions Configuration,
+        MicrosoftAccountIdentity? Identity,
+        long Revision);
 }

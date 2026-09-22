@@ -24,7 +24,8 @@ public static class ManagementEndpoints
             IPlannerSettingsStore settings, MicrosoftAccountState outlookAccount, CancellationToken ct) =>
         {
             var previous = await auth.GetConfigurationAsync(ct);
-            var saved = await outlookAccount.TransitionAsync(() => auth.SaveConfigurationAsync(configuration, ct), ct);
+            var saved = await outlookAccount.TransitionAsync(() => auth.SaveConfigurationAsync(configuration, ct), ct,
+                invalidateWhen: value => previous != value);
             if (previous != saved)
             {
                 await settings.UpdateSettingsAsync(selection =>
