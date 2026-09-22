@@ -10,6 +10,7 @@ using PlannerEdge.Helper;
 using PlannerEdge.Helper.Hosting;
 using PlannerEdge.Helper.Updates;
 using PlannerEdge.Helper.Outlook;
+using PlannerEdge.Helper.Security;
 using Microsoft.AspNetCore.Http.Features;
 
 if (args.FirstOrDefault() == "--apply-update")
@@ -41,7 +42,8 @@ var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 });
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
-builder.WebHost.UseUrls("http://localhost:8787");
+var helperPort = builder.Configuration.GetValue<int>("HelperPort", 8787);
+builder.WebHost.UseUrls($"http://localhost:{helperPort}");
 builder.Services.Configure<AzureAdOptions>(builder.Configuration.GetSection("AzureAd"));
 builder.Services.AddSingleton<ILocalJsonStore>(_ => new LocalJsonStore(LocalPaths.AppDataRoot()));
 builder.Services.AddSingleton<IMicrosoftAuthService, MicrosoftAuthService>();
@@ -64,6 +66,7 @@ builder.Services.AddHostedService<TrayService>();
 
 var app = builder.Build();
 
+app.UseHelperSecurityBoundary();
 app.Use(async (context, next) =>
 {
     var origin = context.Request.Headers.Origin.ToString();

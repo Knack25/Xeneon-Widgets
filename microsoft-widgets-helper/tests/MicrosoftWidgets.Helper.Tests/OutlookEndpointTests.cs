@@ -35,7 +35,7 @@ public sealed class OutlookEndpointTests
         Assert.False(status.GetProperty("signedIn").GetBoolean());
         Assert.Empty(host.Handler.Requests);
         client.DefaultRequestHeaders.Host = "evil.example:" + client.BaseAddress.Port;
-        Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync("api/outlook/session")).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await client.GetAsync("api/outlook/session")).StatusCode);
     }
 
     [Fact]

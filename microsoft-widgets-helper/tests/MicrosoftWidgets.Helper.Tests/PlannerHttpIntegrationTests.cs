@@ -1,19 +1,72 @@
 using System.Net;
+using System.Net.Sockets;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Logging;
 using PlannerEdge.Helper.Contracts;
 using PlannerEdge.Helper.Graph;
 using PlannerEdge.Helper.Planner;
+using PlannerEdge.Helper.Security;
 using PlannerEdge.Helper.Storage;
 
 namespace PlannerEdge.Helper.Tests;
 
 public sealed class PlannerHttpIntegrationTests
 {
+    [Fact]
+    public async Task Attacker_host_cannot_read_static_health_or_integration_routes()
+    {
+        await using var host = await BoundaryTestHost.StartAsync();
+
+        foreach (var path in new[] { "/", "/health", "/plans", "/api/planner/plans", "/api/outlook/session" })
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, path);
+            request.Headers.Host = "attacker.invalid:" + host.Port;
+            using var response = await host.Client.SendAsync(request);
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            Assert.DoesNotContain("secret", await response.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    [Fact]
+    public async Task Security_boundary_applies_sensitive_headers_without_blocking_widget_previews()
+    {
+        await using var host = await BoundaryTestHost.StartAsync();
+
+        using var api = await host.Client.GetAsync("/api/planner/plans");
+        Assert.Equal(HttpStatusCode.OK, api.StatusCode);
+        AssertHeader(api, "Cache-Control", "no-store");
+        AssertHeader(api, "X-Content-Type-Options", "nosniff");
+
+        using var account = await host.Client.GetAsync("/auth/status");
+        Assert.Equal(HttpStatusCode.OK, account.StatusCode);
+        AssertHeader(account, "Cache-Control", "no-store");
+        AssertHeader(account, "X-Content-Type-Options", "nosniff");
+
+        using var setup = await host.Client.GetAsync("/");
+        Assert.Equal(HttpStatusCode.OK, setup.StatusCode);
+        AssertHeader(setup, "Cache-Control", "no-store");
+        AssertHeader(setup, "X-Content-Type-Options", "nosniff");
+        AssertHeader(setup, "Content-Security-Policy", "frame-ancestors 'none'");
+        AssertHeader(setup, "X-Frame-Options", "DENY");
+
+        foreach (var path in new[] { "/board/index.html", "/outlook/index.html" })
+        {
+            using var preview = await host.Client.GetAsync(path);
+            Assert.Equal(HttpStatusCode.OK, preview.StatusCode);
+            Assert.False(preview.Headers.Contains("Content-Security-Policy"));
+            Assert.False(preview.Headers.Contains("X-Frame-Options"));
+        }
+    }
+
     [Fact]
     public async Task CorsPreflightAllowsDeleteAndDeleteRouteExecutes()
     {
@@ -50,6 +103,12 @@ public sealed class PlannerHttpIntegrationTests
         await app.StopAsync();
     }
 
+    private static void AssertHeader(HttpResponseMessage response, string name, string value)
+    {
+        Assert.True(response.Headers.TryGetValues(name, out var values));
+        Assert.Contains(values, candidate => candidate.Contains(value, StringComparison.OrdinalIgnoreCase));
+    }
+
     private sealed class FakeSettings : IPlannerSettingsStore
     {
         public Task<SettingsDto> LoadSettingsAsync(CancellationToken ct) =>
@@ -79,5 +138,57 @@ public sealed class PlannerHttpIntegrationTests
         public Task<IReadOnlyList<GraphBucket>> GetBucketsAsync(string planId, CancellationToken ct) => throw new NotSupportedException();
         public Task<IReadOnlyList<GraphTask>> GetTasksAsync(string planId, CancellationToken ct) => throw new NotSupportedException();
         public Task CompleteTaskAsync(string taskId, string etag, CancellationToken ct) => throw new NotSupportedException();
+    }
+}
+
+internal sealed class BoundaryTestHost(WebApplication app, HttpClient client, string staticRoot) : IAsyncDisposable
+{
+    public HttpClient Client { get; } = client;
+    public int Port => Client.BaseAddress!.Port;
+
+    public static async Task<BoundaryTestHost> StartAsync()
+    {
+        var port = ReservePort();
+        var staticRoot = Path.Combine(Path.GetTempPath(), "MicrosoftWidgets.Helper.Tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(staticRoot, "board"));
+        Directory.CreateDirectory(Path.Combine(staticRoot, "outlook"));
+        await File.WriteAllTextAsync(Path.Combine(staticRoot, "index.html"), "setup-secret");
+        await File.WriteAllTextAsync(Path.Combine(staticRoot, "board", "index.html"), "planner-preview");
+        await File.WriteAllTextAsync(Path.Combine(staticRoot, "outlook", "index.html"), "outlook-preview");
+
+        var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = "Testing" });
+        builder.Logging.ClearProviders();
+        builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?> { ["HelperPort"] = port.ToString() });
+        builder.Configuration["AllowedHosts"] = "*";
+        builder.WebHost.UseUrls("http://127.0.0.1:" + port);
+        var app = builder.Build();
+        var files = new PhysicalFileProvider(staticRoot);
+
+        app.UseHelperSecurityBoundary();
+        app.UseDefaultFiles(new DefaultFilesOptions { FileProvider = files });
+        app.UseStaticFiles(new StaticFileOptions { FileProvider = files });
+        app.MapGet("/health", () => Results.Text("health-secret"));
+        app.MapGet("/plans", () => Results.Text("legacy-planner-secret"));
+        app.MapGet("/api/planner/plans", () => Results.Text("planner-secret"));
+        app.MapGet("/api/outlook/session", () => Results.Text("outlook-secret"));
+        app.MapGet("/auth/status", () => Results.Text("account-secret"));
+        await app.StartAsync();
+
+        return new(app, new HttpClient { BaseAddress = new Uri("http://127.0.0.1:" + port + "/") }, staticRoot);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        Client.Dispose();
+        await app.StopAsync();
+        await app.DisposeAsync();
+        Directory.Delete(staticRoot, recursive: true);
+    }
+
+    private static int ReservePort()
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        return ((IPEndPoint)listener.LocalEndpoint).Port;
     }
 }
