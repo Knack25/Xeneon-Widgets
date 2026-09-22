@@ -39,15 +39,40 @@ public sealed class CalendarViewService
 
     public async Task<CalendarViewResponse> GetAsync(ViewRequest request, CancellationToken ct)
     {
+        var (start, end) = Validate(request);
+        var lease = await state.GetAsync(ct);
+        var results = await Task.WhenAll(request.CalendarKeys.Distinct().Select(key => ReadSourceAsync(lease, new(lease.Key, key, start, end), ct)));
+        if (!state.IsCurrent(lease)) return new([], request.CalendarKeys.Select(key => new SourceStatus(key, null, false, new("sign_in_required", "Reconnect Outlook before loading calendar data."))).ToArray());
+        return new(results.SelectMany(r => r.Events).ToArray(), results.Select(r => r.Status).ToArray());
+    }
+
+    public async Task<CalendarViewResponse> GetCachedAsync(ViewRequest request, CancellationToken ct)
+    {
+        var (start, end) = Validate(request);
+        var lease = await state.GetAsync(ct);
+        lock (sync)
+        {
+            state.RequireCurrent(lease);
+            Expire();
+            var snapshots = request.CalendarKeys.Distinct().Select(key => (Key: key, Cache: new CacheKey(lease.Key, key, start, end)))
+                .Where(item => cache.ContainsKey(item.Cache))
+                .Select(item => (item.Key, Snapshot: cache[item.Cache]))
+                .ToArray();
+            foreach (var item in snapshots)
+                cache[new(lease.Key, item.Key, start, end)] = item.Snapshot with { Use = ++use };
+            return new(snapshots.SelectMany(item => item.Snapshot.Events).ToArray(),
+                snapshots.Select(item => new SourceStatus(item.Key, item.Snapshot.FetchedAt, true, null)).ToArray());
+        }
+    }
+
+    private static (DateTimeOffset Start, DateTimeOffset End) Validate(ViewRequest request)
+    {
         if (request.CalendarKeys is null || request.CalendarKeys.Length > 100 || request.CalendarKeys.Any(k => string.IsNullOrWhiteSpace(k) || k.Length > 128) ||
             !OutlookJson.HasOffset(request.Start) || !OutlookJson.HasOffset(request.End) ||
             !DateTimeOffset.TryParse(request.Start, CultureInfo.InvariantCulture, DateTimeStyles.None, out var start) ||
             !DateTimeOffset.TryParse(request.End, CultureInfo.InvariantCulture, DateTimeStyles.None, out var end) || end <= start || end - start > TimeSpan.FromDays(62))
             throw new OutlookException("invalid_range", "Select a range with explicit offsets of at most 62 days and known calendars.", 400);
-        var lease = await state.GetAsync(ct);
-        var results = await Task.WhenAll(request.CalendarKeys.Distinct().Select(key => ReadSourceAsync(lease, new(lease.Key, key, start, end), ct)));
-        if (!state.IsCurrent(lease)) return new([], request.CalendarKeys.Select(key => new SourceStatus(key, null, false, new("sign_in_required", "Reconnect Outlook before loading calendar data."))).ToArray());
-        return new(results.SelectMany(r => r.Events).ToArray(), results.Select(r => r.Status).ToArray());
+        return (start, end);
     }
 
     private async Task<(EventSummary[] Events, SourceStatus Status)> ReadSourceAsync(OutlookAccountLease lease, CacheKey key, CancellationToken ct)

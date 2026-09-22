@@ -60,6 +60,16 @@ test('superseded responses cannot replace the current range; offline cache expir
   state.accept(current,{events:[{reference:'r',calendarKey:'a'}],sources:[]},200);
   assert.equal(state.fail(current,{status:401},201).length,0);
 });
+test('helper cache seeds an empty reload before live data replaces it', () => {
+  const state=new RefreshState(), ticket=state.begin('range');
+  assert.equal(state.seed(ticket,{events:[{reference:'cached',calendarKey:'a',title:'Cached'}],sources:[{calendarKey:'a',fetchedAt:new Date(100).toISOString(),stale:true,error:null}]},200),true);
+  assert.equal(state.events[0].title,'Cached');
+  assert.equal(state.offline,false);
+  assert.equal(state.accept(ticket,{events:[{reference:'live',calendarKey:'a',title:'Live'}],sources:[{calendarKey:'a',fetchedAt:new Date(300).toISOString(),stale:false,error:null}]},300),true);
+  assert.equal(state.events[0].title,'Live');
+  assert.equal(state.seed(ticket,{events:[{reference:'late',calendarKey:'a',title:'Late cache'}],sources:[]},400),false);
+  assert.equal(state.events[0].title,'Live');
+});
 test('overnight working hours wrap and preserve days', () => {
   assert.deepEqual(workingPeriods({...defaultSettings(),hoursMode:'manual',hoursStart:'22:00',hoursEnd:'06:00'},null), [
     {daysOfWeek:[1,2,3,4,5],startTime:'22:00',endTime:'24:00'},

@@ -24,11 +24,16 @@ export function maskEvent(e) {
 export const eventId = e => JSON.stringify([e.calendarKey,e.reference]);
 export const ageLimit=86400000;
 export class RefreshState {
-  generation=0; key=''; cache=new Map(); events=[]; sources=[]; offline=false;
+  generation=0; resolvedGeneration=0; key=''; cache=new Map(); events=[]; sources=[]; offline=false;
   begin(key) {this.key=key; this.generation++; this.events=this.cached(); return {generation:this.generation,key};}
   current(t){return t.generation===this.generation && t.key===this.key;}
   cached(now=Date.now()) {const item=this.cache.get(this.key);return item?item.events.filter(e=>now-(item.sourceTimes?.get(e.calendarKey)??item.at)<ageLimit):[];}
-  accept(t,result,now=Date.now()) {
+  seed(t,result,now=Date.now()) {
+    if(!this.current(t) || this.resolvedGeneration===t.generation)return false;
+    return this.apply(t,result,now,false);
+  }
+  accept(t,result,now=Date.now()) {return this.apply(t,result,now,true);}
+  apply(t,result,now,resolve) {
     if(!this.current(t)) return false;
     this.sources=result.sources||[];
     const auth=this.sources.find(s=>['sign_in_required','consent_required','account_changed','unauthorized'].includes(s.error?.code));
@@ -37,13 +42,14 @@ export class RefreshState {
     const expired=new Set(this.sources.filter(s=>s.stale && (!s.fetchedAt || now-Date.parse(s.fetchedAt)>=ageLimit)).map(s=>s.calendarKey));
     this.events=(result.events||[]).filter(e=>!e.isCancelled && !denied.has(e.calendarKey) && !expired.has(e.calendarKey)).map(maskEvent);
     const sourceTimes=new Map(this.sources.map(s=>[s.calendarKey,Number.isFinite(Date.parse(s.fetchedAt))?Date.parse(s.fetchedAt):(s.stale?0:now)]));
-    this.offline=false; this.cache.delete(this.key);this.cache.set(this.key,{events:this.events,at:sourceTimes.size?Math.min(...sourceTimes.values()):now,sourceTimes});
+    if(resolve){this.resolvedGeneration=t.generation;this.offline=false;}
+    this.cache.delete(this.key);this.cache.set(this.key,{events:this.events,at:sourceTimes.size?Math.min(...sourceTimes.values()):now,sourceTimes});
     while(this.cache.size>32) this.cache.delete(this.cache.keys().next().value);
     for(const key of denied) this.removeSource(key);
     return true;
   }
   removeSource(key) {for(const item of this.cache.values()) item.events=item.events.filter(e=>e.calendarKey!==key);this.events=this.events.filter(e=>e.calendarKey!==key);}
-  clear(){this.cache.clear();this.events=[];this.sources=[];}
+  clear(){this.cache.clear();this.events=[];this.sources=[];this.resolvedGeneration=0;}
   fail(t,error,now=Date.now()) {
     if(!this.current(t)) return this.events;
     if([401,403,404].includes(error.status)) this.clear();

@@ -111,6 +111,7 @@ public static class OutlookIntegration
         routes.MapGet("/calendars", async (CalendarCatalogService catalog, CancellationToken ct) => Results.Ok(await catalog.GetAsync(ct)));
         routes.MapGet("/preferences", async (OutlookPreferencesService preferences, CancellationToken ct) => Results.Ok(await preferences.GetAsync(ct)));
         routes.MapPost("/view", async (ViewRequest request, CalendarViewService views, CancellationToken ct) => Results.Ok(await views.GetAsync(request, ct)));
+        routes.MapPost("/view/cached", async (ViewRequest request, CalendarViewService views, CancellationToken ct) => Results.Ok(await views.GetCachedAsync(request, ct)));
         routes.MapPost("/event-details", async (EventRequest request, EventDetailsService details, CancellationToken ct) => Results.Ok(await details.GetAsync(request, ct)));
         routes.MapPost("/join", async (EventRequest request, OutlookJoinService join, CancellationToken ct) => { await join.JoinAsync(request, ct); return Results.NoContent(); });
         routes.MapPost("/sources", async (SourceRequest request, CalendarCatalogService catalog, CancellationToken ct) => Results.Ok(await catalog.AddAsync(request.OwnerEmail, ct))).WithMetadata(new OutlookAuthorization(Access.Setup));

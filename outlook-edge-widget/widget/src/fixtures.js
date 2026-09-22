@@ -16,7 +16,7 @@ export class FixtureApi {
   }
   async post(path,body,signal) {
     if(signal?.aborted)throw new DOMException('Aborted','AbortError');
-    if(path==='view') {
+    if(path==='view' || path==='view/cached') {
       if(this.offline)throw new Error('Demo helper offline');
       const result=[], zone=Intl.DateTimeFormat().resolvedOptions().timeZone;
       for(let d=Temporal.PlainDate.from(body.start.slice(0,10));Temporal.PlainDate.compare(d,body.end.slice(0,10))<0;d=d.add({days:1})) {
@@ -36,7 +36,7 @@ export class FixtureApi {
           this.events.set(event.reference,event);if(body.calendarKeys.includes('team'))result.push(event);
         }
       }
-      return {events:result,sources:body.calendarKeys.map(calendarKey=>({calendarKey,fetchedAt:new Date().toISOString(),stale:false,error:null}))};
+      return {events:result,sources:body.calendarKeys.map(calendarKey=>({calendarKey,fetchedAt:new Date().toISOString(),stale:path==='view/cached',error:null}))};
     }
     if(path==='event-details') {if(this.offline)throw new Error('Demo helper offline');return {...this.events.get(body.reference)};}
     if(path==='join'){this.launched.push({...body});return null;}

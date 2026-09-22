@@ -61,7 +61,11 @@ public sealed class OutlookEndpointTests
         var calendars = await native.GetFromJsonAsync<CalendarDescriptor[]>("api/outlook/calendars");
         var key = Assert.Single(calendars!).Key;
         var view = await (await native.PostAsJsonAsync("api/outlook/view", new ViewRequest([key], "2026-09-01T00:00:00Z", "2026-09-08T00:00:00Z"))).Content.ReadFromJsonAsync<CalendarViewResponse>();
-        var request = new EventRequest(key, Assert.Single(view!.Events).Reference);
+        var graphRequests = host.Handler.Requests.Count;
+        var cached = await (await native.PostAsJsonAsync("api/outlook/view/cached", new ViewRequest([key], "2026-09-01T00:00:00Z", "2026-09-08T00:00:00Z"))).Content.ReadFromJsonAsync<CalendarViewResponse>();
+        Assert.Equal(view!.Events, cached!.Events);
+        Assert.Equal(graphRequests, host.Handler.Requests.Count);
+        var request = new EventRequest(key, Assert.Single(view.Events).Reference);
         Assert.Equal(HttpStatusCode.NoContent, (await native.PostAsJsonAsync("api/outlook/join", request)).StatusCode);
         Assert.Single(host.Launcher.Uris);
         Assert.Equal(HttpStatusCode.TooManyRequests, (await native.PostAsJsonAsync("api/outlook/join", request)).StatusCode);

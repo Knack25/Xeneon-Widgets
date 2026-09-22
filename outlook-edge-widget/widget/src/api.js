@@ -9,7 +9,7 @@ export class OutlookApi {
       body:body===undefined?undefined:JSON.stringify(body),signal,cache:'no-store',credentials:'omit'});
     if(response.status===401 && !bootstrap) {
       this.onUnauthorized?.();
-      if(!this.native && !retried && (body===undefined || ['view','event-details'].includes(path))) {
+      if(!this.native && !retried && (body===undefined || ['view','view/cached','event-details'].includes(path))) {
         await this.initialize();return this.request(path,body,signal,false,true);
       }
     }

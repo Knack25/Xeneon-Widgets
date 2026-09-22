@@ -108,6 +108,27 @@ public sealed class OutlookServicesTests
         Assert.Empty((await fixture.Views.GetAsync(request, default)).Events);
     }
 
+    [Fact]
+    public async Task CachedViewReturnsExactCurrentSnapshotWithoutGraphReadAndExpires()
+    {
+        var fixture = new OutlookFixture();
+        var calendar = Assert.Single(await fixture.Catalog.GetAsync(default));
+        var request = new ViewRequest([calendar.Key], "2026-09-01T00:00:00Z", "2026-09-08T00:00:00Z");
+        var live = await fixture.Views.GetAsync(request, default);
+        var graphRequests = fixture.Handler.Requests.Count;
+
+        var cached = await fixture.Views.GetCachedAsync(request, default);
+
+        Assert.Equal(live.Events, cached.Events);
+        Assert.Single(cached.Sources);
+        Assert.True(cached.Sources[0].Stale);
+        Assert.Equal(graphRequests, fixture.Handler.Requests.Count);
+        Assert.Empty((await fixture.Views.GetCachedAsync(request with { End = "2026-09-09T00:00:00Z" }, default)).Events);
+
+        fixture.Clock.Advance(TimeSpan.FromHours(25));
+        Assert.Empty((await fixture.Views.GetCachedAsync(request, default)).Events);
+    }
+
     [Theory]
     [InlineData("2026-09-01", "2026-09-08T00:00:00Z")]
     [InlineData("2026-09-01T00:00:00Z", "2027-09-08T00:00:00Z")]

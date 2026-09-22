@@ -98,7 +98,18 @@ export async function start(root,environment={}) {
         const changed=JSON.stringify(keys)!==JSON.stringify(selectedKeys(settings,catalog));
         if(changed){refresh();return;}
       }
-      const result=await api.post('view',{calendarKeys:keys,start:range.start,end:range.end},signal);
+      const request={calendarKeys:keys,start:range.start,end:range.end};
+      const live=api.post('view',request,signal);
+      if(!identity.demo && !state.events.length) api.post('view/cached',request,signal).then(cached=>{
+        if(signal.aborted || !state.seed(ticket,cached))return;
+        if(state.offline) {
+          const snapshot=state.cache.get(state.key);
+          notice(`Offline | Last updated ${new Date(snapshot.at).toLocaleString()}`);
+          sync.textContent='Unavailable';
+        } else sync.textContent='Updating...';
+        showEvents();
+      }).catch(()=>{});
+      const result=await live;
       if(!state.accept(ticket,result))return;
       const issues=state.sources.filter(s=>s.stale || s.error);
       notice(issues.map(s=>`${catalog.find(c=>c.key===s.calendarKey)?.name||'Calendar'}: ${s.error?.message||'Stale'}${s.fetchedAt?` | Last updated ${new Date(s.fetchedAt).toLocaleString()}`:''}`).join(' | '));
