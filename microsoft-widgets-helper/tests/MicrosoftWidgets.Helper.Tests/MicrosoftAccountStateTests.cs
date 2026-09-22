@@ -7,6 +7,24 @@ namespace MicrosoftWidgets.Helper.Tests;
 public sealed class MicrosoftAccountStateTests
 {
     [Fact]
+    public async Task InvalidationNotifiesEverySubscriberWhenOneThrows()
+    {
+        var state = new MicrosoftAccountState(
+            new IdentityProvider(Identity("home", "tenant", "client", "user@example.com")),
+            new OutlookMemoryStore());
+        await state.GetAsync(default);
+        var notifications = new List<string>();
+        state.Invalidated += () => notifications.Add("owner");
+        state.Invalidated += () => throw new IOException("planner purge failed");
+        state.Invalidated += () => notifications.Add("pairing");
+        state.Invalidated += () => notifications.Add("outlook");
+
+        await state.InvalidateAsync(default);
+
+        Assert.Equal(["owner", "pairing", "outlook"], notifications);
+    }
+
+    [Fact]
     public void ImmutableKeyIgnoresUsernameButSeparatesPrincipalsTenantsAndClients()
     {
         var first = Identity("home-a", "tenant-a", "client-a", "same@example.com");

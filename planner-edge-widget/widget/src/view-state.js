@@ -18,6 +18,21 @@ function save(planId, state) {
   return sanitized;
 }
 
+function clear() {
+  try {
+    const storage = globalThis.localStorage;
+    if (!storage) return;
+    const keys = [];
+    for (let index = 0; index < storage.length; index++) {
+      const key = storage.key(index);
+      if (key?.startsWith("planner-edge:view:")) keys.push(key);
+    }
+    for (const key of keys) storage.removeItem(key);
+  } catch {
+    // Authorization cleanup must not prevent the signed-out view from rendering.
+  }
+}
+
 function storageKey(planId) {
   return `planner-edge:view:${planId}`;
 }
@@ -36,5 +51,5 @@ function nonnegative(value) {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
 }
 
-globalThis.PlannerViewState = { load, save };
+globalThis.PlannerViewState = { load, save, clear };
 })();

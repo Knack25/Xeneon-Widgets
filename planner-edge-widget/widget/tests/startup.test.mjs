@@ -86,6 +86,30 @@ test('native Planner offers re-pairing when CORS hides a revoked response', asyn
   assert.match(widget.app.innerHTML, /Pair again/);
 });
 
+test('authorization loss purges all saved Planner scroll positions', async () => {
+  const values = new Map([
+    ['native', JSON.stringify({ planner: { credential: 'revoked' } })],
+    ['planner-edge:view:plan-a', JSON.stringify({ boardScrollLeft: 20, bucketScrollTops: {} })],
+    ['planner-edge:view:plan-b', JSON.stringify({ boardScrollLeft: 40, bucketScrollTops: {} })],
+    ['unrelated', 'keep']
+  ]);
+  const storage = {
+    getItem: key => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+    removeItem: key => values.delete(key),
+    key: index => [...values.keys()][index] ?? null,
+    get length() { return values.size; }
+  };
+
+  startWidget(async () => response({ error: { code: 'pairing_required', message: 'Pair again.' } }, 401), storage,
+    { location: { protocol: 'file:' }, uniqueId: 'native', helperApi: undefined });
+  await settle();
+
+  assert.equal(values.has('planner-edge:view:plan-a'), false);
+  assert.equal(values.has('planner-edge:view:plan-b'), false);
+  assert.equal(values.get('unrelated'), 'keep');
+});
+
 test("widget scripts start together and show the selected board", async () => {
   const app = { innerHTML: '<section class="status">Loading Planner...</section>', addEventListener() {} };
   const context = {

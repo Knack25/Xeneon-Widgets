@@ -51,6 +51,7 @@ function showPairing(message, button = "Pair widget", code = "") {
 
 function clearAuthorization(error = { code: "signed_out", message: "Sign in again." }) {
   authorization.clearAuthorization();
+  viewState?.clear?.();
   displayGeneration++; detailGeneration++; dialogGeneration++; preferenceLoadGeneration++;
   memberRequestGeneration++; pairGeneration++;
   state = flow.applyError(flow.createInitialState(), error);

@@ -7,6 +7,8 @@ public interface ILocalJsonStore
 {
     Task<T?> ReadAsync<T>(string name, CancellationToken cancellationToken);
     Task WriteAsync<T>(string name, T value, CancellationToken cancellationToken);
+    Task DeleteAsync(string name, CancellationToken cancellationToken) =>
+        WriteAsync<object?>(name, null, cancellationToken);
 }
 
 public sealed class LocalJsonStore(string rootDirectory) : ILocalJsonStore
@@ -51,6 +53,18 @@ public sealed class LocalJsonStore(string rootDirectory) : ILocalJsonStore
             if (File.Exists(tempPath)) File.Delete(tempPath);
             writeGate.Release();
         }
+    }
+
+    public async Task DeleteAsync(string name, CancellationToken cancellationToken)
+    {
+        var path = GetPath(name);
+        var writeGate = WriteGates.GetOrAdd(Path.GetFullPath(path), _ => new SemaphoreSlim(1, 1));
+        await writeGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+        finally { writeGate.Release(); }
     }
 
     private string GetPath(string name) => Path.Combine(rootDirectory, name + ".json");

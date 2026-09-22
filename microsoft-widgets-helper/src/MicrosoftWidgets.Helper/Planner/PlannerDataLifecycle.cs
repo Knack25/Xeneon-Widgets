@@ -11,6 +11,11 @@ public sealed class PlannerDataLifecycle
     private readonly IPlannerSettingsStore? settingsStore;
     private readonly IMemoryCache cache;
     private readonly ConcurrentDictionary<string, byte> memoryKeys = new(StringComparer.Ordinal);
+    private readonly SemaphoreSlim purgeGate = new(1, 1);
+    private long purgeVersion;
+    private int purgeRequired;
+    private readonly object workerSync = new();
+    private Task? purgeWorker;
 
     [ActivatorUtilitiesConstructor]
     public PlannerDataLifecycle(MicrosoftAccountState accountState, IPlannerSettingsStore settingsStore,
@@ -19,7 +24,8 @@ public sealed class PlannerDataLifecycle
         this.accountState = accountState;
         this.settingsStore = settingsStore;
         this.cache = cache;
-        accountState.Invalidated += PurgeAfterInvalidation;
+        accountState.Invalidated += OnInvalidated;
+        StartRecoveryCheck();
     }
 
     internal PlannerDataLifecycle(IMemoryCache cache)
@@ -96,10 +102,90 @@ public sealed class PlannerDataLifecycle
     public async Task PurgeAsync(CancellationToken cancellationToken)
     {
         PurgeMemory();
-        if (settingsStore is not null) await settingsStore.PurgeWorkDataAsync(cancellationToken);
+        Interlocked.Increment(ref purgeVersion);
+        Volatile.Write(ref purgeRequired, 1);
+        await RetryPendingPurgeAsync(cancellationToken);
     }
 
-    private void PurgeAfterInvalidation() => PurgeAsync(CancellationToken.None).GetAwaiter().GetResult();
+    public bool PurgeRequired => Volatile.Read(ref purgeRequired) != 0;
+
+    public async Task RetryPendingPurgeAsync(CancellationToken cancellationToken)
+    {
+        if (settingsStore is null)
+        {
+            Volatile.Write(ref purgeRequired, 0);
+            return;
+        }
+
+        await purgeGate.WaitAsync(cancellationToken);
+        try
+        {
+            while (PurgeRequired)
+            {
+                var version = Interlocked.Read(ref purgeVersion);
+                await settingsStore.MarkPurgeRequiredAsync(cancellationToken);
+                await settingsStore.PurgeWorkDataAsync(cancellationToken);
+                if (version != Interlocked.Read(ref purgeVersion)) continue;
+                await settingsStore.ClearPurgeRequiredAsync(cancellationToken);
+                if (version == Interlocked.Read(ref purgeVersion))
+                    Volatile.Write(ref purgeRequired, 0);
+            }
+        }
+        finally { purgeGate.Release(); }
+    }
+
+    private void OnInvalidated()
+    {
+        PurgeMemory();
+        Interlocked.Increment(ref purgeVersion);
+        Volatile.Write(ref purgeRequired, 1);
+        StartPurgeWorker();
+    }
+
+    private void StartRecoveryCheck()
+    {
+        if (settingsStore is null) return;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                if (await settingsStore.IsPurgeRequiredAsync(CancellationToken.None))
+                {
+                    Interlocked.Increment(ref purgeVersion);
+                    Volatile.Write(ref purgeRequired, 1);
+                    StartPurgeWorker();
+                }
+            }
+            catch (Exception error)
+            {
+                System.Diagnostics.Trace.TraceError("Planner purge recovery check failed: {0}", error);
+            }
+        });
+    }
+
+    private void StartPurgeWorker()
+    {
+        lock (workerSync)
+        {
+            if (purgeWorker is { IsCompleted: false }) return;
+            purgeWorker = Task.Run(async () =>
+            {
+                for (var attempt = 0; attempt < 5 && PurgeRequired; attempt++)
+                {
+                    try
+                    {
+                        await RetryPendingPurgeAsync(CancellationToken.None);
+                        return;
+                    }
+                    catch (Exception error)
+                    {
+                        System.Diagnostics.Trace.TraceError("Planner purge attempt failed: {0}", error);
+                        if (attempt < 4) await Task.Delay(TimeSpan.FromMilliseconds(50 * (attempt + 1)));
+                    }
+                }
+            });
+        }
+    }
 
     private void PurgeMemory()
     {

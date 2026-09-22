@@ -11,6 +11,93 @@ namespace PlannerEdge.Helper.Tests;
 public sealed class PlannerDataLifecycleTests
 {
     [Fact]
+    public async Task InvalidationContinuesPastFailedPlannerPurgeAndRetriesUntilFilesAreRemoved()
+    {
+        var identity = new MutableIdentity();
+        var json = new FaultingPlannerJsonStore();
+        var account = new MicrosoftAccountState(identity, json);
+        await account.GetAsync(default);
+        var settings = new PlannerSettingsStore(json, account,
+            new FakeTimeProvider(DateTimeOffset.Parse("2026-09-22T12:00:00Z")));
+        var lifecycle = new PlannerDataLifecycle(account, settings,
+            new MemoryCache(new MemoryCacheOptions()));
+        var laterSubscriberRan = false;
+        account.Invalidated += () => laterSubscriberRan = true;
+        await settings.SaveSettingsAsync(new SettingsDto("plan", "Board", true), default);
+        await settings.SaveCachedDisplayAsync(Display("plan"), default);
+        json.FailDeletes = true;
+
+        await account.InvalidateAsync(default);
+        await json.FirstFailedDelete.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.True(laterSubscriberRan);
+        Assert.True(lifecycle.PurgeRequired);
+        json.FailDeletes = false;
+        await lifecycle.RetryPendingPurgeAsync(default);
+        Assert.False(lifecycle.PurgeRequired);
+        Assert.False(json.Contains("settings"));
+        Assert.False(json.Contains("cached-display"));
+    }
+
+    [Fact]
+    public async Task StartupCompletesDurablyMarkedPurge()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "PlannerLifecycleTests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var json = new LocalJsonStore(root);
+            var account = new MicrosoftAccountState(new MutableIdentity(), json);
+            await account.GetAsync(default);
+            var settings = new PlannerSettingsStore(json, account,
+                new FakeTimeProvider(DateTimeOffset.Parse("2026-09-22T12:00:00Z")));
+            await settings.SaveSettingsAsync(new SettingsDto("plan", "Board", true), default);
+            await settings.SaveCachedDisplayAsync(Display("plan"), default);
+            await settings.MarkPurgeRequiredAsync(default);
+
+            var lifecycle = new PlannerDataLifecycle(account, settings,
+                new MemoryCache(new MemoryCacheOptions()));
+            await WaitUntilAsync(() => !lifecycle.PurgeRequired &&
+                !File.Exists(Path.Combine(root, "settings.json")) &&
+                !File.Exists(Path.Combine(root, "cached-display.json")));
+
+            Assert.False(await settings.IsPurgeRequiredAsync(default));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
+    public async Task MalformedSafePreferencesDoNotPreventPlannerPurge()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "PlannerLifecycleTests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var json = new LocalJsonStore(root);
+            var account = new MicrosoftAccountState(new MutableIdentity(), json);
+            await account.GetAsync(default);
+            var settings = new PlannerSettingsStore(json, account,
+                new FakeTimeProvider(DateTimeOffset.Parse("2026-09-22T12:00:00Z")));
+            await settings.SaveSettingsAsync(new SettingsDto("plan", "Board", false), default);
+            await settings.SaveCachedDisplayAsync(Display("plan"), default);
+            await File.WriteAllTextAsync(Path.Combine(root, "planner-ui-preferences.json"), "{broken");
+            var lifecycle = new PlannerDataLifecycle(account, settings,
+                new MemoryCache(new MemoryCacheOptions()));
+
+            await lifecycle.PurgeAsync(default);
+
+            Assert.False(File.Exists(Path.Combine(root, "settings.json")));
+            Assert.False(File.Exists(Path.Combine(root, "cached-display.json")));
+            Assert.True((await json.ReadAsync<PlannerSafePreferences>("planner-ui-preferences", default))!.HideCompletedTasks);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
+
+    [Fact]
     public async Task Legacy_unversioned_work_data_is_expired()
     {
         await using var fixture = await Fixture.CreateAsync();
@@ -80,6 +167,29 @@ public sealed class PlannerDataLifecycleTests
     }
 
     [Theory]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    public async Task BucketFormatAuthorizationFailurePurgesEveryPlannerCache(HttpStatusCode status)
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        await fixture.Settings.SaveSettingsAsync(new SettingsDto("plan", "Board", true), default);
+        await fixture.Settings.SaveCachedDisplayAsync(Display("plan"), default);
+        await fixture.Lifecycle.SetAsync("plans", "all", new[] { new PlanSummary("plan", "Board", null, null) },
+            TimeSpan.FromMinutes(2), default);
+        var graph = new PlannerGraphClient(new HttpClient(new FormatAuthorizationHandler(status))
+        {
+            BaseAddress = new Uri("https://graph.microsoft.com/v1.0/")
+        }, new StaticTokenProvider());
+        var coordinator = new PlannerCoordinator(fixture.Settings, new PlannerDisplayService(graph), fixture.Lifecycle);
+
+        await Assert.ThrowsAsync<GraphApiException>(() => coordinator.GetDisplayAsync(default));
+
+        Assert.Null(await fixture.Settings.LoadCachedDisplayAsync(default));
+        Assert.Null((await fixture.Settings.LoadSettingsAsync(default)).SelectedPlanId);
+        Assert.False((await fixture.Lifecycle.TryGetAsync<IReadOnlyList<PlanSummary>>("plans", "all", default)).Found);
+    }
+
+    [Theory]
     [InlineData("network")]
     [InlineData("throttle")]
     [InlineData("service")]
@@ -138,6 +248,12 @@ public sealed class PlannerDataLifecycleTests
     private static PlanViewPreferences Preferences() =>
         new(true, new PlannerFilterSettings([], [], [], [], [], null));
 
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        while (!condition()) await Task.Delay(20, timeout.Token);
+    }
+
     private sealed class Fixture : IAsyncDisposable
     {
         private readonly string root;
@@ -187,6 +303,63 @@ public sealed class PlannerDataLifecycleTests
     {
         public override DateTimeOffset GetUtcNow() => now;
         public void Advance(TimeSpan value) => now += value;
+    }
+
+    private sealed class StaticTokenProvider : IGraphTokenProvider
+    {
+        public Task<string> GetAccessTokenAsync(CancellationToken cancellationToken) => Task.FromResult("token");
+    }
+
+    private sealed class FormatAuthorizationHandler(HttpStatusCode status) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            var path = request.RequestUri!.AbsolutePath;
+            HttpResponseMessage response = path.EndsWith("/buckets")
+                ? Json("""{"value":[{"id":"bucket","name":"Doing","planId":"plan","orderHint":"a"}]}""")
+                : path.EndsWith("/tasks")
+                    ? Json("""{"value":[{"id":"task","title":"Work","planId":"plan","bucketId":"bucket","percentComplete":0}]}""")
+                    : path.EndsWith("/bucketTaskBoardFormat")
+                        ? new HttpResponseMessage(status) { Content = new StringContent("denied") }
+                        : Json("""{"categoryDescriptions":{}}""");
+            return Task.FromResult(response);
+        }
+
+        private static HttpResponseMessage Json(string body) => new(HttpStatusCode.OK)
+        {
+            Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json")
+        };
+    }
+
+    private sealed class FaultingPlannerJsonStore : ILocalJsonStore
+    {
+        private readonly Dictionary<string, object?> values = new(StringComparer.Ordinal);
+        private readonly TaskCompletionSource firstFailedDelete =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public bool FailDeletes { get; set; }
+        public Task FirstFailedDelete => firstFailedDelete.Task;
+        public bool Contains(string name) => values.ContainsKey(name);
+
+        public Task<T?> ReadAsync<T>(string name, CancellationToken cancellationToken) =>
+            Task.FromResult(values.TryGetValue(name, out var value) ? (T?)value : default);
+
+        public Task WriteAsync<T>(string name, T value, CancellationToken cancellationToken)
+        {
+            values[name] = value;
+            return Task.CompletedTask;
+        }
+
+        public Task DeleteAsync(string name, CancellationToken cancellationToken)
+        {
+            if (FailDeletes)
+            {
+                firstFailedDelete.TrySetResult();
+                throw new IOException("disk unavailable");
+            }
+            values.Remove(name);
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class FailingGraph(Exception failure) : IPlannerGraphClient

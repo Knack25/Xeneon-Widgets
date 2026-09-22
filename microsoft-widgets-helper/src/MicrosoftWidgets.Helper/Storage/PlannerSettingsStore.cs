@@ -18,11 +18,15 @@ public interface IPlannerSettingsStore
     Task<BoardDisplay?> LoadCachedDisplayAsync(CancellationToken cancellationToken);
     Task SaveCachedDisplayAsync(BoardDisplay display, CancellationToken cancellationToken);
     Task PurgeWorkDataAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    Task MarkPurgeRequiredAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    Task<bool> IsPurgeRequiredAsync(CancellationToken cancellationToken) => Task.FromResult(false);
+    Task ClearPurgeRequiredAsync(CancellationToken cancellationToken) => Task.CompletedTask;
 }
 
 public sealed record PlannerSnapshot(int Version, string AccountKey, DateTimeOffset SavedAt, BoardDisplay Display);
 public sealed record PlannerSettingsSnapshot(int Version, string AccountKey, SettingsDto Settings);
 public sealed record PlannerSafePreferences(bool HideCompletedTasks);
+public sealed record PlannerPurgeMarker(int Version, bool Required);
 
 public sealed class PlannerSettingsStore(
     ILocalJsonStore jsonStore,
@@ -34,6 +38,7 @@ public sealed class PlannerSettingsStore(
     private const string SettingsFileName = "settings";
     private const string CachedDisplayFileName = "cached-display";
     private const string UiPreferencesFileName = "planner-ui-preferences";
+    private const string PurgeMarkerFileName = "planner-purge-required";
     private const int CurrentVersion = 1;
     private static readonly TimeSpan MaximumSnapshotAge = TimeSpan.FromHours(24);
     private readonly SemaphoreSlim settingsLock = new(1, 1);
@@ -107,7 +112,10 @@ public sealed class PlannerSettingsStore(
             var now = timeProvider.GetUtcNow();
             if (snapshot is not { Version: CurrentVersion } || snapshot.AccountKey != lease.Key ||
                 snapshot.SavedAt > now || now - snapshot.SavedAt > MaximumSnapshotAge)
+            {
+                await jsonStore.DeleteAsync(CachedDisplayFileName, cancellationToken);
                 return null;
+            }
             accountState.RequireCurrent(lease);
             return snapshot.Display with { IsStale = true };
         }
@@ -134,14 +142,31 @@ public sealed class PlannerSettingsStore(
         await settingsLock.WaitAsync(cancellationToken);
         try
         {
-            var safe = await jsonStore.ReadAsync<PlannerSafePreferences>(UiPreferencesFileName, cancellationToken)
-                ?? new PlannerSafePreferences(true);
-            await jsonStore.WriteAsync<PlannerSettingsSnapshot?>(SettingsFileName, null, cancellationToken);
-            await jsonStore.WriteAsync<PlannerSnapshot?>(CachedDisplayFileName, null, cancellationToken);
+            PlannerSafePreferences safe;
+            try
+            {
+                safe = await jsonStore.ReadAsync<PlannerSafePreferences>(UiPreferencesFileName, cancellationToken)
+                    ?? new PlannerSafePreferences(true);
+            }
+            catch (System.Text.Json.JsonException)
+            {
+                safe = new PlannerSafePreferences(true);
+            }
+            await jsonStore.DeleteAsync(SettingsFileName, cancellationToken);
+            await jsonStore.DeleteAsync(CachedDisplayFileName, cancellationToken);
             await jsonStore.WriteAsync(UiPreferencesFileName, safe, cancellationToken);
         }
         finally { settingsLock.Release(); }
     }
+
+    public Task MarkPurgeRequiredAsync(CancellationToken cancellationToken) =>
+        jsonStore.WriteAsync(PurgeMarkerFileName, new PlannerPurgeMarker(1, true), cancellationToken);
+
+    public async Task<bool> IsPurgeRequiredAsync(CancellationToken cancellationToken) =>
+        await jsonStore.ReadAsync<PlannerPurgeMarker>(PurgeMarkerFileName, cancellationToken) is { Version: 1, Required: true };
+
+    public Task ClearPurgeRequiredAsync(CancellationToken cancellationToken) =>
+        jsonStore.DeleteAsync(PurgeMarkerFileName, cancellationToken);
 
     private async Task<SettingsDto> LoadSettingsCoreAsync(AccountLease lease, CancellationToken cancellationToken)
     {
@@ -149,7 +174,10 @@ public sealed class PlannerSettingsStore(
             ?? new PlannerSafePreferences(true);
         var stored = await jsonStore.ReadAsync<PlannerSettingsSnapshot>(SettingsFileName, cancellationToken);
         if (stored is not { Version: CurrentVersion } || stored.AccountKey != lease.Key || stored.Settings is null)
+        {
+            await jsonStore.DeleteAsync(SettingsFileName, cancellationToken);
             return new SettingsDto(null, null, safe.HideCompletedTasks);
+        }
         return stored.Settings with { HideCompletedTasks = safe.HideCompletedTasks };
     }
 

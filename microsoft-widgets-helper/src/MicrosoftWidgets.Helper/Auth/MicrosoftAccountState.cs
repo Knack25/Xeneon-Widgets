@@ -298,7 +298,14 @@ public sealed class MicrosoftAccountState(IMicrosoftAccountIdentityProvider iden
     {
         account = null;
         Interlocked.Increment(ref generation);
-        Invalidated?.Invoke();
+        foreach (Action subscriber in Invalidated?.GetInvocationList() ?? [])
+        {
+            try { subscriber(); }
+            catch (Exception error)
+            {
+                System.Diagnostics.Trace.TraceError("Account invalidation subscriber failed: {0}", error);
+            }
+        }
     }
 
     private Task ClearWidgetCredentialsAsync(CancellationToken ct) =>

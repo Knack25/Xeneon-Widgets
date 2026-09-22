@@ -156,6 +156,7 @@ public sealed class StorageTests
         Assert.Null(loaded.SelectedPlanId);
         Assert.True(loaded.HideCompletedTasks);
         Assert.Null(loaded.PlanViews);
+        Assert.False(File.Exists(Path.Combine(root, "settings.json")));
     }
 
     [Fact]
@@ -286,6 +287,42 @@ public sealed class StorageTests
         var loaded = await store.LoadCachedDisplayAsync(CancellationToken.None);
 
         Assert.Null(loaded);
+        Assert.False(File.Exists(Path.Combine(root, "cached-display.json")));
+    }
+
+    [Fact]
+    public async Task SettingsStore_DeletesSettingsOwnedByAnotherAccount()
+    {
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var json = new LocalJsonStore(root);
+        await json.WriteAsync("settings", new PlannerSettingsSnapshot(1, "wrong-account",
+            new SettingsDto("private-plan", "Private", true)), default);
+        var store = new PlannerSettingsStore(json);
+
+        var loaded = await store.LoadSettingsAsync(default);
+
+        Assert.Null(loaded.SelectedPlanId);
+        Assert.False(File.Exists(Path.Combine(root, "settings.json")));
+    }
+
+    [Theory]
+    [InlineData("2026-09-23T12:00:00Z")]
+    [InlineData("2026-09-21T11:59:59Z")]
+    public async Task SettingsStore_DeletesCachedDisplayOutsideAuthorizedLifetime(string savedAt)
+    {
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var json = new LocalJsonStore(root);
+        var identity = new StorageIdentityProvider();
+        var account = new MicrosoftAccountState(identity, json);
+        var lease = await account.GetAsync(default);
+        await json.WriteAsync("cached-display", new PlannerSnapshot(1, lease.Key,
+            DateTimeOffset.Parse(savedAt), new BoardDisplay("private-plan", "Private",
+                DateTimeOffset.Parse("2026-09-22T12:00:00Z"), false, [])), default);
+        var store = new PlannerSettingsStore(json, account,
+            new StorageTimeProvider(DateTimeOffset.Parse("2026-09-22T12:00:00Z")));
+
+        Assert.Null(await store.LoadCachedDisplayAsync(default));
+        Assert.False(File.Exists(Path.Combine(root, "cached-display.json")));
     }
 
     private sealed class CoordinatedSettingsJsonStore(SettingsDto current) : ILocalJsonStore
@@ -325,6 +362,18 @@ public sealed class StorageTests
     }
 
     private sealed record ConcurrentPayload(int Sequence, string Content);
+
+    private sealed class StorageIdentityProvider : IMicrosoftAccountIdentityProvider
+    {
+        public Task<MicrosoftAccountIdentity> GetAccountIdentityAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(new MicrosoftAccountIdentity("storage-home", "storage-tenant", "storage-client",
+                "storage@example.invalid"));
+    }
+
+    private sealed class StorageTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => now;
+    }
 
     private sealed class BlockingReadPayload
     {

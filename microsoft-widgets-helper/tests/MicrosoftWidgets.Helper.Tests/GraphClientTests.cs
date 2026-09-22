@@ -295,6 +295,54 @@ public sealed class GraphClientTests
     }
 
     [Fact]
+    public async Task AccountInvalidationClearsCachedBucketOrderHints()
+    {
+        var identities = new MicrosoftAccountStateTests.IdentityProvider(new MicrosoftAccountIdentity(
+            "home", "tenant", "client", "user@example.com"));
+        var state = new MicrosoftAccountState(identities, new OutlookMemoryStore());
+        var formatReads = 0;
+        var handler = new StubHandler(request => request.RequestUri!.AbsolutePath.EndsWith("/bucketTaskBoardFormat")
+            ? ReadFormat() : """{"value":[{"id":"one","title":"First","planId":"plan","percentComplete":0}]}""");
+        string ReadFormat() { formatReads++; return """{"orderHint":"a"}"""; }
+        var client = new PlannerGraphClient(
+            new HttpClient(handler) { BaseAddress = new Uri("https://graph.microsoft.com/v1.0/") },
+            new StaticTokenProvider(), state);
+        var firstLease = await state.GetAsync(default);
+        using (state.BindRequest(firstLease))
+        {
+            await client.GetTasksAsync("plan", default);
+            await client.GetTasksAsync("plan", default);
+        }
+
+        await state.InvalidateAsync(default);
+        var secondLease = await state.GetAsync(default);
+        using (state.BindRequest(secondLease))
+            await client.GetTasksAsync("plan", default);
+
+        Assert.Equal(2, formatReads);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    public async Task GetTasksAsync_RethrowsAuthorizationFailureFromBucketFormat(HttpStatusCode status)
+    {
+        var handler = new ResponseHandler(request => request.RequestUri!.AbsolutePath.EndsWith("/bucketTaskBoardFormat")
+            ? new HttpResponseMessage(status) { Content = new StringContent("denied") }
+            : new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    """{"value":[{"id":"one","title":"First","planId":"plan","percentComplete":0}]}""",
+                    Encoding.UTF8, "application/json")
+            });
+
+        var error = await Assert.ThrowsAsync<GraphApiException>(() =>
+            CreateClient(handler).GetTasksAsync("plan", CancellationToken.None));
+
+        Assert.Equal(status, error.StatusCode);
+    }
+
+    [Fact]
     public async Task SetAssignmentsAsync_PatchesOnlyChangedUsers()
     {
         var handler = new StubHandler(request =>

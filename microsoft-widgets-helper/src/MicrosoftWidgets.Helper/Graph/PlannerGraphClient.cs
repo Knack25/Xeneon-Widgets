@@ -21,6 +21,7 @@ public sealed class PlannerGraphClient : IPlannerGraphClient
         this.httpClient = httpClient;
         this.tokenProvider = tokenProvider;
         this.accountState = accountState;
+        accountState.Invalidated += orderHints.Clear;
     }
 
     internal PlannerGraphClient(HttpClient httpClient, IGraphTokenProvider tokenProvider)
@@ -144,6 +145,10 @@ public sealed class PlannerGraphClient : IPlannerGraphClient
                 var hint = document.RootElement.TryGetProperty("orderHint", out var value) ? value.GetString() : null;
                 orderHints[taskId] = (hint, DateTimeOffset.UtcNow.AddMinutes(5));
                 return hint;
+            }
+            catch (GraphApiException error) when (error.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+            {
+                throw;
             }
             catch (Exception error) when (error is GraphApiException or HttpRequestException or System.Text.Json.JsonException)
             {
