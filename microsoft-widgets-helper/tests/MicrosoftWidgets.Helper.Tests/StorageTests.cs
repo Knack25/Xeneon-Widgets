@@ -30,6 +30,83 @@ public sealed class StorageTests
     }
 
     [Fact]
+    public async Task LocalJsonStore_preserves_same_key_write_order()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "MicrosoftWidgetsTests", Guid.NewGuid().ToString("N"));
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            var store = new LocalJsonStore(root);
+            var first = Task.Run(() => store.WriteAsync("ordered", new BlockingPayload(1, started, release), default));
+            await started.Task;
+            var second = store.WriteAsync("ordered", new ConcurrentPayload(2, "second"), default);
+            Assert.False(second.IsCompleted);
+
+            release.TrySetResult();
+            await Task.WhenAll(first, second);
+
+            Assert.Equal(2, (await store.ReadAsync<ConcurrentPayload>("ordered", default))!.Sequence);
+        }
+        finally
+        {
+            release.TrySetResult();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task LocalJsonStore_does_not_block_writes_to_different_keys()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "MicrosoftWidgetsTests", Guid.NewGuid().ToString("N"));
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            var store = new LocalJsonStore(root);
+            var blocked = Task.Run(() => store.WriteAsync("first", new BlockingPayload(1, started, release), default));
+            await started.Task;
+
+            await store.WriteAsync("second", new ConcurrentPayload(2, "available"), default)
+                .WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(2, (await store.ReadAsync<ConcurrentPayload>("second", default))!.Sequence);
+
+            release.TrySetResult();
+            await blocked;
+        }
+        finally
+        {
+            release.TrySetResult();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task LocalJsonStore_reads_complete_value_while_replacement_is_in_progress()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "MicrosoftWidgetsTests", Guid.NewGuid().ToString("N"));
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            var store = new LocalJsonStore(root);
+            await store.WriteAsync("replace", new ConcurrentPayload(1, "original"), default);
+            var replacement = Task.Run(() => store.WriteAsync("replace", new BlockingPayload(2, started, release), default));
+            await started.Task;
+
+            Assert.Equal(1, (await store.ReadAsync<ConcurrentPayload>("replace", default))!.Sequence);
+            release.TrySetResult();
+            await replacement;
+            Assert.Equal(2, (await store.ReadAsync<ConcurrentPayload>("replace", default))!.Sequence);
+        }
+        finally
+        {
+            release.TrySetResult();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task SettingsStore_LoadsLegacyThreeFieldSettings()
     {
         var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
@@ -209,4 +286,18 @@ public sealed class StorageTests
     }
 
     private sealed record ConcurrentPayload(int Sequence, string Content);
+
+    private sealed class BlockingPayload(int sequence, TaskCompletionSource started, TaskCompletionSource release)
+    {
+        public int Sequence { get; } = sequence;
+        public string Content
+        {
+            get
+            {
+                started.TrySetResult();
+                release.Task.GetAwaiter().GetResult();
+                return "blocked";
+            }
+        }
+    }
 }

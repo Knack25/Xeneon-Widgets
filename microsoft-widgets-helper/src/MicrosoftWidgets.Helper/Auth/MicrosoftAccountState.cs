@@ -170,6 +170,33 @@ public sealed class MicrosoftAccountState(IMicrosoftAccountIdentityProvider iden
         finally { gate.Release(); }
     }
 
+    internal async Task<T> ExecuteBoundAsync<T>(Func<Task<T>> action, CancellationToken ct)
+    {
+        var lease = authorizedRequest.Value
+            ?? throw new OutlookException("account_changed", "The Microsoft account changed. Reconnect the widget.", 401);
+        await gate.WaitAsync(ct);
+        try
+        {
+            RequireCurrent(lease);
+            await SynchronizeIdentityLockedAsync(false, ct);
+            RequireCurrent(lease);
+            T? result = default;
+            try
+            {
+                result = await action();
+                await SynchronizeIdentityLockedAsync(false, CancellationToken.None);
+                RequireCurrent(lease);
+                return result;
+            }
+            catch
+            {
+                if (result is IDisposable disposable) disposable.Dispose();
+                throw;
+            }
+        }
+        finally { gate.Release(); }
+    }
+
     public async Task InvalidateAsync(CancellationToken cancellationToken)
     {
         await gate.WaitAsync(cancellationToken);

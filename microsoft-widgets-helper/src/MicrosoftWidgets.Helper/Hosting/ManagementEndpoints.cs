@@ -21,7 +21,8 @@ public static class ManagementEndpoints
         owner.MapGet("/configuration", async (IMicrosoftAuthService auth, CancellationToken ct) =>
             Results.Ok(await auth.GetConfigurationAsync(ct)));
         owner.MapPut("/configuration", async (AzureAdOptions configuration, IMicrosoftAuthService auth,
-            IPlannerSettingsStore settings, MicrosoftAccountState outlookAccount, CancellationToken ct) =>
+            IPlannerSettingsStore settings, MicrosoftAccountState outlookAccount, LocalAccessService access,
+            HttpResponse response, CancellationToken ct) =>
         {
             var previous = await auth.GetConfigurationAsync(ct);
             var saved = await outlookAccount.TransitionAsync(() => auth.SaveConfigurationAsync(configuration, ct), ct,
@@ -30,6 +31,8 @@ public static class ManagementEndpoints
             {
                 await settings.UpdateSettingsAsync(selection =>
                     selection with { SelectedPlanId = null, SelectedPlanTitle = null }, ct);
+                response.Headers[LocalAccessHeaders.OwnerReplacement] =
+                    await access.IssueReplacementOwnerSessionAsync(ct);
             }
             return Results.Ok(saved);
         });

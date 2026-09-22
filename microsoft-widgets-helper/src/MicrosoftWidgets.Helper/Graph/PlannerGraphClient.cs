@@ -3,14 +3,31 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Collections.Concurrent;
+using PlannerEdge.Helper.Auth;
 
 namespace PlannerEdge.Helper.Graph;
 
 
-public sealed class PlannerGraphClient(HttpClient httpClient, IGraphTokenProvider tokenProvider) : IPlannerGraphClient
+public sealed class PlannerGraphClient : IPlannerGraphClient
 {
+    private readonly HttpClient httpClient;
+    private readonly IGraphTokenProvider tokenProvider;
+    private readonly MicrosoftAccountState? accountState;
     private readonly ConcurrentDictionary<string, (string? Hint, DateTimeOffset Expires)> orderHints = new();
     private readonly SemaphoreSlim formatGate = new(4);
+
+    public PlannerGraphClient(HttpClient httpClient, IGraphTokenProvider tokenProvider, MicrosoftAccountState accountState)
+    {
+        this.httpClient = httpClient;
+        this.tokenProvider = tokenProvider;
+        this.accountState = accountState;
+    }
+
+    internal PlannerGraphClient(HttpClient httpClient, IGraphTokenProvider tokenProvider)
+    {
+        this.httpClient = httpClient;
+        this.tokenProvider = tokenProvider;
+    }
 
     public async Task<string> GetCurrentUserIdAsync(CancellationToken cancellationToken)
     {
@@ -426,7 +443,7 @@ public sealed class PlannerGraphClient(HttpClient httpClient, IGraphTokenProvide
         {
             using var current = attempt == 0 ? request : new HttpRequestMessage(HttpMethod.Get, uri);
             current.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await tokenProvider.GetAccessTokenAsync(cancellationToken));
-            var response = await httpClient.SendAsync(current, cancellationToken);
+            var response = await SendTransportAsync(current, cancellationToken);
             if (response.IsSuccessStatusCode)
                 return response;
             if (response.StatusCode == HttpStatusCode.TooManyRequests && retryGet && attempt < 2)
@@ -453,7 +470,7 @@ public sealed class PlannerGraphClient(HttpClient httpClient, IGraphTokenProvide
     {
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer",
             await tokenProvider.GetConversationTokenAsync(cancellationToken));
-        var response = await httpClient.SendAsync(request, cancellationToken);
+        var response = await SendTransportAsync(request, cancellationToken);
         if (response.IsSuccessStatusCode)
             return response;
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -464,6 +481,13 @@ public sealed class PlannerGraphClient(HttpClient httpClient, IGraphTokenProvide
 
     private static StringContent JsonContent<T>(T value) =>
         new(JsonSerializer.Serialize(value), Encoding.UTF8, "application/json");
+
+    private Task<HttpResponseMessage> SendTransportAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        if (request.Method == HttpMethod.Get || accountState is null)
+            return httpClient.SendAsync(request, cancellationToken);
+        return accountState.ExecuteBoundAsync(() => httpClient.SendAsync(request, cancellationToken), cancellationToken);
+    }
 
     private static void ValidateConversationContinuation(Uri uri, string escapedGroup, string escapedThread)
     {

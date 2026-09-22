@@ -1,7 +1,10 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using PlannerEdge.Helper.Auth;
 using PlannerEdge.Helper.Graph;
+using PlannerEdge.Helper.Outlook;
+using MicrosoftWidgets.Helper.Tests;
 
 namespace PlannerEdge.Helper.Tests;
 
@@ -229,6 +232,36 @@ public sealed class GraphClientTests
             return "{}";
         });
         await CreateClient(handler).CompleteTaskAsync("task-1", "W/\"latest\"", CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Planner_mutation_does_not_reach_graph_after_account_is_invalidated()
+    {
+        var identities = new MicrosoftAccountStateTests.IdentityProvider(new MicrosoftAccountIdentity(
+            "home", "tenant", "client", "user@example.com"));
+        var state = new MicrosoftAccountState(identities, new OutlookMemoryStore());
+        var lease = await state.GetAsync(default);
+        var tokens = new BlockingTokenProvider();
+        var sends = 0;
+        var handler = new StubHandler(_ =>
+        {
+            Interlocked.Increment(ref sends);
+            return "{}";
+        });
+        var client = new PlannerGraphClient(
+            new HttpClient(handler) { BaseAddress = new Uri("https://graph.microsoft.com/v1.0/") },
+            tokens,
+            state);
+        using var binding = state.BindRequest(lease);
+
+        var mutation = client.CompleteTaskAsync("task-1", "W/\"latest\"", default);
+        await tokens.Started;
+        await state.InvalidateAsync(default);
+        tokens.Release();
+
+        var error = await Assert.ThrowsAsync<OutlookException>(() => mutation);
+        Assert.Equal("account_changed", error.Code);
+        Assert.Equal(0, Volatile.Read(ref sends));
     }
 
     [Fact]
@@ -484,6 +517,20 @@ public sealed class GraphClientTests
     {
         public Task<string> GetAccessTokenAsync(CancellationToken cancellationToken) => Task.FromResult("core-token");
         public Task<string> GetConversationTokenAsync(CancellationToken cancellationToken) => Task.FromResult("conversation-token");
+    }
+
+    private sealed class BlockingTokenProvider : IGraphTokenProvider
+    {
+        private readonly TaskCompletionSource started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task Started => started.Task;
+        public void Release() => release.TrySetResult();
+        public async Task<string> GetAccessTokenAsync(CancellationToken cancellationToken)
+        {
+            started.TrySetResult();
+            await release.Task.WaitAsync(cancellationToken);
+            return "stale-token";
+        }
     }
 
     private sealed class StubHandler(Func<HttpRequestMessage, string> responseBody) : HttpMessageHandler

@@ -101,10 +101,16 @@ public sealed class OwnerManagementEndpointTests
         request.Headers.Add(LocalAccessHeaders.Owner, host.OwnerSession);
 
         using var changed = await host.Client.SendAsync(request);
+        Assert.True(changed.Headers.TryGetValues("X-Microsoft-Widgets-Owner-Replacement", out var values));
+        var replacement = Assert.Single(values);
         using var oldOwner = await host.SendAsync("GET", "/configuration", owner: host.OwnerSession);
+        using var refreshed = await host.SendAsync("GET", "/configuration", owner: replacement);
+        using var signIn = await host.SendAsync("POST", "/auth/sign-in", owner: replacement);
 
         Assert.Equal(HttpStatusCode.OK, changed.StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, oldOwner.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, refreshed.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, signIn.StatusCode);
         await Assert.ThrowsAsync<LocalAccessException>(() =>
             host.Access.ExchangeBootstrapAsync(pending.Token, default));
     }

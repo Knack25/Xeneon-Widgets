@@ -84,6 +84,45 @@ public sealed class MicrosoftAuthAcquisitionTests
     }
 
     [Fact]
+    public async Task Token_result_is_rejected_when_sign_out_completes_during_acquisition()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "MicrosoftWidgetsTests", Guid.NewGuid().ToString("N"));
+        var clientId = Guid.NewGuid().ToString();
+        var tenant = Guid.NewGuid().ToString();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            var store = new LocalJsonStore(root);
+            var service = new MicrosoftAuthService(
+                Options.Create(new AzureAdOptions { ClientId = clientId, Tenant = tenant }), store,
+                acquireConfiguredToken: async (configuration, _, cancellationToken) =>
+                {
+                    started.TrySetResult();
+                    await release.Task.WaitAsync(cancellationToken);
+                    return new MicrosoftTokenAcquisition("stale-token", "same-home", configuration.Tenant,
+                        "same@example.com");
+                },
+                acquireConfiguredIdentity: null,
+                cacheDirectory: root);
+
+            var token = service.GetAccessTokenAsync(default);
+            await started.Task;
+            await service.SignOutAsync(default);
+            release.TrySetResult();
+
+            var error = await Assert.ThrowsAsync<Outlook.OutlookException>(() => token);
+            Assert.Equal("account_changed", error.Code);
+            Assert.Null(await store.ReadAsync<StoredMicrosoftAccountIdentity>("microsoft-account-identity", default));
+        }
+        finally
+        {
+            release.TrySetResult();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public void IdentityUsesSelectedHomeAccountAndAuthenticatedTenant()
     {
         var account = new FakeAccount("home-account", "mutable@example.com", "configured-tenant");

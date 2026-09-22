@@ -1,5 +1,6 @@
 (() => {
   const ownerHeader = 'X-Microsoft-Widgets-Owner';
+  const ownerReplacementHeader = 'X-Microsoft-Widgets-Owner-Replacement';
   const bootstrapHeader = 'X-Microsoft-Widgets-Bootstrap';
   const sessionKey = 'microsoft-widgets-owner-session';
   const nativeFetch = window.fetch.bind(window);
@@ -39,7 +40,13 @@
     if (!await ready || !ownerSession) throw new Error('Open Microsoft Widgets Setup from the notification area or Start menu to continue.');
     const headers = new Headers(options.headers);
     headers.set(ownerHeader, ownerSession);
-    return nativeFetch(path, { ...options, headers });
+    const response = await nativeFetch(path, { ...options, headers });
+    const replacement = response.headers.get(ownerReplacementHeader);
+    if (replacement) {
+      ownerSession = replacement;
+      sessionStorage.setItem(sessionKey, ownerSession);
+    }
+    return response;
   }
 
   window.helperApi = { fetch: ownerFetch, ready };

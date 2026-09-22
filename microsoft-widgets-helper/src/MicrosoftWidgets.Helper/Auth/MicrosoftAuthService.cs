@@ -58,6 +58,7 @@ public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILoc
     private AzureAdOptions? currentConfiguration;
     private MicrosoftAccountIdentity? currentIdentity;
     private long configurationRevision;
+    private bool signOutInProgress;
 
     internal MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILocalJsonStore jsonStore,
         Func<IEnumerable<string>, CancellationToken, Task<string>> acquireToken,
@@ -89,6 +90,8 @@ public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILoc
         await configurationGate.WaitAsync(cancellationToken);
         try
         {
+            if (signOutInProgress)
+                throw new OutlookException("account_changed", "The Microsoft account changed. Reconnect the widget.", 401);
             if (currentConfiguration == normalized) return normalized;
             var configuredApp = await CreateAppAsync(normalized);
             await jsonStore.WriteAsync<StoredMicrosoftAccountIdentity?>("microsoft-account-identity", null, cancellationToken);
@@ -338,22 +341,57 @@ public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILoc
 
     public async Task SignOutAsync(CancellationToken cancellationToken)
     {
-        var snapshot = await CaptureConfigurationAsync(requireApp: false, cancellationToken);
-        if (snapshot.Client is null) return;
-        foreach (var account in await snapshot.Client.GetAccountsAsync())
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            await snapshot.Client.RemoveAsync(account);
-        }
+        await EnsureInitializedAsync(cancellationToken);
+        IPublicClientApplication? client;
         await configurationGate.WaitAsync(cancellationToken);
         try
         {
-            if (configurationRevision != snapshot.Revision || !ReferenceEquals(app, snapshot.Client))
+            if (signOutInProgress)
                 throw new OutlookException("account_changed", "The Microsoft account changed. Reconnect the widget.", 401);
+            client = app;
+            signOutInProgress = true;
+            configurationRevision++;
             currentIdentity = null;
-            await jsonStore.WriteAsync<StoredMicrosoftAccountIdentity?>("microsoft-account-identity", null, cancellationToken);
+            try
+            {
+                await jsonStore.WriteAsync<StoredMicrosoftAccountIdentity?>("microsoft-account-identity", null,
+                    CancellationToken.None);
+            }
+            catch
+            {
+                signOutInProgress = false;
+                throw;
+            }
         }
         finally { configurationGate.Release(); }
+
+        try
+        {
+            if (client is not null)
+            {
+                foreach (var account in await client.GetAccountsAsync())
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    await client.RemoveAsync(account);
+                }
+            }
+        }
+        finally
+        {
+            await configurationGate.WaitAsync(CancellationToken.None);
+            try
+            {
+                configurationRevision++;
+                currentIdentity = null;
+                try
+                {
+                    await jsonStore.WriteAsync<StoredMicrosoftAccountIdentity?>("microsoft-account-identity", null,
+                        CancellationToken.None);
+                }
+                finally { signOutInProgress = false; }
+            }
+            finally { configurationGate.Release(); }
+        }
     }
 
     private async Task<AuthConfigurationSnapshot> CaptureConfigurationAsync(bool requireApp,
@@ -363,6 +401,8 @@ public sealed class MicrosoftAuthService(IOptions<AzureAdOptions> defaults, ILoc
         await configurationGate.WaitAsync(cancellationToken);
         try
         {
+            if (signOutInProgress)
+                throw new OutlookException("account_changed", "The Microsoft account changed. Reconnect the widget.", 401);
             if (requireApp && app is null) throw new InvalidOperationException("Microsoft client ID is not configured.");
             return new(app, currentConfiguration!, currentIdentity, configurationRevision);
         }

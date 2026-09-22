@@ -26,5 +26,6 @@ public static class LocalAccessHeaders
 {
     public const string Bootstrap = "X-Microsoft-Widgets-Bootstrap";
     public const string Owner = "X-Microsoft-Widgets-Owner";
+    public const string OwnerReplacement = "X-Microsoft-Widgets-Owner-Replacement";
     public const string Credential = "X-Microsoft-Widgets-Credential";
 }

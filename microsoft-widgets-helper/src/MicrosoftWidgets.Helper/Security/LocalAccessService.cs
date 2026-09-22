@@ -74,22 +74,41 @@ public sealed class LocalAccessService
                 if (match is null) throw new LocalAccessException("The local access bootstrap is invalid or expired.");
 
                 bootstraps.Remove(match.Value);
-                var sessionBytes = RandomNumberGenerator.GetBytes(32);
-                try
-                {
-                    var session = ToBase64Url(sessionBytes);
-                    AddBounded(ownerSessions, SHA256.HashData(sessionBytes), now.Add(OwnerSessionLifetime), MaximumOwnerSessionCount, lease);
-                    return session;
-                }
-                finally
-                {
-                    CryptographicOperations.ZeroMemory(sessionBytes);
-                }
+                return IssueOwnerSession(now, lease);
             }
         }
         finally
         {
             CryptographicOperations.ZeroMemory(hash);
+        }
+    }
+
+    internal async Task<string> IssueReplacementOwnerSessionAsync(CancellationToken cancellationToken)
+    {
+        AccountLease? lease = accountState is null
+            ? null
+            : await accountState.GetIdentityAsync(requireAccount: false, cancellationToken);
+        lock (gate)
+        {
+            var now = timeProvider.GetUtcNow();
+            RemoveExpired(ownerSessions, now);
+            return IssueOwnerSession(now, lease);
+        }
+    }
+
+    private string IssueOwnerSession(DateTimeOffset now, AccountLease? lease)
+    {
+        var sessionBytes = RandomNumberGenerator.GetBytes(32);
+        try
+        {
+            var session = ToBase64Url(sessionBytes);
+            AddBounded(ownerSessions, SHA256.HashData(sessionBytes), now.Add(OwnerSessionLifetime),
+                MaximumOwnerSessionCount, lease);
+            return session;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(sessionBytes);
         }
     }
 
