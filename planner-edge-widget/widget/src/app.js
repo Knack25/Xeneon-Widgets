@@ -4,6 +4,8 @@ const flow = globalThis.PlannerState;
 const filterEngine = globalThis.PlannerFilters;
 const viewState = globalThis.PlannerViewState;
 const app = document.getElementById("app");
+const authorization = flow.createAuthorizationLifecycle();
+api.authorizationLifecycle = authorization;
 const details = new Map();
 const failures = new Set();
 const pending = new Set();
@@ -47,15 +49,26 @@ function showPairing(message, button = "Pair widget", code = "") {
   render();
 }
 
-api.onUnauthorized = () => {
+function clearAuthorization(error = { code: "signed_out", message: "Sign in again." }) {
+  authorization.clearAuthorization();
   displayGeneration++; detailGeneration++; dialogGeneration++; preferenceLoadGeneration++;
-  state = flow.createInitialState(); details.clear(); failures.clear();
+  memberRequestGeneration++; pairGeneration++;
+  state = flow.applyError(flow.createInitialState(), error);
+  details.clear(); failures.clear(); pending.clear(); visibleTasks.clear();
+  plans = null; members = null; memberPlanId = null; memberError = null; memberRequest = null;
+  currentUserId = null; filterError = null; createNotice = null;
+  preferences = filterEngine?.createDefaultPreferences() || { myTasks: false, filters: {} };
+  preferencesPlanId = null; activePreferencesPlanId = null; preferenceRequestPlanId = null;
+  preferencesDisplayRevision = -1; acceptedDisplayRevision = 0; searchText = ""; searchOpen = false;
+  preferenceWriteQueues.clear(); renderedDialog = null;
   if (api.native) {
     api.credential = "";
     try { api.setCredential(""); } catch {}
     showPairing("Pairing expired or revoked.", "Pair again");
-  } else showPairing("Open Microsoft Widgets Setup to restore preview access.", "");
-};
+  } else { accessReady = true; render(); }
+}
+
+api.onUnauthorized = () => clearAuthorization();
 
 async function pair() {
   if (!api.native || !api.instanceId) return;
@@ -138,6 +151,10 @@ async function loadDisplay(force = false) {
 }
 
 function applyDisplayError(error) {
+  if (["signed_out", "auth_required", "pairing_required", "permission_denied"].includes(error.code)) {
+    clearAuthorization(error);
+    return;
+  }
   state = flow.applyError(state, error);
   if (state.display) state = { ...state, mode: "error" };
 }
@@ -288,9 +305,18 @@ async function savePreferences() {
 }
 
 function persistPreferences(planId, snapshot) {
+  const authorizationTicket = authorization.beginRequest();
   const previous = preferenceWriteQueues.get(planId) || Promise.resolve();
-  const request = previous.then(() => api.saveViewPreferences(planId, snapshot));
+  const request = previous.then(() => {
+    if (!authorization.isCurrent(authorizationTicket)) {
+      const error = new Error("Authorization changed.");
+      error.name = "AbortError";
+      throw error;
+    }
+    return api.saveViewPreferences(planId, snapshot);
+  });
   const tail = request.catch(() => {}).finally(() => {
+    authorization.finish(authorizationTicket);
     if (preferenceWriteQueues.get(planId) === tail) preferenceWriteQueues.delete(planId);
   });
   preferenceWriteQueues.set(planId, tail);
@@ -309,7 +335,7 @@ function render() {
   persistScrollSnapshot(previousScroll);
   if (state.mode === "loading") return;
   if (state.mode === "signedOut") {
-    app.innerHTML = '<section class="status"><h1>Sign in to Planner</h1><p>Open the Planner Edge setup page on your computer.</p></section>';
+    app.innerHTML = `<section class="status"><h1>Sign in to Planner</h1><p>${escapeHtml(state.error?.message || "Open Microsoft Widgets Setup on your computer.")}</p></section>`;
     return;
   }
   if (state.mode === "error" && !state.display) {

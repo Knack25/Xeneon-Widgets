@@ -67,6 +67,7 @@ builder.Services.AddHostedService<UpdateWorker>();
 builder.Services.AddHostedService<TrayService>();
 
 var app = builder.Build();
+_ = app.Services.GetRequiredService<PlannerDataLifecycle>();
 
 app.UseHelperSecurityBoundary();
 app.UseRouting();

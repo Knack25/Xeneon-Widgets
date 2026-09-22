@@ -135,7 +135,7 @@ public sealed class TaskChatService(
             taskDetails.Invalidate(originalTask.Id);
             return true;
         }
-        catch (Exception error) when (error is not OperationCanceledException)
+        catch (Exception error) when (error is not OperationCanceledException && !IsAuthorizationFailure(error))
         {
             var refreshed = await TryReloadTaskAsync(originalTask.Id, cancellationToken);
             if (refreshed?.ConversationThreadId == threadId)
@@ -152,7 +152,7 @@ public sealed class TaskChatService(
                 taskDetails.Invalidate(originalTask.Id);
                 return true;
             }
-            catch (Exception retryError) when (retryError is not OperationCanceledException)
+            catch (Exception retryError) when (retryError is not OperationCanceledException && !IsAuthorizationFailure(retryError))
             {
                 var afterRetry = await TryReloadTaskAsync(originalTask.Id, cancellationToken);
                 if (afterRetry?.ConversationThreadId != threadId) return false;
@@ -168,11 +168,14 @@ public sealed class TaskChatService(
         {
             return await graphClient.GetTaskAsync(taskId, cancellationToken);
         }
-        catch (Exception error) when (error is not OperationCanceledException)
+        catch (Exception error) when (error is not OperationCanceledException && !IsAuthorizationFailure(error))
         {
             return null;
         }
     }
+
+    private static bool IsAuthorizationFailure(Exception error) => error is GraphApiException
+        { StatusCode: System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden };
 
     private static string EncodeCursor(Uri uri) => Convert.ToBase64String(Encoding.UTF8.GetBytes(uri.AbsoluteUri))
         .TrimEnd('=').Replace('+', '-').Replace('/', '_');

@@ -1,5 +1,6 @@
 using PlannerEdge.Helper.Contracts;
 using PlannerEdge.Helper.Storage;
+using PlannerEdge.Helper.Auth;
 
 namespace PlannerEdge.Helper.Tests;
 
@@ -142,7 +143,7 @@ public sealed class StorageTests
     }
 
     [Fact]
-    public async Task SettingsStore_LoadsLegacyThreeFieldSettings()
+    public async Task SettingsStore_ExpiresLegacyThreeFieldSettings()
     {
         var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -152,8 +153,8 @@ public sealed class StorageTests
 
         var loaded = await store.LoadSettingsAsync(CancellationToken.None);
 
-        Assert.Equal("plan-1", loaded.SelectedPlanId);
-        Assert.False(loaded.HideCompletedTasks);
+        Assert.Null(loaded.SelectedPlanId);
+        Assert.True(loaded.HideCompletedTasks);
         Assert.Null(loaded.PlanViews);
     }
 
@@ -254,7 +255,7 @@ public sealed class StorageTests
     }
 
     [Fact]
-    public async Task SettingsStore_LoadsLegacyCachedDisplay()
+    public async Task SettingsStore_ExpiresLegacyCachedDisplay()
     {
         var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -284,10 +285,7 @@ public sealed class StorageTests
 
         var loaded = await store.LoadCachedDisplayAsync(CancellationToken.None);
 
-        Assert.NotNull(loaded);
-        Assert.Equal("Legacy task", Assert.Single(Assert.Single(loaded.Buckets).Tasks).Title);
-        Assert.Null(loaded.Labels);
-        Assert.True(loaded.IsStale);
+        Assert.Null(loaded);
     }
 
     private sealed class CoordinatedSettingsJsonStore(SettingsDto current) : ILocalJsonStore
@@ -303,21 +301,27 @@ public sealed class StorageTests
 
         public async Task<T?> ReadAsync<T>(string name, CancellationToken cancellationToken)
         {
-            if (typeof(T) != typeof(SettingsDto)) return default;
+            if (typeof(T) == typeof(PlannerSafePreferences))
+                return (T)(object)new PlannerSafePreferences(current.HideCompletedTasks);
+            if (typeof(T) != typeof(PlannerSettingsSnapshot)) return default;
             if (Interlocked.Increment(ref settingsReadCount) == 1)
             {
                 firstReadStarted.TrySetResult();
                 await allowFirstRead.Task.WaitAsync(cancellationToken);
             }
 
-            return (T)(object)current;
+            return (T)(object)new PlannerSettingsSnapshot(1, TestAccountKey, current);
         }
 
         public Task WriteAsync<T>(string name, T value, CancellationToken cancellationToken)
         {
-            current = (SettingsDto)(object)value!;
+            if (value is PlannerSettingsSnapshot snapshot) current = snapshot.Settings;
+            else if (value is PlannerSafePreferences safe) current = current with { HideCompletedTasks = safe.HideCompletedTasks };
             return Task.CompletedTask;
         }
+
+        private static string TestAccountKey { get; } = MicrosoftAccountState.Key(
+            new MicrosoftAccountIdentity("test-home", "test-tenant", "test-client", "test@example.invalid"));
     }
 
     private sealed record ConcurrentPayload(int Sequence, string Content);

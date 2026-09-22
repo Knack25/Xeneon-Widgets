@@ -16,13 +16,19 @@ async function plannerOwnerApi() {
 }
 
 async function plannerFetch(url, options = {}, bootstrap = false) {
+  const lifecycle = globalThis.PlannerApi.authorizationLifecycle;
+  const ticket = lifecycle?.beginRequest();
   const headers = { ...options.headers };
   if (nativePlanner && !bootstrap && globalThis.PlannerApi.credential)
     headers["X-Microsoft-Widgets-Credential"] = globalThis.PlannerApi.credential;
-  const request = { ...options, headers, cache: "no-store", credentials: "omit" };
-  const response = nativePlanner ? await fetch(url, request) : await (globalThis.helperApi || await plannerOwnerApi()).fetch(url, request);
-  if (response.status === 401 && !bootstrap) globalThis.PlannerApi.onUnauthorized?.();
-  return response;
+  const request = { ...options, headers, cache: "no-store", credentials: "omit",
+    signal: ticket?.signal || options.signal };
+  try {
+    const response = nativePlanner ? await fetch(url, request) : await (globalThis.helperApi || await plannerOwnerApi()).fetch(url, request);
+    if ((response.status === 401 || response.status === 403) && !bootstrap) globalThis.PlannerApi.onUnauthorized?.();
+    if (ticket && !lifecycle.isCurrent(ticket)) throw Object.assign(new Error("Authorization changed."), { name: "AbortError" });
+    return response;
+  } finally { if (ticket) lifecycle.finish(ticket); }
 }
 
 function readPlannerInstance() {
@@ -209,7 +215,8 @@ async function postTaskChat(taskId, message) {
   }));
 }
 
-globalThis.PlannerApi = { native: nativePlanner, credential: "", initialize: initializePlanner, setCredential: savePlannerCredential,
+globalThis.PlannerApi = { native: nativePlanner, credential: "", authorizationLifecycle: null,
+  initialize: initializePlanner, setCredential: savePlannerCredential,
   pair: (instanceId, requestSecret) => plannerPairing("", { scope: "planner", instanceId, requestSecret }),
   poll: (id, requestSecret) => plannerPairing(`/${encodeURIComponent(id)}/poll`, { requestSecret }), getDisplay, getCachedDisplay, getViewPreferences, saveViewPreferences, getCurrentUser, completeTask,
   getPlans, selectPlan, getTaskDetails, completeChecklistItem, moveTask, setDueDate, setTitle, setProgress,

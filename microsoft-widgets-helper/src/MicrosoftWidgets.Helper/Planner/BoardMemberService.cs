@@ -5,8 +5,13 @@ using PlannerEdge.Helper.Storage;
 
 namespace PlannerEdge.Helper.Planner;
 
-public sealed class BoardMemberService(IPlannerGraphClient graphClient, IPlannerSettingsStore settingsStore)
+public sealed class BoardMemberService(IPlannerGraphClient graphClient, IPlannerSettingsStore settingsStore,
+    PlannerDataLifecycle lifecycle)
 {
+    internal BoardMemberService(IPlannerGraphClient graphClient, IPlannerSettingsStore settingsStore)
+        : this(graphClient, settingsStore,
+            new PlannerDataLifecycle(new Microsoft.Extensions.Caching.Memory.MemoryCache(
+                new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()))) { }
     public async Task<IReadOnlyList<GraphMember>> GetAsync(CancellationToken cancellationToken)
     {
         var settings = await settingsStore.LoadSettingsAsync(cancellationToken);
@@ -23,6 +28,7 @@ public sealed class BoardMemberService(IPlannerGraphClient graphClient, IPlanner
         }
         catch (GraphApiException error) when (error.StatusCode == HttpStatusCode.Forbidden)
         {
+            await lifecycle.PurgeAsync(CancellationToken.None);
             throw new BoardMembersUnavailableException("Board member access was denied. Ask your work administrator to approve it.");
         }
     }

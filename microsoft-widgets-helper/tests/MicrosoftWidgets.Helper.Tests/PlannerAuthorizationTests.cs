@@ -73,6 +73,7 @@ public sealed class PlannerAuthorizationTests
         Assert.Equal(allowed ? HttpStatusCode.Accepted : access == "forged-origin" ? HttpStatusCode.Forbidden : HttpStatusCode.Unauthorized, response.StatusCode);
         Assert.Equal(allowed ? 1 : 0, host.Executions);
         Assert.Equal(access is "planner" or "planner-file", response.Headers.Contains("Access-Control-Allow-Origin"));
+        Assert.True(response.Headers.CacheControl?.NoStore == true);
     }
 
     [Fact]

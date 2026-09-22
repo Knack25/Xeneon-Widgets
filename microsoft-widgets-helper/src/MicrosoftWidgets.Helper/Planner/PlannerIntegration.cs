@@ -17,6 +17,7 @@ public static class PlannerIntegration
     public static IServiceCollection AddPlannerIntegration(this IServiceCollection services)
     {
         services.AddSingleton<IPlannerSettingsStore, PlannerSettingsStore>();
+        services.AddSingleton<PlannerDataLifecycle>();
         services.AddHttpClient<IPlannerGraphClient, PlannerGraphClient>(client =>
             client.BaseAddress = new Uri("https://graph.microsoft.com/v1.0/"));
         services.AddSingleton<PlannerBoardService>();
@@ -67,6 +68,7 @@ public static class PlannerIntegration
 
         try
         {
+            http.Response.Headers.CacheControl = "no-store";
             var authorization = await WidgetAuthorizationFilter.AuthorizeAsync(http, WidgetScope.Planner);
             if (authorization.Failure is not null)
             {
@@ -89,6 +91,11 @@ public static class PlannerIntegration
         catch (OutlookException ex)
         {
             await Results.Json(new { error = ex.Error }, statusCode: ex.StatusCode).ExecuteAsync(http);
+        }
+        catch (GraphApiException ex) when (ex.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
+        {
+            await http.RequestServices.GetRequiredService<PlannerDataLifecycle>().PurgeAsync(CancellationToken.None);
+            throw;
         }
     });
 

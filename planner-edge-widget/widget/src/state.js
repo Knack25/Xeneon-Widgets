@@ -65,6 +65,29 @@ function applyError(state, error) {
   return { ...state, mode: error.code === "signed_out" ? "signedOut" : "error", error, pendingTask: null, completing: false };
 }
 
+function createAuthorizationLifecycle() {
+  let generation = 0;
+  const controllers = new Set();
+  const Controller = globalThis.AbortController || class {
+    constructor() { this.signal = { aborted: false }; }
+    abort() { this.signal.aborted = true; }
+  };
+  return {
+    beginRequest() {
+      const controller = new Controller();
+      controllers.add(controller);
+      return { generation, controller, signal: controller.signal };
+    },
+    isCurrent(ticket) { return ticket?.generation === generation && !ticket.signal.aborted; },
+    finish(ticket) { controllers.delete(ticket?.controller); },
+    clearAuthorization() {
+      generation++;
+      for (const controller of controllers) controller.abort();
+      controllers.clear();
+    }
+  };
+}
+
 globalThis.PlannerState = { createInitialState, applyDisplayLoaded, applyDisplayRefresh, beginConfirmComplete, cancelConfirmComplete,
   openBoardPicker, openTaskDetails, openTaskBucketPicker, selectTaskBucket, beginConfirmChecklist,
-  beginConfirmChecklistDelete, beginConfirmProgress, closeActiveDialog, closeDialog, applyError };
+  beginConfirmChecklistDelete, beginConfirmProgress, closeActiveDialog, closeDialog, applyError, createAuthorizationLifecycle };

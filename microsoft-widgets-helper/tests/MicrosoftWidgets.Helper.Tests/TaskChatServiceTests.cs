@@ -257,6 +257,19 @@ public sealed class TaskChatServiceTests
     }
 
     [Fact]
+    public async Task PostAsync_DoesNotSwallowAuthorizationFailureWhileAttachingThread()
+    {
+        var fixture = CreateFixture(threadId: null);
+        fixture.Graph.AttachmentResults.Enqueue(new GraphApiException(HttpStatusCode.Unauthorized, "expired"));
+
+        var error = await Assert.ThrowsAsync<GraphApiException>(() =>
+            fixture.Service.PostAsync("task", "First comment", CancellationToken.None));
+
+        Assert.Equal(HttpStatusCode.Unauthorized, error.StatusCode);
+        Assert.Single(fixture.Graph.Attachments);
+    }
+
+    [Fact]
     public async Task PostAsync_TranslatesMissingConversationConsentToForbidden()
     {
         var fixture = CreateFixture();

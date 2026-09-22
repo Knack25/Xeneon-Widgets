@@ -1,20 +1,23 @@
 using PlannerEdge.Helper.Contracts;
 using PlannerEdge.Helper.Graph;
-using Microsoft.Extensions.Caching.Memory;
 
 namespace PlannerEdge.Helper.Planner;
 
-public sealed class PlannerBoardService(IPlannerGraphClient graphClient, IMemoryCache cache)
+public sealed class PlannerBoardService(IPlannerGraphClient graphClient, PlannerDataLifecycle lifecycle)
 {
+    internal PlannerBoardService(IPlannerGraphClient graphClient, Microsoft.Extensions.Caching.Memory.IMemoryCache cache)
+        : this(graphClient, new PlannerDataLifecycle(cache)) { }
     private readonly SemaphoreSlim gate = new(1, 1);
 
     public async Task<IReadOnlyList<PlanSummary>> GetPlansAsync(CancellationToken cancellationToken)
     {
-        if (cache.TryGetValue<IReadOnlyList<PlanSummary>>("plans", out var cached) && cached is not null) return cached;
+        var cached = await lifecycle.TryGetAsync<IReadOnlyList<PlanSummary>>("plans", "all", cancellationToken);
+        if (cached.Found && cached.Value is not null) return cached.Value;
         await gate.WaitAsync(cancellationToken);
         try
         {
-            if (cache.TryGetValue<IReadOnlyList<PlanSummary>>("plans", out cached) && cached is not null) return cached;
+            cached = await lifecycle.TryGetAsync<IReadOnlyList<PlanSummary>>("plans", "all", cancellationToken);
+            if (cached.Found && cached.Value is not null) return cached.Value;
             var plans = await graphClient.GetMyPlansAsync(cancellationToken);
             var groups = await graphClient.GetMemberGroupsAsync(cancellationToken);
             var groupNames = groups.ToDictionary(group => group.Id, group => group.DisplayName);
@@ -23,7 +26,8 @@ public sealed class PlannerBoardService(IPlannerGraphClient graphClient, IMemory
                 .OrderBy(plan => plan.GroupName, StringComparer.OrdinalIgnoreCase)
                 .ThenBy(plan => plan.Title, StringComparer.OrdinalIgnoreCase)
                 .ToList();
-            cache.Set("plans", (IReadOnlyList<PlanSummary>)result, TimeSpan.FromMinutes(2));
+            await lifecycle.SetAsync("plans", "all", (IReadOnlyList<PlanSummary>)result,
+                TimeSpan.FromMinutes(2), cancellationToken);
             return result;
         }
         finally { gate.Release(); }

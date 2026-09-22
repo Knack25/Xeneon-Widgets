@@ -30,7 +30,7 @@ function createDetailFixture(fetch, appOverrides = {}, contextOverrides = {}) {
   const change = (attribute, value) => handlers.change({ target: {
     matches: selector => selector === `[${attribute}]`, value
   } });
-  return { app, handlers, tap, input, change };
+  return { app, handlers, tap, input, change, context };
 }
 
 test("task card has separate tap targets and previews only three checklist items", async () => {
@@ -1595,6 +1595,32 @@ test("rapid preference writes are serialized and the newest failed snapshot stay
 
   assert.match(app.innerHTML, /aria-label="My tasks" aria-pressed="false"/);
   assert.match(app.innerHTML, /Preferences were not saved/);
+});
+
+test("queued preference writes do not start after authorization is cleared", async () => {
+  const writes = [];
+  const { tap, context } = createDetailFixture(async (path, options = {}) => {
+    if (path.endsWith("/display")) return response(organizationBoard());
+    if (path.endsWith("/api/planner/me")) return response({ userId: "me" });
+    if (path.includes("view-preferences") && options.method === "PUT")
+      return new Promise(resolve => writes.push({ resolve }));
+    if (path.includes("view-preferences")) return response(defaultPreferences());
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  await settle();
+
+  const first = tap("data-toggle-my-tasks");
+  await settle();
+  const second = tap("data-toggle-my-tasks");
+  await settle();
+  assert.equal(writes.length, 1);
+
+  context.PlannerApi.onUnauthorized();
+  writes[0].resolve(response(null, 204));
+  await Promise.allSettled([first, second]);
+  await settle();
+
+  assert.equal(writes.length, 1);
 });
 
 test("checklist completion refreshes server detail without discarding distinct drafts", async () => {
