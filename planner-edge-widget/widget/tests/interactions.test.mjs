@@ -1,7 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { runInNewContext } from "node:vm";
+import { runInNewContext as runScripts } from "node:vm";
+
+function runInNewContext(source, context) {
+  context.location ??= { protocol: 'http:', hostname: 'localhost', port: '8787' };
+  context.helperApi ??= { ready: Promise.resolve(true), fetch: context.fetch };
+  return runScripts(source, context);
+}
 
 const settle = (milliseconds = 15) => new Promise(resolve => setTimeout(resolve, milliseconds));
 
@@ -273,7 +279,7 @@ test("My tasks filters assignments on the selected board", async () => {
   ] };
   const context = { document: { getElementById: () => app }, setInterval() {}, Intl, Date,
     fetch: async path => ({ ok: true, status: 200, json: async () => path.endsWith("/display") ? board :
-      path.endsWith("/auth/me") ? { userId: "me" } : { checklist: [] } }) };
+      path.endsWith("/api/planner/me") ? { userId: "me" } : { checklist: [] } }) };
   for (const file of ["state.js", "api.js", "app.js"])
     runInNewContext(readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"), context);
   await new Promise(resolve => setTimeout(resolve, 15));
@@ -803,7 +809,7 @@ test("My tasks and filters persist per board while search does not", async () =>
       writes.push(JSON.parse(options.body)); return response(JSON.parse(options.body));
     }
     if (path.endsWith("/view-preferences/plan")) return response(preferences);
-    if (path.endsWith("/auth/me")) return response({ userId: "me" });
+    if (path.endsWith("/api/planner/me")) return response({ userId: "me" });
     return response({ checklist: [], assignees: [] });
   });
   await settle();
@@ -1442,7 +1448,7 @@ test("live refresh preserves open dialog drafts filters search and scroll", asyn
     }
     if (path.includes("view-preferences")) return response({ myTasks: true, filters: { assigneeIds: [], labelIds: [],
       priorities: [1], bucketIds: [], progressValues: [], dueDateRange: null } });
-    if (path.endsWith("/auth/me")) return response({ userId: "me" });
+    if (path.endsWith("/api/planner/me")) return response({ userId: "me" });
     if (path.endsWith("/details")) return response(detail);
     if (path.endsWith("/chat")) return response({ state: "available", messages: [] });
     throw new Error(`Unexpected request: ${path}`);
@@ -1564,7 +1570,7 @@ test("rapid preference writes are serialized and the newest failed snapshot stay
   const writes = [];
   const { app, tap } = createDetailFixture(async (path, options = {}) => {
     if (path.endsWith("/display")) return response(organizationBoard());
-    if (path.endsWith("/auth/me")) return response({ userId: "me" });
+    if (path.endsWith("/api/planner/me")) return response({ userId: "me" });
     if (path.includes("view-preferences") && options.method === "PUT")
       return new Promise(resolve => writes.push({ body: JSON.parse(options.body), resolve }));
     if (path.includes("view-preferences")) return response(defaultPreferences());

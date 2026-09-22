@@ -3,6 +3,35 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 
+test("Planner sends only its scoped credential in the shared header", async () => {
+  const calls = [];
+  const context = { location: { protocol: 'file:' }, fetch: async (url, options) => {
+    calls.push({ url, options }); return { ok: true, status: 204 };
+  } };
+  runInNewContext(readFileSync(new URL('../src/api.js', import.meta.url), 'utf8'), context);
+  context.PlannerApi.credential = 'planner-secret';
+  await context.PlannerApi.getDisplay();
+  await context.PlannerApi.deleteChecklistItem('task', 'item');
+  for (const { url, options } of calls) {
+    assert.equal(options?.headers?.['X-Microsoft-Widgets-Credential'], 'planner-secret');
+    assert.equal(options.headers.Authorization, undefined);
+    assert.equal(url.includes('planner-secret'), false);
+  }
+});
+
+test("Planner preview uses helperApi and cannot mint a widget credential", async () => {
+  const calls = [];
+  const context = { location: { protocol: 'http:', hostname: 'localhost', port: '8787' },
+    helperApi: { ready: Promise.resolve(true), fetch: async (url, options) => {
+      calls.push({ url, options }); return { ok: true, status: 204 };
+    } }, fetch: async () => { throw new Error('Preview bypassed owner API'); } };
+  runInNewContext(readFileSync(new URL('../src/api.js', import.meta.url), 'utf8'), context);
+  await context.PlannerApi.getDisplay();
+  assert.equal(calls[0].url, '/display');
+  assert.equal(calls[0].options?.headers?.['X-Microsoft-Widgets-Credential'], undefined);
+  await assert.rejects(() => context.PlannerApi.pair('preview', 'secret'));
+});
+
 test("notes and chat API wrappers send the exact helper contracts", async () => {
   const calls = [];
   const context = { URLSearchParams, fetch: async (path, options = {}) => {

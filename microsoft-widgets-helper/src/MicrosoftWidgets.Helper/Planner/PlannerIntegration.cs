@@ -1,6 +1,7 @@
 using PlannerEdge.Helper.Contracts;
 using PlannerEdge.Helper.Graph;
 using PlannerEdge.Helper.Storage;
+using PlannerEdge.Helper.Security;
 
 namespace PlannerEdge.Helper.Planner;
 
@@ -35,12 +36,16 @@ public static class PlannerIntegration
     public static void MapPlannerIntegration(this IEndpointRouteBuilder app)
     {
         // Keep existing widget URLs while new clients use a namespaced API.
-        MapRoutes(app);
+        MapRoutes(app.MapGroup(""));
         MapRoutes(app.MapGroup("/api/planner"));
     }
 
-    private static void MapRoutes(IEndpointRouteBuilder app)
+    private static void MapRoutes(RouteGroupBuilder app)
     {
+        app.WithMetadata(new WidgetTransportMetadata());
+        app.AddEndpointFilter(new WidgetAuthorizationFilter(WidgetScope.Planner));
+        app.MapGet("/me", async (IPlannerGraphClient graph, CancellationToken ct) =>
+            Results.Ok(new { userId = await graph.GetCurrentUserIdAsync(ct) }));
         app.MapGet("/plans", async (PlannerBoardService boards, CancellationToken ct) =>
             Results.Ok(await boards.GetPlansAsync(ct)));
         app.MapGet("/settings", async (IPlannerSettingsStore settings, CancellationToken ct) =>

@@ -1,24 +1,31 @@
 export class OutlookApi {
-  constructor({native=false,credential='',fetch:fetcher=(...args)=>globalThis.fetch(...args)}={}) {this.base=native?'http://localhost:8787':'';this.native=native;this.credential=credential;this.fetch=fetcher;}
-  async initialize() {if(!this.native) {const data=await this.request('session',undefined,undefined,true);if(!data.token) throw new Error('Outlook session unavailable');this.token=data.token;}}
-  async request(path,body,signal,bootstrap=false,retried=false) {
+  constructor({native=false,credential='',fetch:fetcher=(...args)=>globalThis.fetch(...args),helperApi}={}) {this.base=native?'http://localhost:8787':'';this.native=native;this.credential=native?credential:'';this.fetch=fetcher;this.helperApi=helperApi;}
+  async initialize() {
+    if(this.native)return;
+    if(!this.helperApi && !globalThis.helperApi) {
+      await new Promise((resolve,reject)=>{const script=document.createElement('script');script.src='/helper-api.js';script.onload=resolve;script.onerror=()=>reject(new Error('Open Microsoft Widgets Setup to preview Outlook.'));document.head.append(script);});
+    }
+    this.helperApi ??= globalThis.helperApi;
+    if(!await this.helperApi?.ready)throw new Error('Open Microsoft Widgets Setup to preview Outlook.');
+  }
+  async request(path,body,signal,bootstrap=false) {
+    if(bootstrap && !this.native)throw new Error('Preview uses the setup owner session.');
     const headers={Accept:'application/json'};
     if(body!==undefined) headers['Content-Type']='application/json';
-    if(!bootstrap) {if(this.native) headers.Authorization=`Bearer ${this.credential}`;else headers['X-Outlook-Session']=this.token;}
-    const response=await this.fetch(`${this.base}/api/outlook/${path}`,{method:body===undefined?'GET':'POST',headers,
+    if(!bootstrap && this.native && this.credential) headers['X-Microsoft-Widgets-Credential']=this.credential;
+    if(!this.native)await this.initialize();
+    const fetcher=this.native?this.fetch:this.helperApi.fetch.bind(this.helperApi);
+    const response=await fetcher(`${this.base}${bootstrap?'/api/local-access/':'/api/outlook/'}${path}`,{method:body===undefined?'GET':'POST',headers,
       body:body===undefined?undefined:JSON.stringify(body),signal,cache:'no-store',credentials:'omit'});
     if(response.status===401 && !bootstrap) {
       this.onUnauthorized?.();
-      if(!this.native && !retried && (body===undefined || ['view','view/cached','event-details'].includes(path))) {
-        await this.initialize();return this.request(path,body,signal,false,true);
-      }
     }
     if(!response.ok) {let data;try{data=await response.json();}catch{}const error=new Error(data?.error?.message||data?.message||`Outlook unavailable (${response.status})`);error.status=response.status;error.code=data?.error?.code||data?.code;throw error;}
     return response.status===204?null:response.json();
   }
   get(path,signal){return this.request(path,undefined,signal);}
   post(path,body,signal){return this.request(path,body,signal);}
-  pair(instanceId,requestSecret){return this.request('pairings',{instanceId,requestSecret},undefined,true);}
+  pair(instanceId,requestSecret){return this.request('pairings',{scope:'outlook',instanceId,requestSecret},undefined,true);}
   poll(id,requestSecret){return this.request(`pairings/${encodeURIComponent(id)}/poll`,{requestSecret},undefined,true);}
 }
 export async function loadMetadata(api,signal) {

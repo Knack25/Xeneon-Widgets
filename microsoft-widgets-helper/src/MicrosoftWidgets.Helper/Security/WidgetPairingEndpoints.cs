@@ -7,6 +7,7 @@ public static class WidgetPairingEndpoints
     public static void MapWidgetPairings(this IEndpointRouteBuilder app)
     {
         var routes = CreateRoutes(app);
+        routes.WithMetadata(new WidgetTransportMetadata());
         routes.MapPost("", async (ScopedPairingRequest request, WidgetPairingService service, OutlookAccountState state, CancellationToken ct) =>
         {
             var lease = await state.GetAsync(ct);
@@ -56,6 +57,8 @@ public static class WidgetPairingEndpoints
             context.HttpContext.Response.Headers.CacheControl = "no-store";
             if (!OutlookAccessService.IsLocalHost(request)) return Results.BadRequest();
             if (!WidgetAuthorizationFilter.IsAllowedOrigin(request)) return Results.StatusCode(403);
+            if (context.HttpContext.GetEndpoint()?.Metadata.GetMetadata<WidgetTransportMetadata>() is not null)
+                WidgetCorsExtensions.AllowNativeResponse(context.HttpContext);
             if (HttpMethods.IsPost(request.Method) && (!request.HasJsonContentType() || request.ContentLength > 16384)) return Results.BadRequest();
             try { return await next(context); }
             catch (OutlookException ex) { return Results.Json(new { error = ex.Error }, statusCode: ex.StatusCode); }

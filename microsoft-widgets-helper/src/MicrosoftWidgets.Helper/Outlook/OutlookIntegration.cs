@@ -33,6 +33,7 @@ public static class OutlookIntegration
     public static void MapOutlookIntegration(this IEndpointRouteBuilder app)
     {
         var routes = CreateRoutes(app);
+        routes.WithMetadata(new WidgetTransportMetadata());
         routes.MapGet("/calendars", async (CalendarCatalogService catalog, CancellationToken ct) => Results.Ok(await catalog.GetAsync(ct)));
         routes.MapGet("/preferences", async (OutlookPreferencesService preferences, CancellationToken ct) => Results.Ok(await preferences.GetAsync(ct)));
         routes.MapPost("/view", async (ViewRequest request, CalendarViewService views, CancellationToken ct) => Results.Ok(await views.GetAsync(request, ct)));
@@ -105,7 +106,12 @@ public static class OutlookIntegration
                     return Error("invalid_request", "Send a bounded JSON request.", 400);
                 if (!WidgetAuthorizationFilter.IsAllowedOrigin(request)) return Error("forbidden", "This origin is not approved.", 403);
                 var role = http.GetEndpoint()?.Metadata.GetMetadata<OutlookAuthorization>()?.Access ?? Access.Read;
-                if (role is Access.Owner or Access.Bootstrap) return await next(context);
+                if (role is Access.Owner) return await next(context);
+                if (role is Access.Bootstrap)
+                {
+                    WidgetCorsExtensions.AllowNativeResponse(http);
+                    return await next(context);
+                }
                 return await new WidgetAuthorizationFilter(WidgetScope.Outlook).InvokeAsync(context, next);
             }
             catch (OutlookException ex) { return Results.Json(new { error = ex.Error }, statusCode: ex.StatusCode); }

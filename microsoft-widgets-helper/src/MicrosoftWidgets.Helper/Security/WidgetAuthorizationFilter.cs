@@ -21,6 +21,7 @@ public sealed class WidgetAuthorizationFilter(WidgetScope scope) : IEndpointFilt
                 lease = await http.RequestServices.GetRequiredService<WidgetPairingService>().AuthenticateAsync(
                     scope, http.Request.Headers[LocalAccessHeaders.Credential].ToString(), http.RequestAborted);
             if (lease is null) return Results.Unauthorized();
+            WidgetCorsExtensions.AllowNativeResponse(http);
             using var binding = state.BindRequest(lease.Value);
             var result = await next(context);
             await state.GetIdentityAsync(false, http.RequestAborted);

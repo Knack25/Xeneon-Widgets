@@ -30,8 +30,8 @@ const api = pathname => {
   if (pathname === '/api/outlook/status') return { configured: true, signedIn: connected, ready: connected };
   if (pathname === '/api/outlook/connect') { connected = true; return { isSignedIn: true }; }
   if (pathname === '/api/outlook/calendars') return [{ key: 'fixture', name: '<script>Calendar label</script>', kind: 'personal', owner: 'Example account' }];
-  if (pathname === '/api/outlook/pairings') return [{ id: 'fixture-pair', instanceId: 'Fixture display', code: '123456', expiresAt: new Date(Date.now() + 60000).toISOString() }];
-  if (pathname === '/api/outlook/paired') return [];
+  if (pathname === '/api/local-access/pairings') return ['planner', 'outlook'].map(scope => ({ scope, id: `${scope}-pair`, instanceId: 'Fixture display', code: scope === 'planner' ? '123456' : '654321', expiresAt: new Date(Date.now() + 60000).toISOString() }));
+  if (pathname === '/api/local-access/pairings/paired') return [];
   return null;
 };
 const server = http.createServer(async (request, response) => {
@@ -173,6 +173,7 @@ try {
   assert.equal(calls.filter(c => c.pathname === '/auth/enable-assignee-names').length, 1);
   failedDownloads.add('/downloads/planner');
   await page.getByRole('link', {name:'Planner',exact:true}).click();
+  assert.equal(await page.getByRole('link', {name:'Preview board',exact:true}).getAttribute('target'), null, 'Preview retains the owner session in this tab');
   await page.getByRole('link', { name: 'Download Planner widget' }).click();
   await page.locator('#widget-package-status').filter({ hasText: 'Fixture download failed.' }).waitFor();
   assert.equal(new URL(page.url()).hash, '#planner');

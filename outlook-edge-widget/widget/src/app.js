@@ -16,6 +16,7 @@ export async function start(root,environment={}) {
   try {identity=await waitForIdentity({protocol:location.protocol,search:location.search,readId:()=>environment.uniqueId??(typeof uniqueId==='undefined'?undefined:uniqueId)});}
   catch(error){root.replaceChildren(el('section',{class:'startup'},el('h1',{},'Outlook'),el('p',{},error.message)));return;}
   const store=settingsStore(localStorage,identity.id);let settings=store.load();
+  if(!identity.native)settings.credential='';
   const themeMedia=matchMedia('(prefers-color-scheme: dark)');
   const applyTheme=()=>{document.documentElement.dataset.theme=settings.theme==='system'?(themeMedia.matches?'dark':'light'):settings.theme;};
   themeMedia.addEventListener('change',applyTheme);applyTheme();
@@ -89,8 +90,7 @@ export async function start(root,environment={}) {
     try {
       // Revalidate helper authorization before replacing a retained offline snapshot.
       if(state.offline || recovering) {
-        const status=await api.get('status',signal);
-        if(!status.ready){const e=new Error('Reconnect Outlook in helper setup.');e.status=401;throw e;}
+        await metadata(signal);
         recovering=false;
       }
       if(forceMetadata || Date.now()-metadataAt>=900000) {
@@ -124,6 +124,7 @@ export async function start(root,environment={}) {
       notice([401,403].includes(error.status)?'Access changed. Reconnect Outlook in helper setup.':`Offline | ${cached && state.events.length?`Last updated ${new Date(cached.at).toLocaleString()}`:'No saved events for this range'}`);
       if(error.status===401 && identity.native){settings.credential='';api.credential='';save();ready=false;const reconnect=button('Pair again',pair);status.append(' ',reconnect);}
       if(error.status===401 && !identity.native){ready=false;status.append(' ',button('Reconnect',initialize));}
+      if(identity.native && !error.status)status.append(' ',button('Pair again',pair));
       sync.textContent='Unavailable';showEvents();
     }finally{if(state.current(ticket))refreshButton.disabled=false;}
   }
@@ -164,21 +165,20 @@ export async function start(root,environment={}) {
       const request=await api.pair(identity.id,secret);if(generation!==dialogs.generation)return;text.textContent='Approve this code in Microsoft Widgets Helper setup.';dialogs.panel.append(el('strong',{class:'pair-code'},request.code));
       const poll=async()=>{
         if(generation!==dialogs.generation)return;
-        if(Date.now()>=Date.parse(request.expiresAt)){text.textContent='Pairing expired.';dialogs.panel.append(button('New code',pair));return;}
+        if(!Number.isFinite(Date.parse(request.expiresAt)) || Date.now()>=Date.parse(request.expiresAt)){text.textContent='Pairing expired.';dialogs.panel.append(button('New code',pair));return;}
         try{const result=await api.poll(request.id,secret);if(generation!==dialogs.generation)return;if(result.status==='approved' && result.credential){settings.credential=result.credential;api.credential=result.credential;save();dialogs.close();await initialize();return;}pairTimer=setTimeout(poll,2000);}
-        catch(error){text.textContent=error.message;dialogs.panel.append(button('Retry pairing',pair));}
+        catch{if(generation!==dialogs.generation)return;text.textContent='Pairing unavailable. Try again.';dialogs.panel.append(button('Retry pairing',pair));}
       };pairTimer=setTimeout(poll,1500);
-    }catch(error){text.textContent=error.message;dialogs.panel.append(button('Retry pairing',pair));}
+    }catch{if(generation!==dialogs.generation)return;text.textContent='Pairing unavailable. Try again.';dialogs.panel.append(button('Retry pairing',pair));}
   }
   async function initialize() {
     try {
       if(identity.native && !settings.credential){notice('Pair this widget with Microsoft Widgets Helper.');status.append(' ',button('Pair widget',pair));sync.textContent='Not paired';return;}
-      await api.initialize();const result=await api.get('status');
-      if(!result.ready){state.clear();dialogs.unavailable();showEvents();notice(result.error?.message||'Connect Outlook in Microsoft Widgets Helper setup.');sync.textContent='Not connected';status.append(' ',button('Retry',initialize));return;}
+      await api.initialize();
       await metadata();ready=true;if(!adapter)makeCalendar();await refresh();
     }catch(error){state.clear();dialogs.unavailable();showEvents();notice(error.message);sync.textContent='Unavailable';
       if(error.status===401 && identity.native){settings.credential='';api.credential='';save();ready=false;status.append(' ',button('Pair again',pair));}
-      else status.append(' ',button('Retry',initialize));
+      else {status.append(' ',button('Retry',initialize));if(identity.native)status.append(' ',button('Pair again',pair));}
     }
   }
   controls();await initialize();

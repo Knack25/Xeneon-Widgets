@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
+import { webcrypto } from "node:crypto";
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
@@ -13,17 +14,82 @@ function response(body, status = 200) {
   return { ok: status >= 200 && status < 300, status, json: async () => body };
 }
 
-function startWidget(fetch, localStorage = { getItem: () => null, setItem() {} }) {
-  const app = { innerHTML: '<section class="status">Loading Planner...</section>', addEventListener() {} };
-  const context = { document: { getElementById: () => app }, fetch, setInterval: () => {}, localStorage, Intl, Date };
+function startWidget(fetch, localStorage = { getItem: () => null, setItem() {} }, overrides = {}) {
+  const handlers = {};
+  const app = { innerHTML: '<section class="status">Loading Planner...</section>', addEventListener(type, handler) { handlers[type] = handler; } };
+  const context = { document: { getElementById: () => app }, fetch, setInterval: () => {}, localStorage, Intl, Date,
+    location: { protocol: 'http:', hostname: 'localhost', port: '8787' }, helperApi: { ready: Promise.resolve(true), fetch }, ...overrides };
   for (const file of ["state.js", "api.js", "filters.js", "view-state.js", "app.js"])
     runInNewContext(readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"), context, { filename: file });
-  return { app, context };
+  return { app, context, tapPair: () => handlers.click({ target: { closest: selector => selector === '[data-pair-widget]' ? {} : null, matches: () => false } }) };
 }
+
+test('native Planner waits for its instance and stores only the Planner credential', async () => {
+  const values = new Map([['native-one', JSON.stringify({ outlook: { credential: 'outlook-secret' } })]]);
+  const timers = [], calls = [], logs = [];
+  const storage = { getItem: key => values.get(key), setItem: (key, value) => values.set(key, value) };
+  const widget = startWidget(async (url, options = {}) => {
+    calls.push({ url, options });
+    if (url.endsWith('/pairings')) return response({ id: 'pair-id', code: '123456', expiresAt: new Date(Date.now() + 60000).toISOString() });
+    if (url.endsWith('/poll')) return response({ status: 'approved', credential: 'planner-secret' });
+    if (url.endsWith('/display')) return response(board('Paired Board'));
+    return response(null, 204);
+  }, storage, { location: { protocol: 'file:' }, helperApi: undefined, crypto: webcrypto,
+    setTimeout: fn => { timers.push(fn); return timers.length; }, clearTimeout() {}, console: { log: value => logs.push(value) } });
+  await settle();
+  assert.equal(calls.length, 0);
+  widget.context.uniqueId = 'native-one';
+  await timers.shift()(); await settle();
+  assert.match(widget.app.innerHTML, /Pair.*Planner|Pair widget/);
+  await widget.tapPair(); await settle();
+  assert.match(widget.app.innerHTML, /123456/);
+  assert.deepEqual(JSON.parse(calls[0].options.body).scope, 'planner');
+  await timers.shift()(); await settle();
+  const saved = JSON.parse(values.get('native-one'));
+  assert.equal(saved.planner.credential, 'planner-secret');
+  assert.equal(saved.outlook.credential, 'outlook-secret');
+  assert.equal(calls.find(c => c.url.endsWith('/display')).options.headers['X-Microsoft-Widgets-Credential'], 'planner-secret');
+  assert.doesNotMatch(widget.app.innerHTML + JSON.stringify(logs) + calls.map(c => c.url).join(), /planner-secret|outlook-secret/);
+  assert.equal(values.has('native-two'), false);
+});
+
+test('Planner pairing expires and retries without exposing returned errors or secrets', async () => {
+  const timers = [], calls = [];
+  let attempt = 0;
+  const widget = startWidget(async (url, options) => {
+    calls.push({ url, options });
+    if (++attempt === 1) return response({ id: 'old', code: '123456', expiresAt: '2000-01-01T00:00:00Z' });
+    return response({ error: { message: 'do-not-render-secret' } }, 503);
+  }, undefined, { location: { protocol: 'file:' }, uniqueId: 'native-two', helperApi: undefined, crypto: webcrypto,
+    setTimeout: fn => { timers.push(fn); return timers.length; }, clearTimeout() {} });
+  await settle(); await widget.tapPair(); await timers.shift()();
+  assert.match(widget.app.innerHTML, /expired/i);
+  assert.equal(calls.length, 1);
+  await widget.tapPair();
+  assert.match(widget.app.innerHTML, /Retry pairing/);
+  assert.doesNotMatch(widget.app.innerHTML, /do-not-render-secret/);
+});
+
+test('Planner preview never reads or writes durable credentials', async () => {
+  let reads = 0, writes = 0;
+  const widget = startWidget(async () => response(null, 204), { getItem() { reads++; return null; }, setItem() { writes++; } });
+  await settle();
+  assert.equal(reads, 0); assert.equal(writes, 0);
+  assert.doesNotMatch(widget.app.innerHTML, /Pair widget/);
+});
+
+test('native Planner offers re-pairing when CORS hides a revoked response', async () => {
+  const widget = startWidget(async () => { throw new TypeError('Failed to fetch'); },
+    { getItem: () => JSON.stringify({ planner: { credential: 'revoked' } }), setItem() {} },
+    { location: { protocol: 'file:' }, uniqueId: 'native', helperApi: undefined });
+  await settle();
+  assert.match(widget.app.innerHTML, /Pair again/);
+});
 
 test("widget scripts start together and show the selected board", async () => {
   const app = { innerHTML: '<section class="status">Loading Planner...</section>', addEventListener() {} };
   const context = {
+    location: { protocol: 'http:', hostname: 'localhost', port: '8787' },
     document: { getElementById: () => app },
     fetch: async path => path.endsWith("/display/cached") ? response(null, 204) : response(path.endsWith("/display")
       ? ({ planId: "plan", planTitle: "Work", syncedAt: new Date().toISOString(), buckets: [], labels: [] })
@@ -33,6 +99,7 @@ test("widget scripts start together and show the selected board", async () => {
     Intl,
     Date,
   };
+  context.helperApi = { ready: Promise.resolve(true), fetch: context.fetch };
   for (const file of ["state.js", "api.js", "filters.js", "view-state.js", "app.js"]) {
     runInNewContext(readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"), context, { filename: file });
   }
@@ -47,6 +114,7 @@ test("helper-hosted view requests its own origin", async () => {
     location: { protocol: "http:", hostname: "localhost", port: "8787" },
     fetch: async path => { paths.push(path); return { ok: true, status: 204 }; },
   };
+  context.helperApi = { ready: Promise.resolve(true), fetch: context.fetch };
   runInNewContext(readFileSync(new URL("../src/api.js", import.meta.url), "utf8"), context);
   await context.PlannerApi.getCachedDisplay();
   await context.PlannerApi.getDisplay();

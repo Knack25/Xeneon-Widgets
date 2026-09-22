@@ -15,6 +15,8 @@ using PlannerEdge.Helper.Graph;
 using PlannerEdge.Helper.Planner;
 using PlannerEdge.Helper.Security;
 using PlannerEdge.Helper.Storage;
+using PlannerEdge.Helper.Outlook;
+using MicrosoftWidgets.Helper.Tests;
 
 namespace PlannerEdge.Helper.Tests;
 
@@ -119,13 +121,17 @@ public sealed class PlannerHttpIntegrationTests
     }
 
     [Fact]
-    public async Task CorsPreflightAllowsDeleteAndDeleteRouteExecutes()
+    public async Task CorsPreflightAllowsTransportButOnlyPairedDeleteExecutes()
     {
         var graph = new FakeGraph();
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
         builder.Services.AddMemoryCache();
         builder.Services.AddPlannerIntegration();
+        builder.Services.AddOutlookIntegration();
+        builder.Services.AddSingleton<IOutlookTokenProvider, OutlookTokens>();
+        builder.Services.AddSingleton<ILocalJsonStore, OutlookMemoryStore>();
+        builder.Services.AddSingleton<LocalAccessService>();
         builder.Services.AddSingleton<IPlannerGraphClient>(graph);
         builder.Services.AddSingleton<IPlannerSettingsStore, FakeSettings>();
         await using var app = builder.Build();
@@ -149,8 +155,15 @@ public sealed class PlannerHttpIntegrationTests
         using var delete = new HttpRequestMessage(HttpMethod.Delete, "/tasks/task/checklist/item");
         delete.Headers.Add("Origin", origin);
         using var deleteResponse = await client.SendAsync(delete);
-
-        Assert.Equal(HttpStatusCode.NoContent, deleteResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, deleteResponse.StatusCode);
+        Assert.Empty(graph.Deletes);
+        var pairing = app.Services.GetRequiredService<WidgetPairingService>();
+        var lease = await app.Services.GetRequiredService<OutlookAccountState>().GetAsync(default);
+        var pair = await pairing.CreateAsync(WidgetScope.Planner, new("native", new string('x', 64)), lease, default);
+        await pairing.ApproveAsync(pair.Id, default);
+        client.DefaultRequestHeaders.Add(LocalAccessHeaders.Credential, (await pairing.PollAsync(pair.Id, new string('x', 64), default)).Credential);
+        using var pairedDelete = await client.DeleteAsync("/tasks/task/checklist/item");
+        Assert.Equal(HttpStatusCode.NoContent, pairedDelete.StatusCode);
         Assert.Equal(("task", "item", "details-etag"), Assert.Single(graph.Deletes));
         await app.StopAsync();
     }

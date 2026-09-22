@@ -1,16 +1,26 @@
 import assert from 'node:assert/strict';
 import { FixtureApi } from '../widget/src/fixtures.js';
 
+async function ownerPreview(page) {
+  await page.addInitScript(() => {
+    window.helperApi = { ready: Promise.resolve(true), fetch: (url, options = {}) => fetch(url, {
+      ...options, headers: { ...options.headers, 'X-Microsoft-Widgets-Owner': 'preview-owner' }
+    }) };
+  });
+}
+
 export async function runContractChecks(browser,base) {
   const context=await browser.newContext(), page=await context.newPage(), fixture=new FixtureApi(), calls=[];
   page.on('pageerror',error=>console.error('Contract preview:',error.message));
-  let sessions=0, firstView=true,releaseLive;
+  await ownerPreview(page);
+  let releaseLive;
   const liveGate=new Promise(resolve=>releaseLive=resolve);
   await page.route('**/api/outlook/**',async route=>{
     const req=route.request(),path=new URL(req.url()).pathname.split('/api/outlook/')[1];
     calls.push({path,headers:req.headers()});
-    if(path==='session'){await route.fulfill({json:{token:`session-${++sessions}`}});return;}
-    assert.ok(req.headers()['x-outlook-session']);assert.ok(req.url().startsWith(base));
+    assert.equal(req.headers()['x-microsoft-widgets-owner'],'preview-owner');assert.ok(req.url().startsWith(base));
+    assert.equal(req.headers()['x-outlook-session'],undefined);
+    assert.equal(req.headers()['x-microsoft-widgets-credential'],undefined);
     if(path==='preferences'){await route.fulfill({status:503,json:{error:{code:'offline',message:'Preferences unavailable'}}});return;}
     if(path==='view/cached') {
       const result=await fixture.post('view',req.postDataJSON());
@@ -18,7 +28,6 @@ export async function runContractChecks(browser,base) {
       result.sources=result.sources.map(source=>({...source,stale:true}));
       await route.fulfill({json:result});return;
     }
-    if(path==='view' && firstView){firstView=false;await route.fulfill({status:401,json:{error:{code:'unauthorized'}}});return;}
     if(path==='view') await liveGate;
     const result=req.method()==='GET'?await fixture.get(path):await fixture.post(path,req.postDataJSON());
     await route.fulfill({json:result});
@@ -28,8 +37,8 @@ export async function runContractChecks(browser,base) {
   releaseLive();
   try{await page.locator('[data-event-id]').first().waitFor({timeout:5000});}
   catch(error){console.error('Contract routes',calls.map(c=>c.path));console.error('Contract body',await page.locator('body').innerText());throw error;}
-  assert.equal(sessions,2,'view 401 renews preview session exactly once');
-  assert.equal(calls.filter(c=>c.path==='view').length,2);
+  assert.equal(calls.filter(c=>c.path==='session').length,0);
+  assert.equal(calls.filter(c=>c.path==='view').length,1);
   assert.equal(calls.filter(c=>c.path==='view/cached').length,1);
   await page.getByText('Cached resume event',{exact:true}).waitFor({state:'detached'});
   assert.equal(await page.getByText('Pair again',{exact:true}).count(),0);
@@ -38,6 +47,7 @@ export async function runContractChecks(browser,base) {
   // A helper snapshot may finish after the network request fails. Keep the
   // snapshot visible, but do not imply that a live update is still running.
   const offlineContext=await browser.newContext(),offline=await offlineContext.newPage();
+  await ownerPreview(offline);
   const offlineFixture=new FixtureApi();
   await offline.route('**/api/outlook/**',async route=>{
     const req=route.request(),path=new URL(req.url()).pathname.split('/api/outlook/')[1];
@@ -67,11 +77,11 @@ export async function runContractChecks(browser,base) {
     localStorage.setItem('native-test',JSON.stringify({hostProperty:27,outlook:{credential:'revoked'}}));
     setTimeout(()=>{window.uniqueId='native-test';window.icueEvents?.onICUEInitialized?.();},200);
   });
-  await native.route('**/api/outlook/**',async route=>{
-    const req=route.request(),path=new URL(req.url()).pathname.split('/api/outlook/')[1];
-    assert.ok(req.url().startsWith('http://localhost:8787/api/outlook/'));
+  await native.route('**/api/**',async route=>{
+    const req=route.request(),path=new URL(req.url()).pathname.replace(/^\/api\/(outlook|local-access)\//,'');
+    assert.ok(req.url().startsWith('http://localhost:8787/api/'));
     if(path==='pairings') {
-      const body=req.postDataJSON();assert.equal(body.instanceId,'native-test');assert.match(body.requestSecret,/^[a-f0-9]{64}$/);requestSecret=body.requestSecret;
+      const body=req.postDataJSON();assert.equal(body.scope,'outlook');assert.equal(body.instanceId,'native-test');assert.match(body.requestSecret,/^[a-f0-9]{64}$/);requestSecret=body.requestSecret;
       await route.fulfill({json:{id:'request-id',code:'ABCD12',expiresAt:new Date(Date.now()+300000).toISOString()}});return;
     }
     if(path==='pairings/request-id/poll') {
@@ -79,7 +89,8 @@ export async function runContractChecks(browser,base) {
       await route.fulfill({json:{status:'approved',credential:'approved-credential'}});return;
     }
     if(!paired){await route.fulfill({status:401,json:{error:{code:'unauthorized',message:'Revoked pairing'}}});return;}
-    assert.equal(req.headers().authorization,'Bearer approved-credential');
+    assert.equal(req.headers()['x-microsoft-widgets-credential'],'approved-credential');
+    assert.equal(req.headers().authorization,undefined);
     const result=req.method()==='GET'?await nativeFixture.get(path):await nativeFixture.post(path,req.postDataJSON());
     if(path==='view' && sourceAuthFailure)result.sources=[{calendarKey:'work',fetchedAt:null,stale:false,error:{code:'sign_in_required',message:'Account changed'}}];
     await route.fulfill({json:result});
@@ -109,4 +120,14 @@ export async function runContractChecks(browser,base) {
   await native.locator('[data-event-id]').first().waitFor();
   assert.equal(polls,2,'embedded auth failure can recover through re-pairing');
   await nativeContext.close();
+
+  const blockedContext=await browser.newContext(),blocked=await blockedContext.newPage();
+  await blocked.addInitScript(()=>{
+    window.uniqueId='blocked-native';
+    localStorage.setItem('blocked-native',JSON.stringify({outlook:{credential:'revoked'}}));
+  });
+  await blocked.route('**/api/outlook/**',route=>route.abort('failed'));
+  await blocked.goto(new URL('../dist/index.html',import.meta.url).href);
+  await blocked.getByRole('button',{name:'Pair again',exact:true}).waitFor({timeout:5000});
+  await blockedContext.close();
 }
