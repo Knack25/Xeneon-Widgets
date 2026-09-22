@@ -68,6 +68,7 @@ builder.Services.AddHostedService<TrayService>();
 var app = builder.Build();
 
 app.UseHelperSecurityBoundary();
+app.UseRouting();
 app.Use(async (context, next) =>
 {
     var origin = context.Request.Headers.Origin.ToString();
@@ -112,6 +113,7 @@ app.Use(async (context, next) =>
         await context.Response.WriteAsJsonAsync(new ApiErrorResponse(code, message));
     }
 });
+app.UsePlannerRequestPolicy();
 
 app.Use(async (context, next) =>
 {

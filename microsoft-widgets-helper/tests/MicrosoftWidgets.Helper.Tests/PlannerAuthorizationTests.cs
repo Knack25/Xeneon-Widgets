@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using PlannerEdge.Helper.Contracts;
 using Microsoft.AspNetCore.Builder;
@@ -21,6 +22,22 @@ namespace PlannerEdge.Helper.Tests;
 
 public sealed class PlannerAuthorizationTests
 {
+    public static IEnumerable<object[]> JsonBodyRoutes()
+    {
+        foreach (var route in new[]
+        {
+            ("PUT", "/settings"), ("PUT", "/selected-plan"), ("PUT", "/view-preferences/plan"),
+            ("POST", "/tasks"), ("PUT", "/tasks/task/notes"), ("POST", "/tasks/task/chat"),
+            ("PUT", "/tasks/task/bucket"), ("PUT", "/tasks/task/due-date"), ("PUT", "/tasks/task/title"),
+            ("PUT", "/tasks/task/progress"), ("PUT", "/tasks/task/priority"), ("PUT", "/tasks/task/start-date"),
+            ("PUT", "/tasks/task/labels"), ("PUT", "/tasks/task/assignments"),
+            ("POST", "/tasks/task/checklist"), ("PUT", "/tasks/task/checklist/item"),
+            ("PUT", "/tasks/task/checklist/item/position")
+        })
+        foreach (var prefix in new[] { "", "/api/planner" })
+            yield return [route.Item1, prefix + route.Item2];
+    }
+
     public static IEnumerable<object[]> Matrix()
     {
         foreach (var route in PlannerHttpIntegrationTests.LegacyPlannerRoutes.Concat(new[] { new object[] { "GET", "/me" } }))
@@ -105,6 +122,81 @@ public sealed class PlannerAuthorizationTests
         Assert.Equal(0, host.Executions);
     }
 
+    [Theory]
+    [InlineData("/settings")]
+    [InlineData("/api/planner/settings")]
+    public async Task OversizedAnonymousPlannerBodyIsRejectedBeforeBindingOrServiceExecution(string path)
+    {
+        await using var host = await StartAsync();
+        using var request = new HttpRequestMessage(HttpMethod.Put, path)
+        {
+            Content = new StringContent("{\"planId\":\"" + new string('x', 17_000) + "\"}", MediaTypeHeaderValue.Parse("application/json"))
+        };
+        request.Headers.Add("Origin", "null");
+
+        using var response = await host.Client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
+        Assert.Equal(0, host.Executions);
+    }
+
+    [Theory]
+    [InlineData("/settings")]
+    [InlineData("/api/planner/settings")]
+    public async Task ChunkedOversizedAnonymousPlannerBodyIsRejectedBeforeBindingOrServiceExecution(string path)
+    {
+        await using var host = await StartAsync();
+        using var request = new HttpRequestMessage(HttpMethod.Put, path)
+        {
+            Content = new ChunkedContent("{\"planId\":\"" + new string('x', 17_000) + "\"}")
+        };
+        request.Headers.Add("Origin", "null");
+
+        using var response = await host.Client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal(0, host.Executions);
+    }
+
+    [Theory]
+    [InlineData("/settings")]
+    [InlineData("/api/planner/settings")]
+    public async Task ChunkedOversizedAuthenticatedPlannerBodyIsCappedBeforeServiceExecution(string path)
+    {
+        await using var host = await StartAsync();
+        var credential = await PairPlannerAsync(host);
+        using var request = new HttpRequestMessage(HttpMethod.Put, path)
+        {
+            Content = new ChunkedContent("{\"planId\":\"" + new string('x', 17_000) + "\"}")
+        };
+        request.Headers.Add("Origin", "null");
+        request.Headers.Add(LocalAccessHeaders.Credential, credential);
+
+        using var response = await host.Client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
+        Assert.Equal(0, host.Executions);
+    }
+
+    [Theory]
+    [MemberData(nameof(JsonBodyRoutes))]
+    public async Task AuthenticatedPlannerBodyRequiresJsonContentTypeBeforeBinding(string method, string path)
+    {
+        await using var host = await StartAsync();
+        var credential = await PairPlannerAsync(host);
+        using var request = new HttpRequestMessage(new HttpMethod(method), path)
+        {
+            Content = new StringContent("{\"planId\":\"plan\"}", MediaTypeHeaderValue.Parse("text/plain"))
+        };
+        request.Headers.Add("Origin", "null");
+        request.Headers.Add(LocalAccessHeaders.Credential, credential);
+
+        using var response = await host.Client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.UnsupportedMediaType, response.StatusCode);
+        Assert.Equal(0, host.Executions);
+    }
+
     [Fact]
     public async Task AccountChangeBeforeSerializationRejectsPlannerResult()
     {
@@ -141,6 +233,8 @@ public sealed class PlannerAuthorizationTests
             try { await next(context); }
             catch (ProbeException) { host!.Executions++; context.Response.StatusCode = 202; }
         });
+        app.UseRouting();
+        app.UsePlannerRequestPolicy();
         app.UseWidgetCors();
         var routes = app.MapGroup("");
         if (invalidateBeforeResult) routes.AddEndpointFilter(async (context, next) =>
@@ -155,6 +249,36 @@ public sealed class PlannerAuthorizationTests
         var local = app.Services.GetRequiredService<LocalAccessService>();
         host = new(app, new() { BaseAddress = new(address) }, tokens, local.ExchangeBootstrap(local.CreateBootstrap().Token));
         return host;
+    }
+
+    private static async Task<string> PairPlannerAsync(Host host)
+    {
+        const string secret = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+        var pairing = host.App.Services.GetRequiredService<WidgetPairingService>();
+        var state = host.App.Services.GetRequiredService<OutlookAccountState>();
+        var pending = await pairing.CreateAsync(WidgetScope.Planner, new("instance", secret), await state.GetAsync(default), default);
+        await pairing.ApproveAsync(pending.Id, default);
+        return (await pairing.PollAsync(pending.Id, secret, default)).Credential!;
+    }
+
+    private sealed class ChunkedContent : HttpContent
+    {
+        private readonly string body;
+
+        public ChunkedContent(string body)
+        {
+            this.body = body;
+            Headers.ContentType = MediaTypeHeaderValue.Parse("application/json");
+        }
+
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+            stream.WriteAsync(System.Text.Encoding.UTF8.GetBytes(body)).AsTask();
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
     }
 
     public sealed class ProbeException : Exception;

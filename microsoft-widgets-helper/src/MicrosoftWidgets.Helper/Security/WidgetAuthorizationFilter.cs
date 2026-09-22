@@ -4,31 +4,46 @@ namespace PlannerEdge.Helper.Security;
 
 public sealed class WidgetAuthorizationFilter(WidgetScope scope) : IEndpointFilter
 {
+    internal static readonly object PreauthorizedLeaseKey = new();
+
     public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
     {
         var http = context.HttpContext;
         try
         {
-            if (!OutlookAccessService.IsLocalHost(http.Request)) return Results.BadRequest();
-            if (!IsAllowedOrigin(http.Request)) return Results.StatusCode(StatusCodes.Status403Forbidden);
             var state = http.RequestServices.GetRequiredService<OutlookAccountState>();
-            OutlookAccountLease? lease = null;
-            var owner = http.Request.Headers[LocalAccessHeaders.Owner].ToString();
-            if (OutlookAccessService.IsSameOrigin(http.Request) &&
-                http.RequestServices.GetRequiredService<LocalAccessService>().ValidateOwnerSession(owner))
-                lease = await state.GetAsync(http.RequestAborted);
+            var preauthorized = http.Items.TryGetValue(PreauthorizedLeaseKey, out var value) && value is OutlookAccountLease;
+            OutlookAccountLease? lease = value is OutlookAccountLease existing ? existing : null;
             if (lease is null)
-                lease = await http.RequestServices.GetRequiredService<WidgetPairingService>().AuthenticateAsync(
-                    scope, http.Request.Headers[LocalAccessHeaders.Credential].ToString(), http.RequestAborted);
-            if (lease is null) return Results.Unauthorized();
+            {
+                var authorization = await AuthorizeAsync(http, scope);
+                if (authorization.Failure is not null) return authorization.Failure;
+                lease = authorization.Lease;
+            }
             WidgetCorsExtensions.AllowNativeResponse(http);
-            using var binding = state.BindRequest(lease.Value);
+            using var binding = preauthorized ? null : state.BindRequest(lease!.Value);
             var result = await next(context);
             await state.GetIdentityAsync(false, http.RequestAborted);
-            state.RequireCurrent(lease.Value);
+            state.RequireCurrent(lease!.Value);
             return result is IResult response ? new AccountBoundResult(response, state, lease.Value) : Results.StatusCode(503);
         }
         catch (OutlookException ex) { return Results.Json(new { error = ex.Error }, statusCode: ex.StatusCode); }
+    }
+
+    internal static async Task<WidgetAuthorizationDecision> AuthorizeAsync(HttpContext http, WidgetScope scope)
+    {
+        if (!OutlookAccessService.IsLocalHost(http.Request)) return new(null, Results.BadRequest());
+        if (!IsAllowedOrigin(http.Request)) return new(null, Results.StatusCode(StatusCodes.Status403Forbidden));
+        var state = http.RequestServices.GetRequiredService<OutlookAccountState>();
+        OutlookAccountLease? lease = null;
+        var owner = http.Request.Headers[LocalAccessHeaders.Owner].ToString();
+        if (OutlookAccessService.IsSameOrigin(http.Request) &&
+            http.RequestServices.GetRequiredService<LocalAccessService>().ValidateOwnerSession(owner))
+            lease = await state.GetAsync(http.RequestAborted);
+        if (lease is null)
+            lease = await http.RequestServices.GetRequiredService<WidgetPairingService>().AuthenticateAsync(
+                scope, http.Request.Headers[LocalAccessHeaders.Credential].ToString(), http.RequestAborted);
+        return lease is null ? new(null, Results.Unauthorized()) : new(lease, null);
     }
 
     internal static bool IsAllowedOrigin(HttpRequest request)
@@ -36,4 +51,6 @@ public sealed class WidgetAuthorizationFilter(WidgetScope scope) : IEndpointFilt
         var origin = request.Headers.Origin.ToString();
         return origin.Length == 0 || OutlookAccessService.IsSameOrigin(request) || WidgetOriginPolicy.IsAllowed(origin);
     }
+
+    internal sealed record WidgetAuthorizationDecision(OutlookAccountLease? Lease, IResult? Failure);
 }
