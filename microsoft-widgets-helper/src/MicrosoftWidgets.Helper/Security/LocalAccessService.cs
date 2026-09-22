@@ -7,6 +7,19 @@ namespace PlannerEdge.Helper.Security;
 
 public sealed class LocalAccessService
 {
+    internal sealed class OwnerAuthorization(AccountLease? lease, DateTimeOffset expiresAt, TimeProvider timeProvider)
+    {
+        private int revoked;
+
+        internal void Revoke() => Interlocked.Exchange(ref revoked, 1);
+
+        internal void RequireCurrent(AccountLease current)
+        {
+            if (Volatile.Read(ref revoked) != 0 || expiresAt <= timeProvider.GetUtcNow() || lease is not null && lease != current)
+                throw new OwnerAuthorizationException();
+        }
+    }
+
     public const int MaximumBootstrapCount = 256;
     public const int MaximumOwnerSessionCount = 256;
 
@@ -99,8 +112,9 @@ public sealed class LocalAccessService
         try
         {
             var session = ToBase64Url(sessionBytes);
-            AddBounded(ownerSessions, SHA256.HashData(sessionBytes), now.Add(OwnerSessionLifetime),
-                MaximumOwnerSessionCount, lease);
+            var expiresAt = now.Add(OwnerSessionLifetime);
+            AddBounded(ownerSessions, SHA256.HashData(sessionBytes), expiresAt,
+                MaximumOwnerSessionCount, lease, new OwnerAuthorization(lease, expiresAt, timeProvider));
             return session;
         }
         finally
@@ -110,27 +124,31 @@ public sealed class LocalAccessService
     }
 
     public bool ValidateOwnerSession(string token)
-        => ValidateOwnerSession(token, null);
+        => AuthorizeOwnerSession(token, null) is not null;
 
     public async Task<bool> ValidateOwnerSessionAsync(string token, CancellationToken cancellationToken)
+        => await AuthorizeOwnerSessionAsync(token, cancellationToken) is not null;
+
+    internal async Task<OwnerAuthorization?> AuthorizeOwnerSessionAsync(string token, CancellationToken cancellationToken)
     {
         AccountLease? lease = accountState is null
             ? null
             : await accountState.GetIdentityAsync(requireAccount: false, cancellationToken);
-        return ValidateOwnerSession(token, lease);
+        return AuthorizeOwnerSession(token, lease);
     }
 
-    private bool ValidateOwnerSession(string token, AccountLease? lease)
+    private OwnerAuthorization? AuthorizeOwnerSession(string token, AccountLease? lease)
     {
-        if (!TryGetHash(token, out var hash)) return false;
+        if (!TryGetHash(token, out var hash)) return null;
         try
         {
             lock (gate)
             {
                 RemoveExpired(ownerSessions, timeProvider.GetUtcNow());
                 var match = FindMatch(ownerSessions, hash);
-                return match is not null &&
-                    (ownerSessions[match.Value].Lease is null || ownerSessions[match.Value].Lease == lease);
+                if (match is null) return null;
+                var session = ownerSessions[match.Value];
+                return session.Lease is null || session.Lease == lease ? session.Authorization : null;
             }
         }
         finally
@@ -143,6 +161,7 @@ public sealed class LocalAccessService
     {
         lock (gate)
         {
+            Revoke(ownerSessions.Values);
             ownerSessions.Clear();
         }
     }
@@ -151,16 +170,23 @@ public sealed class LocalAccessService
     {
         lock (gate)
         {
+            Revoke(bootstraps.Values);
+            Revoke(ownerSessions.Values);
             bootstraps.Clear();
             ownerSessions.Clear();
         }
     }
 
     private void AddBounded(Dictionary<long, ExpiringToken> tokens, byte[] hash, DateTimeOffset expiresAt, int maximumCount,
-        AccountLease? lease = null)
+        AccountLease? lease = null, OwnerAuthorization? authorization = null)
     {
-        while (tokens.Count >= maximumCount) tokens.Remove(tokens.Keys.Min());
-        tokens[++nextTokenId] = new ExpiringToken(hash, expiresAt, lease);
+        while (tokens.Count >= maximumCount)
+        {
+            var id = tokens.Keys.Min();
+            tokens[id].Authorization?.Revoke();
+            tokens.Remove(id);
+        }
+        tokens[++nextTokenId] = new ExpiringToken(hash, expiresAt, lease, authorization);
     }
 
     private static long? FindMatch(Dictionary<long, ExpiringToken> tokens, byte[] hash)
@@ -177,8 +203,14 @@ public sealed class LocalAccessService
     {
         foreach (var id in tokens.Where(pair => pair.Value.ExpiresAt <= now).Select(pair => pair.Key).ToArray())
         {
+            tokens[id].Authorization?.Revoke();
             tokens.Remove(id);
         }
+    }
+
+    private static void Revoke(IEnumerable<ExpiringToken> tokens)
+    {
+        foreach (var token in tokens) token.Authorization?.Revoke();
     }
 
     private static bool TryGetHash(string token, out byte[] hash)
@@ -213,8 +245,11 @@ public sealed class LocalAccessService
         return Convert.FromBase64String(padded.PadRight(padded.Length + (4 - padded.Length % 4) % 4, '='));
     }
 
-    private sealed record ExpiringToken(byte[] Hash, DateTimeOffset ExpiresAt, AccountLease? Lease);
+    private sealed record ExpiringToken(byte[] Hash, DateTimeOffset ExpiresAt, AccountLease? Lease,
+        OwnerAuthorization? Authorization);
 }
+
+internal sealed class OwnerAuthorizationException : Exception { }
 
 public static class LocalAccessEndpointRouteBuilderExtensions
 {

@@ -14,6 +14,11 @@ public static class ManagementEndpoints
     public static void MapManagementEndpoints(this WebApplication app)
     {
         var owner = app.MapGroup("").AddEndpointFilter<OwnerAuthorizationFilter>();
+        owner.MapOwnerManagement();
+    }
+
+    internal static void MapOwnerManagement(this IEndpointRouteBuilder owner)
+    {
         owner.MapHelperHostManagement();
         owner.MapUpdates();
         owner.MapOutlookManagement();
@@ -27,14 +32,16 @@ public static class ManagementEndpoints
             var previous = await auth.GetConfigurationAsync(ct);
             var outcome = await outlookAccount.TransitionAsync(
                 () => auth.SaveConfigurationAsync(configuration, ct),
-                (saved, _, current) => Task.FromResult((Saved: saved, Replacement: previous != saved
-                    ? access.IssueReplacementOwnerSession(current)
-                    : null)),
+                async (saved, _, current) =>
+                {
+                    if (previous == saved) return (Saved: saved, Replacement: (string?)null);
+                    await settings.UpdateSettingsAsync(selection =>
+                        selection with { SelectedPlanId = null, SelectedPlanTitle = null }, ct);
+                    return (Saved: saved, Replacement: access.IssueReplacementOwnerSession(current));
+                },
                 ct, invalidateWhen: value => previous != value);
             if (outcome.Replacement is not null)
             {
-                await settings.UpdateSettingsAsync(selection =>
-                    selection with { SelectedPlanId = null, SelectedPlanTitle = null }, ct);
                 response.Headers[LocalAccessHeaders.OwnerReplacement] =
                     outcome.Replacement;
             }

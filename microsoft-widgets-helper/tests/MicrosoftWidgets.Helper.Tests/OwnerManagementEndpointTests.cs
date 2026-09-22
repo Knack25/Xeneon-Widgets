@@ -21,6 +21,30 @@ namespace PlannerEdge.Helper.Tests;
 
 public sealed class OwnerManagementEndpointTests
 {
+    public static TheoryData<string, string> OwnerMutationRoutes => new()
+    {
+        { "PUT", "/configuration" },
+        { "POST", "/auth/sign-in" },
+        { "POST", "/auth/enable-task-chat" },
+        { "POST", "/auth/enable-assignee-names" },
+        { "POST", "/auth/enable-board-members" },
+        { "POST", "/auth/sign-out" }
+    };
+
+    public static TheoryData<string, string> OtherOwnerMutationRoutes => new()
+    {
+        { "POST", "/updates/check" },
+        { "POST", "/updates/install" },
+        { "POST", "/host/stop" },
+        { "POST", "/api/outlook/connect" },
+        { "POST", "/api/outlook/sources" },
+        { "POST", "/api/outlook/sources/missing/remove" },
+        { "POST", "/api/outlook/pairings/missing/approve" },
+        { "POST", "/api/outlook/pairings/revoke" },
+        { "POST", "/api/local-access/pairings/missing/approve" },
+        { "POST", "/api/local-access/pairings/revoke" }
+    };
+
     public static TheoryData<string, string> OwnerOnlyRoutes => new()
     {
         { "GET", "/configuration" },
@@ -121,23 +145,62 @@ public sealed class OwnerManagementEndpointTests
         await Assert.ThrowsAsync<LocalAccessException>(() =>
             host.Access.ExchangeBootstrapAsync(pending.Token, default));
     }
+
+    [Theory]
+    [MemberData(nameof(OwnerMutationRoutes))]
+    public async Task Owner_mutation_revalidates_after_filter_before_changing_state(string method, string path)
+    {
+        var pause = new OwnerRequestPause(path);
+        await using var host = await OwnerManagementTestHost.StartAsync(pause: pause);
+        var request = host.SendAsync(method, path, owner: host.OwnerSession);
+        await pause.Entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        await host.State.InvalidateAsync(default);
+        pause.Release.TrySetResult();
+        using var response = await request;
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal(0, host.Auth.MutationCalls);
+        Assert.False(response.Headers.Contains(LocalAccessHeaders.OwnerReplacement));
+    }
+
+    [Theory]
+    [MemberData(nameof(OtherOwnerMutationRoutes))]
+    public async Task Other_owner_mutation_revalidates_after_filter_before_changing_state(string method, string path)
+    {
+        var pause = new OwnerRequestPause(path);
+        await using var host = await OwnerManagementTestHost.StartAsync(pause: pause);
+        var body = path == "/api/outlook/sources" ? "{\"ownerEmail\":\"owner@example.com\"}" : null;
+        var request = host.SendAsync(method, path, owner: host.OwnerSession, body: body);
+        await pause.Entered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        await host.State.InvalidateAsync(default);
+        pause.Release.TrySetResult();
+        using var response = await request;
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal(0, host.Auth.MutationCalls);
+    }
 }
 
 internal sealed class OwnerManagementTestHost(WebApplication app, HttpClient client, string ownerSession,
-    LocalAccessService access) : IAsyncDisposable
+    LocalAccessService access, MicrosoftAccountState state, OwnerManagementAuth auth) : IAsyncDisposable
 {
     public string OwnerSession { get; } = ownerSession;
     public HttpClient Client => client;
     public LocalAccessService Access { get; } = access;
+    public MicrosoftAccountState State { get; } = state;
+    public OwnerManagementAuth Auth { get; } = auth;
 
-    public static async Task<OwnerManagementTestHost> StartAsync(bool signedIn = true)
+    public static async Task<OwnerManagementTestHost> StartAsync(bool signedIn = true, OwnerRequestPause? pause = null)
     {
         var port = ReservePort();
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = "Testing" });
         builder.WebHost.UseUrls("http://127.0.0.1:" + port);
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<LocalAccessService>();
-        builder.Services.AddSingleton<IMicrosoftAuthService>(new OwnerManagementAuth(signedIn));
+        var auth = new OwnerManagementAuth(signedIn);
+        builder.Services.AddSingleton<IMicrosoftAuthService>(auth);
         builder.Services.AddSingleton<MicrosoftAuthCapabilityService>();
         builder.Services.AddSingleton<IPlannerGraphClient, OwnerManagementGraph>();
         builder.Services.AddSingleton<IPlannerSettingsStore, OwnerManagementSettings>();
@@ -148,18 +211,29 @@ internal sealed class OwnerManagementTestHost(WebApplication app, HttpClient cli
         builder.Services.AddSingleton(provider => new UpdateService(provider.GetRequiredService<IReleaseClient>(),
             provider.GetRequiredService<IUpdateInstaller>(), "0.3.1"));
         var app = builder.Build();
-        app.MapManagementEndpoints();
+        if (pause is null) app.MapManagementEndpoints();
+        else
+        {
+            var ownerRoutes = app.MapGroup("").AddEndpointFilter<OwnerAuthorizationFilter>();
+            ownerRoutes.AddEndpointFilter(new PauseAfterOwnerAuthorizationFilter(pause));
+            ownerRoutes.MapOwnerManagement();
+        }
         await app.StartAsync();
 
         var access = app.Services.GetRequiredService<LocalAccessService>();
+        var state = app.Services.GetRequiredService<MicrosoftAccountState>();
         var owner = await access.ExchangeBootstrapAsync(access.CreateBootstrap().Token, default);
-        return new(app, new HttpClient { BaseAddress = new Uri("http://127.0.0.1:" + port + "/") }, owner, access);
+        return new(app, new HttpClient { BaseAddress = new Uri("http://127.0.0.1:" + port + "/") }, owner, access, state, auth);
     }
 
-    public async Task<HttpResponseMessage> SendAsync(string method, string path, string? owner = null, string? authorization = null)
+    public async Task<HttpResponseMessage> SendAsync(string method, string path, string? owner = null,
+        string? authorization = null, string? body = null)
     {
         using var request = new HttpRequestMessage(new HttpMethod(method), path);
-        if (method is "POST" or "PUT") request.Content = new StringContent("{}", Encoding.UTF8, "application/json");
+        if (method is "POST" or "PUT")
+        {
+            request.Content = new StringContent(body ?? "{}", Encoding.UTF8, "application/json");
+        }
         if (owner is not null) request.Headers.Add(LocalAccessHeaders.Owner, owner);
         if (authorization is not null) request.Headers.TryAddWithoutValidation("Authorization", authorization);
         return await client.SendAsync(request);
@@ -185,24 +259,50 @@ internal sealed class OwnerManagementAuth(bool signedIn) : IMicrosoftAuthService
     private static readonly AuthStatusResponse SignedInStatus = new(true, "owner", "owner@example.com");
     private static readonly AuthStatusResponse SignedOutStatus = new(false, null, null);
     private bool signedIn = signedIn;
+    public int MutationCalls { get; private set; }
     public Task<string> GetAccessTokenAsync(CancellationToken ct) => Task.FromResult("token");
     public Task<string> GetTokenForScopesAsync(IEnumerable<string> scopes, CancellationToken ct) => Task.FromResult("token");
     public Task<AzureAdOptions> GetConfigurationAsync(CancellationToken ct) => Task.FromResult(new AzureAdOptions { ClientId = "11111111-1111-1111-1111-111111111111" });
-    public Task<AzureAdOptions> SaveConfigurationAsync(AzureAdOptions configuration, CancellationToken ct) => Task.FromResult(configuration);
+    public Task<AzureAdOptions> SaveConfigurationAsync(AzureAdOptions configuration, CancellationToken ct)
+    {
+        MutationCalls++;
+        return Task.FromResult(configuration);
+    }
     public Task<AuthStatusResponse> GetStatusAsync(CancellationToken ct) => Task.FromResult(signedIn ? SignedInStatus : SignedOutStatus);
     public Task<MicrosoftAccountIdentity> GetAccountIdentityAsync(CancellationToken ct) => signedIn
         ? Task.FromResult(new MicrosoftAccountIdentity("owner-home", "owner-tenant", "11111111-1111-1111-1111-111111111111", "owner@example.com"))
         : Task.FromException<MicrosoftAccountIdentity>(new OutlookException("sign_in_required", "Sign in.", 401));
     public Task<AuthStatusResponse> SignInAsync(CancellationToken ct)
     {
+        MutationCalls++;
         signedIn = true;
         return Task.FromResult(SignedInStatus);
     }
-    public Task<AuthStatusResponse> ConnectOutlookAsync(CancellationToken ct) => Task.FromResult(SignedInStatus);
-    public Task<AuthStatusResponse> EnableTaskChatAsync(CancellationToken ct) => Task.FromResult(SignedInStatus);
-    public Task<AuthStatusResponse> EnableAssigneeNamesAsync(CancellationToken ct) => Task.FromResult(SignedInStatus);
-    public Task<AuthStatusResponse> EnableBoardMembersAsync(CancellationToken ct) => Task.FromResult(SignedInStatus);
-    public Task SignOutAsync(CancellationToken ct) => Task.CompletedTask;
+    public Task<AuthStatusResponse> ConnectOutlookAsync(CancellationToken ct) { MutationCalls++; return Task.FromResult(SignedInStatus); }
+    public Task<AuthStatusResponse> EnableTaskChatAsync(CancellationToken ct) { MutationCalls++; return Task.FromResult(SignedInStatus); }
+    public Task<AuthStatusResponse> EnableAssigneeNamesAsync(CancellationToken ct) { MutationCalls++; return Task.FromResult(SignedInStatus); }
+    public Task<AuthStatusResponse> EnableBoardMembersAsync(CancellationToken ct) { MutationCalls++; return Task.FromResult(SignedInStatus); }
+    public Task SignOutAsync(CancellationToken ct) { MutationCalls++; return Task.CompletedTask; }
+}
+
+internal sealed class OwnerRequestPause(string path)
+{
+    public string Path { get; } = path;
+    public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+}
+
+internal sealed class PauseAfterOwnerAuthorizationFilter(OwnerRequestPause pause) : IEndpointFilter
+{
+    public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
+    {
+        if (context.HttpContext.Request.Path == pause.Path)
+        {
+            pause.Entered.TrySetResult();
+            await pause.Release.Task;
+        }
+        return await next(context);
+    }
 }
 
 internal sealed class OwnerManagementGraph : IPlannerGraphClient

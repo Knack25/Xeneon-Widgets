@@ -127,17 +127,18 @@ public sealed class CalendarCatalogService
         await gate.WaitAsync(ct);
         try
         {
-            var route = "users/" + Uri.EscapeDataString(owner) + "/calendar";
-            var item = await graph.GetAsync(route, ct);
-            state.RequireCurrent(lease);
-            await settings.SetOwnerAsync(lease.Key, owner, true, ct);
-            lock (sync)
+            return await state.ExecuteAuthorizedAsync(lease, async () =>
             {
-                state.RequireCurrent(lease);
-                var source = Add(sources, lease, item, route, "shared", owner);
-                fetchedAt = default;
-                return source.Descriptor;
-            }
+                var route = "users/" + Uri.EscapeDataString(owner) + "/calendar";
+                var item = await graph.GetAsync(route, ct);
+                await settings.SetOwnerAsync(lease.Key, owner, true, ct);
+                lock (sync)
+                {
+                    var source = Add(sources, lease, item, route, "shared", owner);
+                    fetchedAt = default;
+                    return source.Descriptor;
+                }
+            }, ct);
         }
         finally { gate.Release(); }
     }
@@ -148,13 +149,15 @@ public sealed class CalendarCatalogService
         await gate.WaitAsync(ct);
         try
         {
-            state.RequireCurrent(lease);
-            var owner = (await settings.GetOwnersAsync(lease.Key, ct)).FirstOrDefault(value =>
-                OutlookTokenProvider.Hash(lease.Key + "\nusers/" + Uri.EscapeDataString(value) + "/calendar") == key);
-            if (owner is null) throw new OutlookException("source_not_found", "This local calendar reference does not exist.", 404);
-            await settings.SetOwnerAsync(lease.Key, owner, false, ct);
-            lock (sync) { state.RequireCurrent(lease); sources.Remove(key); fetchedAt = default; }
-            state.PurgeSource(key);
+            await state.ExecuteAuthorizedAsync(lease, async () =>
+            {
+                var owner = (await settings.GetOwnersAsync(lease.Key, ct)).FirstOrDefault(value =>
+                    OutlookTokenProvider.Hash(lease.Key + "\nusers/" + Uri.EscapeDataString(value) + "/calendar") == key);
+                if (owner is null) throw new OutlookException("source_not_found", "This local calendar reference does not exist.", 404);
+                await settings.SetOwnerAsync(lease.Key, owner, false, ct);
+                lock (sync) { sources.Remove(key); fetchedAt = default; }
+                state.PurgeSource(key);
+            }, ct);
         }
         finally { gate.Release(); }
     }

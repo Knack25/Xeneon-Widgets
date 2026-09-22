@@ -180,6 +180,22 @@ public sealed class MicrosoftAccountStateTests
         Assert.False(await access.ValidateOwnerSessionAsync(replacement, default));
     }
 
+    [Fact]
+    public async Task Owner_authorized_execution_requires_filter_bound_authorization()
+    {
+        var identities = new IdentityProvider(Identity("home-a", "tenant-a", "client-a", "user@example.com"));
+        var state = new MicrosoftAccountState(identities, new OutlookMemoryStore());
+        var called = false;
+
+        await Assert.ThrowsAsync<OwnerAuthorizationException>(() => state.ExecuteOwnerAuthorizedAsync(() =>
+        {
+            called = true;
+            return Task.FromResult(true);
+        }, default));
+
+        Assert.False(called);
+    }
+
     private static MicrosoftAccountIdentity Identity(string home, string tenant, string client, string username) =>
         new(home, tenant, client, username);
 

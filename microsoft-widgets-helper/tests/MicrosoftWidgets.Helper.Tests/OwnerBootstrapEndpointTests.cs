@@ -7,7 +7,9 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.Extensions.DependencyInjection;
+using PlannerEdge.Helper.Auth;
 using PlannerEdge.Helper.Security;
+using PlannerEdge.Helper.Storage;
 
 namespace PlannerEdge.Helper.Tests;
 
@@ -81,6 +83,10 @@ internal sealed class OwnerBootstrapTestHost(WebApplication app, HttpClient clie
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = "Testing" });
         builder.WebHost.UseUrls("http://127.0.0.1:" + port);
         builder.Services.AddSingleton(TimeProvider.System);
+        var identity = new OwnerManagementAuth(true);
+        builder.Services.AddSingleton<IMicrosoftAccountIdentityProvider>(identity);
+        builder.Services.AddSingleton<ILocalJsonStore>(new OwnerManagementStore());
+        builder.Services.AddSingleton<MicrosoftAccountState>();
         builder.Services.AddSingleton<LocalAccessService>();
         var app = builder.Build();
         app.MapLocalAccess();

@@ -123,6 +123,7 @@ public static class OutlookIntegration
             catch (BadHttpRequestException) { return Error("invalid_request", "The Outlook request is invalid.", 400); }
             catch (ArgumentException) { return Error("invalid_request", "The Outlook request is invalid.", 400); }
             catch (IOException) { return Error("unavailable", "Outlook local settings are unavailable.", 503); }
+            catch (OwnerAuthorizationException) { return Results.Unauthorized(); }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 http.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("Outlook").LogError("Outlook request failed with {ExceptionType}.", ex.GetType().Name);

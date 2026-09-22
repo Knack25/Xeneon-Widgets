@@ -15,6 +15,7 @@ public sealed class MicrosoftAccountState(IMicrosoftAccountIdentityProvider iden
     private const string IdentityStore = "microsoft-account-identity";
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly AsyncLocal<AccountLease?> authorizedRequest = new();
+    private readonly AsyncLocal<LocalAccessService.OwnerAuthorization?> authorizedOwnerRequest = new();
     private string? account;
     private long generation;
     private bool loaded;
@@ -43,7 +44,8 @@ public sealed class MicrosoftAccountState(IMicrosoftAccountIdentityProvider iden
         finally { gate.Release(); }
     }
 
-    private async Task<AccountLease> SynchronizeIdentityLockedAsync(bool requireAccount, CancellationToken ct)
+    private async Task<AccountLease> SynchronizeIdentityLockedAsync(bool requireAccount, CancellationToken ct,
+        bool validateOwnerRequest = true)
     {
         if (!loaded) await LoadAndMigrateAsync(ct);
 
@@ -78,9 +80,11 @@ public sealed class MicrosoftAccountState(IMicrosoftAccountIdentityProvider iden
             }
             account = key;
         }
+        var lease = new AccountLease(key, generation);
         if (authorizedRequest.Value is { } required) RequireCurrent(required);
+        if (validateOwnerRequest) RequireOwnerCurrent(lease);
         if (requireAccount && failure is not null) throw NormalizeFailure(failure);
-        return new(key, generation);
+        return lease;
     }
 
     private async Task LoadAndMigrateAsync(CancellationToken ct)
@@ -116,7 +120,7 @@ public sealed class MicrosoftAccountState(IMicrosoftAccountIdentityProvider iden
                     Reset();
                     await ClearWidgetCredentialsAsync(CancellationToken.None);
                 }
-                await SynchronizeIdentityLockedAsync(false, CancellationToken.None);
+                await SynchronizeIdentityLockedAsync(false, CancellationToken.None, validateOwnerRequest: false);
             }
         }
         finally { gate.Release(); }
@@ -147,7 +151,7 @@ public sealed class MicrosoftAccountState(IMicrosoftAccountIdentityProvider iden
                     Reset();
                     await ClearWidgetCredentialsAsync(CancellationToken.None);
                 }
-                current = await SynchronizeIdentityLockedAsync(false, CancellationToken.None);
+                current = await SynchronizeIdentityLockedAsync(false, CancellationToken.None, validateOwnerRequest: false);
             }
 
             return await completion(result!, previous, current);
@@ -161,6 +165,16 @@ public sealed class MicrosoftAccountState(IMicrosoftAccountIdentityProvider iden
     {
         if (!IsCurrent(lease) || authorizedRequest.Value is { } required && required != lease)
             throw new OutlookException("account_changed", "The Microsoft account changed. Reconnect the widget.", 401);
+        RequireOwnerCurrent(lease);
+    }
+
+    private void RequireOwnerCurrent(AccountLease lease) => authorizedOwnerRequest.Value?.RequireCurrent(lease);
+
+    internal IDisposable BindOwnerRequest(LocalAccessService.OwnerAuthorization authorization)
+    {
+        var previous = authorizedOwnerRequest.Value;
+        authorizedOwnerRequest.Value = authorization;
+        return new RequestScope(() => authorizedOwnerRequest.Value = previous);
     }
 
     internal IDisposable BindRequest(AccountLease lease)
@@ -188,7 +202,10 @@ public sealed class MicrosoftAccountState(IMicrosoftAccountIdentityProvider iden
 
     internal Task LaunchAsync(AccountLease lease, Func<Task> launch, CancellationToken ct) => ExecuteAuthorizedAsync(lease, launch, ct);
 
-    internal async Task ExecuteAuthorizedAsync(AccountLease lease, Func<Task> action, CancellationToken ct)
+    internal Task ExecuteAuthorizedAsync(AccountLease lease, Func<Task> action, CancellationToken ct) =>
+        ExecuteAuthorizedAsync(lease, async () => { await action(); return true; }, ct);
+
+    internal async Task<T> ExecuteAuthorizedAsync<T>(AccountLease lease, Func<Task<T>> action, CancellationToken ct)
     {
         await gate.WaitAsync(ct);
         try
@@ -196,9 +213,10 @@ public sealed class MicrosoftAccountState(IMicrosoftAccountIdentityProvider iden
             RequireCurrent(lease);
             await SynchronizeIdentityLockedAsync(false, ct);
             RequireCurrent(lease);
-            await action();
+            var result = await action();
             await SynchronizeIdentityLockedAsync(false, CancellationToken.None);
             RequireCurrent(lease);
+            return result;
         }
         finally { gate.Release(); }
     }
@@ -226,6 +244,19 @@ public sealed class MicrosoftAccountState(IMicrosoftAccountIdentityProvider iden
                 if (result is IDisposable disposable) disposable.Dispose();
                 throw;
             }
+        }
+        finally { gate.Release(); }
+    }
+
+    internal async Task<T> ExecuteOwnerAuthorizedAsync<T>(Func<Task<T>> action, CancellationToken ct)
+    {
+        await gate.WaitAsync(ct);
+        try
+        {
+            var authorization = authorizedOwnerRequest.Value ?? throw new OwnerAuthorizationException();
+            var lease = await SynchronizeIdentityLockedAsync(false, ct, validateOwnerRequest: false);
+            authorization.RequireCurrent(lease);
+            return await action();
         }
         finally { gate.Release(); }
     }

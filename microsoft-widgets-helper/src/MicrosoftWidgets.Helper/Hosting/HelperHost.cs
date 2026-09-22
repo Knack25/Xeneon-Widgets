@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Reflection;
+using PlannerEdge.Helper.Auth;
 using PlannerEdge.Helper.Security;
 
 namespace PlannerEdge.Helper.Hosting;
@@ -38,15 +39,17 @@ public static class HelperHost
         routes.MapGet("/downloads/outlook", () => File.Exists(OutlookPackagePath)
             ? Results.File(OutlookPackagePath, "application/octet-stream", "OutlookEdgeWidget.icuewidget")
             : Results.NotFound(new { message = "The Outlook widget package is not included in this build." }));
-        routes.MapPost("/host/stop", (HttpContext context, IHostApplicationLifetime lifetime) =>
-        {
-            context.Response.OnCompleted(() =>
+        routes.MapPost("/host/stop", async (HttpContext context, IHostApplicationLifetime lifetime,
+            MicrosoftAccountState state, CancellationToken ct) =>
+            await state.ExecuteOwnerAuthorizedAsync(() =>
             {
-                lifetime.StopApplication();
-                return Task.CompletedTask;
-            });
-            return Results.Accepted();
-        });
+                context.Response.OnCompleted(() =>
+                {
+                    lifetime.StopApplication();
+                    return Task.CompletedTask;
+                });
+                return Task.FromResult(Results.Accepted());
+            }, ct));
     }
 
     private static void Open(string url) => Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
