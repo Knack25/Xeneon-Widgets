@@ -31,7 +31,7 @@ if (args.Contains("--stop"))
 using var instance = new Mutex(false, HelperHost.InstanceMutexName, out var firstInstance);
 if (!firstInstance)
 {
-    if (!args.Contains("--no-browser")) HelperHost.OpenSetup();
+    if (!args.Contains("--no-browser")) await HelperControlPipe.RequestOpenSetupAsync();
     return;
 }
 
@@ -47,6 +47,8 @@ builder.WebHost.UseUrls($"http://localhost:{helperPort}");
 builder.Services.Configure<AzureAdOptions>(builder.Configuration.GetSection("AzureAd"));
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<LocalAccessService>();
+builder.Services.AddSingleton<HelperControlPipe>();
+builder.Services.AddHostedService(provider => provider.GetRequiredService<HelperControlPipe>());
 builder.Services.AddSingleton<ILocalJsonStore>(_ => new LocalJsonStore(LocalPaths.AppDataRoot()));
 builder.Services.AddSingleton<IMicrosoftAuthService, MicrosoftAuthService>();
 builder.Services.AddSingleton<MicrosoftAuthCapabilityService>();

@@ -80,7 +80,7 @@ public sealed class UpdateInstaller : IUpdateInstaller
                         await Task.Delay(500);
                     }
                     if (!ready) throw new InvalidOperationException("The helper did not become ready.");
-                    HelperHost.OpenSetup();
+                    await HelperControlPipe.RequestOpenSetupAsync(timeout.Token);
                 }
                 catch (Exception ex) when (ex is OperationCanceledException or InvalidOperationException or System.ComponentModel.Win32Exception)
                 {

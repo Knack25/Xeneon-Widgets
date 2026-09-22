@@ -13,7 +13,6 @@ public static class HelperHost
     public static string PlannerPackagePath => Path.Combine(AppContext.BaseDirectory, "widgets", "PlannerEdgeWidget.icuewidget");
     public static string OutlookPackagePath => Path.Combine(AppContext.BaseDirectory, "widgets", "OutlookEdgeWidget.icuewidget");
 
-    public static void OpenSetup() => Open("http://localhost:8787");
     public static void OpenSetup(LocalAccessService access) => Open(CreateSetupUrl(access));
     public static void OpenUpdates(LocalAccessService access) => Open(CreateSetupUrl(access, "updates"));
 
