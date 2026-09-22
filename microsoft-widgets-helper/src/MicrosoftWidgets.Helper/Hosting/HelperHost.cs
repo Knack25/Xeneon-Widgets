@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Reflection;
+using PlannerEdge.Helper.Security;
 
 namespace PlannerEdge.Helper.Hosting;
 
@@ -12,8 +13,17 @@ public static class HelperHost
     public static string PlannerPackagePath => Path.Combine(AppContext.BaseDirectory, "widgets", "PlannerEdgeWidget.icuewidget");
     public static string OutlookPackagePath => Path.Combine(AppContext.BaseDirectory, "widgets", "OutlookEdgeWidget.icuewidget");
 
-    public static void OpenSetup() => Process.Start(new ProcessStartInfo("http://localhost:8787") { UseShellExecute = true });
-    public static void OpenUpdates() => Process.Start(new ProcessStartInfo("http://localhost:8787/#updates") { UseShellExecute = true });
+    public static void OpenSetup() => Open("http://localhost:8787");
+    public static void OpenSetup(LocalAccessService access) => Open(CreateSetupUrl(access));
+    public static void OpenUpdates(LocalAccessService access) => Open(CreateSetupUrl(access, "updates"));
+
+    public static string CreateSetupUrl(LocalAccessService access, string? section = null)
+    {
+        var bootstrap = access.CreateBootstrap();
+        var fragment = $"access={Uri.EscapeDataString(bootstrap.Token)}";
+        if (!string.IsNullOrWhiteSpace(section)) fragment += $"&section={Uri.EscapeDataString(section)}";
+        return "http://localhost:8787/#" + fragment;
+    }
 
     public static void MapHelperHost(this WebApplication app)
     {
@@ -22,7 +32,7 @@ public static class HelperHost
             version = Version,
             plannerWidgetAvailable = File.Exists(PlannerPackagePath),
             outlookWidgetAvailable = File.Exists(OutlookPackagePath)
-        }));
+        })).AddEndpointFilter<OwnerAuthorizationFilter>();
         app.MapGet("/downloads/planner", () => File.Exists(PlannerPackagePath)
             ? Results.File(PlannerPackagePath, "application/octet-stream", "PlannerEdgeWidget.icuewidget")
             : Results.NotFound(new { message = "The widget package is not included in this build. Download it from the release page." }));
@@ -39,4 +49,6 @@ public static class HelperHost
             return Results.Accepted();
         });
     }
+
+    private static void Open(string url) => Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
 }

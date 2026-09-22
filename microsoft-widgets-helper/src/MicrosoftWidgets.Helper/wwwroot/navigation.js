@@ -1,4 +1,6 @@
 (() => {
+  const shell = document.querySelector('#setup-shell');
+  const instructions = document.querySelector('#tray-instructions');
   const settings = document.querySelector('#view-settings');
   settings.append(document.querySelector('#updates'), document.querySelector('footer'));
   const links = [...document.querySelectorAll('.sidebar a')];
@@ -34,5 +36,9 @@
     document.querySelector('#app-configuration').open = true;
   });
   window.addEventListener('hashchange', navigate);
-  navigate();
+  window.helperApi.ready.then(allowed => {
+    instructions.hidden = allowed;
+    shell.hidden = !allowed;
+    if (allowed) navigate();
+  });
 })();

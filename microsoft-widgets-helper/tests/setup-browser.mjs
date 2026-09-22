@@ -13,6 +13,8 @@ const calls = [];
 let connected = false;
 let permissionState = 'available';
 let configured = true;
+const bootstrapToken = 'fixture-bootstrap-token';
+const ownerSession = 'fixture-owner-session';
 const api = pathname => {
   if (pathname === '/configuration') return { clientId: configured ? '11111111-1111-1111-1111-111111111111' : '', tenant: 'organizations' };
   if (pathname === '/auth/status') return { isSignedIn: true, displayName: 'Example account' };
@@ -33,9 +35,20 @@ const api = pathname => {
 };
 const server = http.createServer(async (request, response) => {
   const pathname = new URL(request.url, 'http://localhost').pathname;
-  calls.push({ pathname, method: request.method });
+  calls.push({ pathname, method: request.method, url: request.url, headers: request.headers });
+  if (pathname === '/api/local-access/session') {
+    if (request.method !== 'POST' || request.headers['x-microsoft-widgets-bootstrap'] !== bootstrapToken) {
+      response.writeHead(401, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ message: 'Owner session required.' })); return;
+    }
+    response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ token: ownerSession })); return;
+  }
   const data = api(pathname);
-  if (data !== null) { response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify(data)); return; }
+  if (data !== null) {
+    if (request.headers['x-microsoft-widgets-owner'] !== ownerSession) {
+      response.writeHead(401, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ message: 'Owner session required.' })); return;
+    }
+    response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify(data)); return;
+  }
   const file = path.join(root, pathname === '/' ? 'index.html' : pathname.slice(1));
   if (!file.startsWith(root)) { response.writeHead(403); response.end(); return; }
   const contentType = pathname.endsWith('.js') ? 'text/javascript' : pathname.endsWith('.css') ? 'text/css' : 'text/html';
@@ -52,9 +65,24 @@ try {
   const page = await browser.newPage();
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
+  await page.addInitScript(() => {
+    const replaceState = history.replaceState.bind(history);
+    window.__replaceStateCalls = 0;
+    history.replaceState = (...args) => { window.__replaceStateCalls++; return replaceState(...args); };
+  });
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
+  await page.locator('#tray-instructions').getByText('Open Microsoft Widgets Setup from the notification area or Start menu to continue.').waitFor();
+  assert.equal(calls.some(call => call.pathname === '/configuration' || call.pathname === '/installation'), false);
+  await page.goto(`http://127.0.0.1:${server.address().port}/#access=${bootstrapToken}&section=updates`);
+  await page.reload();
   await page.getByRole('navigation', {name:'Helper sections'}).waitFor({timeout:3000});
-  assert.equal(await page.locator('#view-overview').isVisible(), true);
+  await page.waitForFunction(() => location.hash === '#updates');
+  assert.equal(await page.evaluate(() => window.__replaceStateCalls > 0), true);
+  assert.equal(await page.evaluate(() => location.search.includes('access=')), false);
+  assert.equal(calls.some(call => call.url.includes('access=')), false);
+  assert.equal(calls.some(call => call.pathname === '/api/local-access/session' && call.headers['x-microsoft-widgets-bootstrap'] === bootstrapToken), true);
+  await page.getByRole('navigation', {name:'Helper sections'}).waitFor({timeout:3000});
+  assert.equal(await page.locator('#updates').isVisible(), true);
   await page.goto(`http://127.0.0.1:${server.address().port}/#updates`);
   assert.equal(await page.locator('#updates').isVisible(), true,'Tray update link opens Settings');
   await page.getByRole('link', {name:'Planner',exact:true}).click();
@@ -63,7 +91,7 @@ try {
   assert.equal(await page.locator('#enable-members').isDisabled(), true);
   assert.equal(await page.locator('#sign-in').isDisabled(), true);
   assert.equal(await page.locator('#board').inputValue(), 'fixture');
-  assert.equal(calls.some(c => c.method === 'POST'), false);
+  assert.equal(calls.some(c => c.method === 'POST' && c.pathname !== '/api/local-access/session'), false);
   await page.getByRole('link', {name:'Outlook',exact:true}).click();
   await page.getByRole('button', { name: 'Connect Outlook', exact: true }).click();
   await page.locator('#outlook-status').filter({hasText:'Outlook is connected.'}).waitFor();

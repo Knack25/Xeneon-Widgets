@@ -7,11 +7,15 @@
   <link rel="stylesheet" href="/setup.css">
 </head>
 <body>
+  <main id="tray-instructions">
+    <h1>Microsoft Widgets Helper</h1>
+    <p>Open Microsoft Widgets Setup from the notification area or Start menu to continue.</p>
+  </main>
   <nav aria-label="Helper sections" class="sidebar">
     <div class="brand"><img src="/helper.ico" alt="">Microsoft Widgets</div>
     <a href="#overview">Overview</a><a href="#planner">Planner</a><a href="#outlook">Outlook</a><a href="#settings">Settings</a>
   </nav>
-  <main>
+  <main id="setup-shell" hidden>
     <h1>Microsoft Widgets Helper</h1>
     <div id="view-overview" class="view">
       <h2>Overview</h2>
@@ -114,7 +118,8 @@
     </section>
     <footer><small id="helper-version">Microsoft Widgets Helper</small><button id="stop-helper" class="secondary">Stop helper</button></footer>
   </main>
-  <script src="/navigation.js"></script>
+  <script src="/helper-api.js"></script>
+  <script type="module" src="/navigation.js"></script>
   <script type="module" src="/setup.js"></script>
   <script type="module" src="/updates.js"></script>
   <script type="module" src="/outlook-setup.js"></script>

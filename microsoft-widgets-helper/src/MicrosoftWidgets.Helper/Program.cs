@@ -45,6 +45,8 @@ builder.Logging.AddConsole();
 var helperPort = builder.Configuration.GetValue<int>("HelperPort", 8787);
 builder.WebHost.UseUrls($"http://localhost:{helperPort}");
 builder.Services.Configure<AzureAdOptions>(builder.Configuration.GetSection("AzureAd"));
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<LocalAccessService>();
 builder.Services.AddSingleton<ILocalJsonStore>(_ => new LocalJsonStore(LocalPaths.AppDataRoot()));
 builder.Services.AddSingleton<IMicrosoftAuthService, MicrosoftAuthService>();
 builder.Services.AddSingleton<MicrosoftAuthCapabilityService>();
@@ -131,10 +133,11 @@ app.Use(async (context, next) =>
 app.UseDefaultFiles();
 app.UseStaticFiles();
 app.MapGet("/health", () => Results.Ok(new { status = "ok", version = HelperHost.Version, service = "Microsoft Widgets Helper", integrations = new[] { "planner", "outlook" } }));
+app.MapLocalAccess();
 app.MapHelperHost();
 app.MapUpdates();
 app.MapGet("/configuration", async (IMicrosoftAuthService auth, CancellationToken ct) =>
-    Results.Ok(await auth.GetConfigurationAsync(ct)));
+    Results.Ok(await auth.GetConfigurationAsync(ct))).AddEndpointFilter<OwnerAuthorizationFilter>();
 app.MapPut("/configuration", async (AzureAdOptions configuration, IMicrosoftAuthService auth,
     IPlannerSettingsStore settings, OutlookAccountState outlookAccount, CancellationToken ct) =>
 {
@@ -146,7 +149,7 @@ app.MapPut("/configuration", async (AzureAdOptions configuration, IMicrosoftAuth
             selection with { SelectedPlanId = null, SelectedPlanTitle = null }, ct);
     }
     return Results.Ok(saved);
-});
+}).AddEndpointFilter<OwnerAuthorizationFilter>();
 app.MapGet("/auth/status", async (IMicrosoftAuthService auth, CancellationToken ct) =>
     Results.Ok(await auth.GetStatusAsync(ct)));
 app.MapGet("/auth/capabilities", async (MicrosoftAuthCapabilityService capabilities, HttpResponse response, CancellationToken ct) =>
@@ -177,7 +180,7 @@ app.MapOutlookIntegration();
 await app.StartAsync();
 if (OperatingSystem.IsWindows() && !args.Contains("--no-browser"))
 {
-    try { HelperHost.OpenSetup(); }
+    try { HelperHost.OpenSetup(app.Services.GetRequiredService<LocalAccessService>()); }
     catch (Exception error) { app.Logger.LogWarning(error, "Could not open setup page automatically."); }
 }
 await app.WaitForShutdownAsync();

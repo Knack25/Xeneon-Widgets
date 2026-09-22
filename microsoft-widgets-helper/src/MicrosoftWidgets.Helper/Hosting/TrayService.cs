@@ -1,11 +1,12 @@
 using System.Drawing;
 using Microsoft.Win32;
 using System.Windows.Forms;
+using PlannerEdge.Helper.Security;
 using PlannerEdge.Helper.Updates;
 
 namespace PlannerEdge.Helper.Hosting;
 
-public sealed class TrayService(UpdateService updates, IHostApplicationLifetime lifetime, ILogger<TrayService> logger) : IHostedService
+public sealed class TrayService(UpdateService updates, LocalAccessService access, IHostApplicationLifetime lifetime, ILogger<TrayService> logger) : IHostedService
 {
     private readonly TaskCompletionSource ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource stopped = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -53,7 +54,7 @@ public sealed class TrayService(UpdateService updates, IHostApplicationLifetime 
                 ContextMenuStrip = menu,
                 Visible = true
             };
-            var commands = new TrayCommands(HelperHost.OpenSetup, HelperHost.OpenUpdates, updates.CheckAsync, lifetime.StopApplication);
+            var commands = new TrayCommands(() => HelperHost.OpenSetup(access), () => HelperHost.OpenUpdates(access), updates.CheckAsync, lifetime.StopApplication);
             void Report(Exception error)
             {
                 logger.LogWarning(error, "Tray action failed");
