@@ -107,6 +107,37 @@ public sealed class StorageTests
     }
 
     [Fact]
+    public async Task LocalJsonStore_allows_atomic_replacement_while_a_read_handle_is_open()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "MicrosoftWidgetsTests", Guid.NewGuid().ToString("N"));
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<BlockingReadPayload?>? read = null;
+        try
+        {
+            var store = new LocalJsonStore(root);
+            await store.WriteAsync("replace-open-read", new ConcurrentPayload(1, "original"), default);
+            BlockingReadPayload.Coordinate(started, release);
+            read = Task.Run(() => store.ReadAsync<BlockingReadPayload>("replace-open-read", default));
+            await started.Task;
+
+            await store.WriteAsync("replace-open-read", new ConcurrentPayload(2, "replacement"), default)
+                .WaitAsync(TimeSpan.FromSeconds(2));
+            release.TrySetResult();
+
+            Assert.Equal(1, (await read)!.Sequence);
+            Assert.Equal(2, (await store.ReadAsync<ConcurrentPayload>("replace-open-read", default))!.Sequence);
+        }
+        finally
+        {
+            release.TrySetResult();
+            BlockingReadPayload.Clear();
+            if (read is not null) await read;
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task SettingsStore_LoadsLegacyThreeFieldSettings()
     {
         var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
@@ -286,6 +317,38 @@ public sealed class StorageTests
     }
 
     private sealed record ConcurrentPayload(int Sequence, string Content);
+
+    private sealed class BlockingReadPayload
+    {
+        private static TaskCompletionSource? started;
+        private static TaskCompletionSource? release;
+        private int sequence;
+
+        public int Sequence
+        {
+            get => sequence;
+            set
+            {
+                started?.TrySetResult();
+                release?.Task.GetAwaiter().GetResult();
+                sequence = value;
+            }
+        }
+
+        public string Content { get; set; } = string.Empty;
+
+        public static void Coordinate(TaskCompletionSource readStarted, TaskCompletionSource allowRead)
+        {
+            started = readStarted;
+            release = allowRead;
+        }
+
+        public static void Clear()
+        {
+            started = null;
+            release = null;
+        }
+    }
 
     private sealed class BlockingPayload(int sequence, TaskCompletionSource started, TaskCompletionSource release)
     {

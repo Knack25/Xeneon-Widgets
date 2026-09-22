@@ -5,7 +5,7 @@ import vm from 'node:vm';
 
 const source = readFileSync(new URL('../src/MicrosoftWidgets.Helper/wwwroot/helper-api.js', import.meta.url), 'utf8');
 
-test('configuration response replacement session is adopted before the next request', async () => {
+test('configuration and first sign-in replacement sessions are adopted before refresh', async () => {
   const stored = new Map([['microsoft-widgets-owner-session', 'old-session']]);
   const requests = [];
   let call = 0;
@@ -20,14 +20,16 @@ test('configuration response replacement session is adopted before the next requ
       getItem: key => stored.get(key) ?? null,
       setItem: (key, value) => stored.set(key, value)
     },
-    fetch: async (_path, options = {}) => {
+    fetch: async (path, options = {}) => {
       requests.push(options.headers.get('X-Microsoft-Widgets-Owner'));
       call++;
       return {
         ok: true,
-        headers: new Headers(call === 1
-          ? { 'X-Microsoft-Widgets-Owner-Replacement': 'new-session' }
-          : {}),
+        headers: new Headers(path === '/configuration'
+          ? { 'X-Microsoft-Widgets-Owner-Replacement': 'configured-session' }
+          : path === '/auth/sign-in'
+            ? { 'X-Microsoft-Widgets-Owner-Replacement': 'signed-in-session' }
+            : {}),
         json: async () => ({})
       };
     }
@@ -36,8 +38,9 @@ test('configuration response replacement session is adopted before the next requ
   vm.runInNewContext(source, context);
 
   await context.window.helperApi.fetch('/configuration', { method: 'PUT' });
+  await context.window.helperApi.fetch('/auth/sign-in', { method: 'POST' });
   await context.window.helperApi.fetch('/auth/status');
 
-  assert.deepEqual(requests, ['old-session', 'new-session']);
-  assert.equal(stored.get('microsoft-widgets-owner-session'), 'new-session');
+  assert.deepEqual(requests, ['old-session', 'configured-session', 'signed-in-session']);
+  assert.equal(stored.get('microsoft-widgets-owner-session'), 'signed-in-session');
 });

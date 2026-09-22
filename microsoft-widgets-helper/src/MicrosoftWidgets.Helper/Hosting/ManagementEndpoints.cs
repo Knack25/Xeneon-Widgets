@@ -45,8 +45,20 @@ public static class ManagementEndpoints
         });
         owner.MapGet("/auth/me", async (IPlannerGraphClient graph, CancellationToken ct) =>
             Results.Ok(new { userId = await graph.GetCurrentUserIdAsync(ct) }));
-        owner.MapPost("/auth/sign-in", async (IMicrosoftAuthService auth, MicrosoftAccountState outlookAccount, CancellationToken ct) =>
-            Results.Ok(await outlookAccount.TransitionAsync(() => auth.SignInAsync(ct), ct)));
+        owner.MapPost("/auth/sign-in", async (IMicrosoftAuthService auth, MicrosoftAccountState outlookAccount,
+            LocalAccessService access, HttpResponse response, CancellationToken ct) =>
+        {
+            var previous = await outlookAccount.GetIdentityAsync(requireAccount: false, ct);
+            var result = await outlookAccount.TransitionAsync(() => auth.SignInAsync(ct), ct);
+            var current = await outlookAccount.GetIdentityAsync(requireAccount: false, ct);
+            if (previous != current)
+            {
+                response.Headers.CacheControl = "no-store";
+                response.Headers[LocalAccessHeaders.OwnerReplacement] =
+                    await access.IssueReplacementOwnerSessionAsync(ct);
+            }
+            return Results.Ok(result);
+        });
         owner.MapPost("/auth/enable-task-chat", async (IMicrosoftAuthService auth, MicrosoftAccountState outlookAccount, CancellationToken ct) =>
             Results.Ok(await outlookAccount.TransitionAsync(() => auth.EnableTaskChatAsync(ct), ct)));
         owner.MapPost("/auth/enable-assignee-names", async (IMicrosoftAuthService auth, MicrosoftAccountState outlookAccount, CancellationToken ct) =>

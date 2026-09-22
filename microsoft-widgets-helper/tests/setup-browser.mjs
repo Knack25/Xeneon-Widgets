@@ -13,13 +13,17 @@ const calls = [];
 let connected = false;
 let permissionState = 'available';
 let configured = true;
+let plannerSignedIn = true;
 const failedDownloads = new Set();
 const bootstrapToken = 'fixture-bootstrap-token';
 const ownerSession = 'fixture-owner-session';
+const configuredOwnerSession = 'fixture-configured-owner-session';
+const signedInOwnerSession = 'fixture-signed-in-owner-session';
+let activeOwnerSession = ownerSession;
 const api = pathname => {
   if (pathname === '/configuration') return { clientId: configured ? '11111111-1111-1111-1111-111111111111' : '', tenant: 'organizations' };
-  if (pathname === '/auth/status') return { isSignedIn: true, displayName: 'Example account' };
-  if (pathname === '/auth/capabilities') return Object.fromEntries(['planner', 'assigneeNames', 'boardMembers'].map(key => [key, { state: permissionState }]));
+  if (pathname === '/auth/status') return { isSignedIn: plannerSignedIn, displayName: plannerSignedIn ? 'Example account' : null };
+  if (pathname === '/auth/capabilities') return Object.fromEntries(['planner', 'assigneeNames', 'boardMembers'].map(key => [key, { state: plannerSignedIn ? permissionState : 'signed_out' }]));
   if (pathname === '/auth/enable-assignee-names') { permissionState = 'available'; return {isSignedIn:true}; }
   if (pathname === '/plans') return [{planId:'fixture',title:'Example board'}];
   if (pathname === '/settings') return {selectedPlanId:'fixture',hideCompletedTasks:true};
@@ -43,10 +47,36 @@ const server = http.createServer(async (request, response) => {
     }
     response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ token: ownerSession })); return;
   }
+  if (pathname === '/configuration' && request.method === 'PUT') {
+    if (request.headers['x-microsoft-widgets-owner'] !== activeOwnerSession) {
+      response.writeHead(401, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ message: 'Owner session required.' })); return;
+    }
+    configured = true;
+    activeOwnerSession = configuredOwnerSession;
+    response.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-store',
+      'X-Microsoft-Widgets-Owner-Replacement': configuredOwnerSession
+    });
+    response.end(JSON.stringify(api('/configuration'))); return;
+  }
+  if (pathname === '/auth/sign-in' && request.method === 'POST') {
+    if (request.headers['x-microsoft-widgets-owner'] !== activeOwnerSession) {
+      response.writeHead(401, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ message: 'Owner session required.' })); return;
+    }
+    plannerSignedIn = true;
+    activeOwnerSession = signedInOwnerSession;
+    response.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-store',
+      'X-Microsoft-Widgets-Owner-Replacement': signedInOwnerSession
+    });
+    response.end(JSON.stringify(api('/auth/status'))); return;
+  }
   const downloadName = pathname === '/downloads/planner' ? 'PlannerEdgeWidget.icuewidget'
     : pathname === '/downloads/outlook' ? 'OutlookEdgeWidget.icuewidget' : null;
   if (downloadName) {
-    if (request.headers['x-microsoft-widgets-owner'] !== ownerSession) {
+    if (request.headers['x-microsoft-widgets-owner'] !== activeOwnerSession) {
       response.writeHead(401, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ message: 'Owner session required.' })); return;
     }
     if (failedDownloads.has(pathname)) {
@@ -61,7 +91,7 @@ const server = http.createServer(async (request, response) => {
   }
   const data = api(pathname);
   if (data !== null) {
-    if (request.headers['x-microsoft-widgets-owner'] !== ownerSession) {
+    if (request.headers['x-microsoft-widgets-owner'] !== activeOwnerSession) {
       response.writeHead(401, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ message: 'Owner session required.' })); return;
     }
     response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify(data)); return;
@@ -183,10 +213,23 @@ try {
   await page.locator('#outlook-package-status').filter({ hasText: 'Fixture download failed.' }).waitFor();
   assert.equal(new URL(page.url()).hash, '#outlook');
   configured = false;
+  plannerSignedIn = false;
+  permissionState = 'available';
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
   await page.locator('#client-id').waitFor();
   assert.equal(await page.locator('#view-settings').isVisible(), true);
   assert.equal(await page.locator('#client-id').inputValue(), '');
+  await page.locator('#client-id').fill('11111111-1111-1111-1111-111111111111');
+  await page.locator('#tenant-id').fill('organizations');
+  await page.locator('#save-connection').click();
+  await page.getByRole('link', {name:'Planner', exact:true}).click();
+  await page.locator('#sign-in').waitFor({ state: 'visible' });
+  await page.locator('#sign-in').click();
+  await page.waitForFunction(() => document.querySelector('#account')?.textContent.includes('Example account'));
+  assert.equal(calls.some(call => call.pathname === '/auth/sign-in' &&
+    call.headers['x-microsoft-widgets-owner'] === configuredOwnerSession), true);
+  assert.equal(calls.some(call => call.pathname === '/auth/status' &&
+    call.headers['x-microsoft-widgets-owner'] === signedInOwnerSession), true);
   assert.deepEqual(errors, []);
   console.log('Setup browser checks passed: automatic permission states/data load, disabled available actions, retry without consent, explicit missing-permission flow, literal calendar text, desktop/mobile layout, no runtime errors.');
 } finally {

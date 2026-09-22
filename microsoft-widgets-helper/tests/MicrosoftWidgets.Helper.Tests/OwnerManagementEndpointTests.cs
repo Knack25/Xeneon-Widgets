@@ -88,7 +88,7 @@ public sealed class OwnerManagementEndpointTests
     [Fact]
     public async Task Configuration_change_revokes_owner_session_and_pending_bootstrap()
     {
-        await using var host = await OwnerManagementTestHost.StartAsync();
+        await using var host = await OwnerManagementTestHost.StartAsync(signedIn: false);
         var pending = host.Access.CreateBootstrap();
         using var request = new HttpRequestMessage(HttpMethod.Put, "/configuration")
         {
@@ -106,11 +106,18 @@ public sealed class OwnerManagementEndpointTests
         using var oldOwner = await host.SendAsync("GET", "/configuration", owner: host.OwnerSession);
         using var refreshed = await host.SendAsync("GET", "/configuration", owner: replacement);
         using var signIn = await host.SendAsync("POST", "/auth/sign-in", owner: replacement);
+        Assert.True(signIn.Headers.TryGetValues(LocalAccessHeaders.OwnerReplacement, out var signInValues));
+        var signedInReplacement = Assert.Single(signInValues);
+        using var staleAfterSignIn = await host.SendAsync("GET", "/configuration", owner: replacement);
+        using var refreshedAfterSignIn = await host.SendAsync("GET", "/configuration", owner: signedInReplacement);
 
         Assert.Equal(HttpStatusCode.OK, changed.StatusCode);
         Assert.Equal(HttpStatusCode.Unauthorized, oldOwner.StatusCode);
         Assert.Equal(HttpStatusCode.OK, refreshed.StatusCode);
         Assert.Equal(HttpStatusCode.OK, signIn.StatusCode);
+        Assert.Equal("no-store", signIn.Headers.CacheControl?.ToString());
+        Assert.Equal(HttpStatusCode.Unauthorized, staleAfterSignIn.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, refreshedAfterSignIn.StatusCode);
         await Assert.ThrowsAsync<LocalAccessException>(() =>
             host.Access.ExchangeBootstrapAsync(pending.Token, default));
     }
@@ -123,14 +130,14 @@ internal sealed class OwnerManagementTestHost(WebApplication app, HttpClient cli
     public HttpClient Client => client;
     public LocalAccessService Access { get; } = access;
 
-    public static async Task<OwnerManagementTestHost> StartAsync()
+    public static async Task<OwnerManagementTestHost> StartAsync(bool signedIn = true)
     {
         var port = ReservePort();
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = "Testing" });
         builder.WebHost.UseUrls("http://127.0.0.1:" + port);
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<LocalAccessService>();
-        builder.Services.AddSingleton<IMicrosoftAuthService>(new OwnerManagementAuth());
+        builder.Services.AddSingleton<IMicrosoftAuthService>(new OwnerManagementAuth(signedIn));
         builder.Services.AddSingleton<MicrosoftAuthCapabilityService>();
         builder.Services.AddSingleton<IPlannerGraphClient, OwnerManagementGraph>();
         builder.Services.AddSingleton<IPlannerSettingsStore, OwnerManagementSettings>();
@@ -173,21 +180,28 @@ internal sealed class OwnerManagementTestHost(WebApplication app, HttpClient cli
     }
 }
 
-internal sealed class OwnerManagementAuth : IMicrosoftAuthService
+internal sealed class OwnerManagementAuth(bool signedIn) : IMicrosoftAuthService
 {
-    private static readonly AuthStatusResponse Status = new(true, "owner", "owner@example.com");
+    private static readonly AuthStatusResponse SignedInStatus = new(true, "owner", "owner@example.com");
+    private static readonly AuthStatusResponse SignedOutStatus = new(false, null, null);
+    private bool signedIn = signedIn;
     public Task<string> GetAccessTokenAsync(CancellationToken ct) => Task.FromResult("token");
     public Task<string> GetTokenForScopesAsync(IEnumerable<string> scopes, CancellationToken ct) => Task.FromResult("token");
     public Task<AzureAdOptions> GetConfigurationAsync(CancellationToken ct) => Task.FromResult(new AzureAdOptions { ClientId = "11111111-1111-1111-1111-111111111111" });
     public Task<AzureAdOptions> SaveConfigurationAsync(AzureAdOptions configuration, CancellationToken ct) => Task.FromResult(configuration);
-    public Task<AuthStatusResponse> GetStatusAsync(CancellationToken ct) => Task.FromResult(Status);
-    public Task<MicrosoftAccountIdentity> GetAccountIdentityAsync(CancellationToken ct) =>
-        Task.FromResult(new MicrosoftAccountIdentity("owner-home", "owner-tenant", "11111111-1111-1111-1111-111111111111", "owner@example.com"));
-    public Task<AuthStatusResponse> SignInAsync(CancellationToken ct) => Task.FromResult(Status);
-    public Task<AuthStatusResponse> ConnectOutlookAsync(CancellationToken ct) => Task.FromResult(Status);
-    public Task<AuthStatusResponse> EnableTaskChatAsync(CancellationToken ct) => Task.FromResult(Status);
-    public Task<AuthStatusResponse> EnableAssigneeNamesAsync(CancellationToken ct) => Task.FromResult(Status);
-    public Task<AuthStatusResponse> EnableBoardMembersAsync(CancellationToken ct) => Task.FromResult(Status);
+    public Task<AuthStatusResponse> GetStatusAsync(CancellationToken ct) => Task.FromResult(signedIn ? SignedInStatus : SignedOutStatus);
+    public Task<MicrosoftAccountIdentity> GetAccountIdentityAsync(CancellationToken ct) => signedIn
+        ? Task.FromResult(new MicrosoftAccountIdentity("owner-home", "owner-tenant", "11111111-1111-1111-1111-111111111111", "owner@example.com"))
+        : Task.FromException<MicrosoftAccountIdentity>(new OutlookException("sign_in_required", "Sign in.", 401));
+    public Task<AuthStatusResponse> SignInAsync(CancellationToken ct)
+    {
+        signedIn = true;
+        return Task.FromResult(SignedInStatus);
+    }
+    public Task<AuthStatusResponse> ConnectOutlookAsync(CancellationToken ct) => Task.FromResult(SignedInStatus);
+    public Task<AuthStatusResponse> EnableTaskChatAsync(CancellationToken ct) => Task.FromResult(SignedInStatus);
+    public Task<AuthStatusResponse> EnableAssigneeNamesAsync(CancellationToken ct) => Task.FromResult(SignedInStatus);
+    public Task<AuthStatusResponse> EnableBoardMembersAsync(CancellationToken ct) => Task.FromResult(SignedInStatus);
     public Task SignOutAsync(CancellationToken ct) => Task.CompletedTask;
 }
 
