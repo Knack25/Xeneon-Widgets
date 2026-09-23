@@ -80,7 +80,7 @@ function Assert-NormalizedReleaseEntry([string]$Entry) {
     }
 }
 
-function Open-ReleaseSnapshot([string]$Stage, [string[]]$Manifest) {
+function Open-ReleaseSnapshot([string]$Stage, [string[]]$Manifest, [switch]$AllowDeleteShare) {
     $stagePath = [IO.Path]::GetFullPath($Stage).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
     if (-not (Test-Path -LiteralPath $stagePath -PathType Container)) { throw "Release stage does not exist: $stagePath" }
     Assert-TreeHasNoReparsePoints $stagePath
@@ -98,7 +98,8 @@ function Open-ReleaseSnapshot([string]$Stage, [string[]]$Manifest) {
                 throw "Release snapshot file is missing or escapes its stage: $relative"
             }
             Assert-NotReparsePoint $path
-            $stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+            $share = if ($AllowDeleteShare) { [IO.FileShare]::Read -bor [IO.FileShare]::Delete } else { [IO.FileShare]::Read }
+            $stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, $share)
             $handles.Add($stream)
             $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($stream)).ToLowerInvariant()
             $stream.Position = 0
@@ -123,6 +124,44 @@ function Assert-ReleaseSnapshotUnchanged($Snapshot) {
         $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($entry.Stream)).ToLowerInvariant()
         $entry.Stream.Position = 0
         if ($hash -ne $entry.Hash) { throw "Release snapshot hash changed: $($entry.Name)" }
+    }
+}
+
+function Assert-ReleaseSnapshotsMatch($Expected, $Actual) {
+    Assert-ReleaseSnapshotUnchanged $Actual
+    if ($Expected.Entries.Count -ne $Actual.Entries.Count) { throw 'Published release inventory changed.' }
+    $expectedEntries = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($entry in $Expected.Entries) { $expectedEntries.Add($entry.Name, $entry) }
+    foreach ($entry in $Actual.Entries) {
+        if (-not $expectedEntries.ContainsKey($entry.Name)) { throw "Unexpected published release file: $($entry.Name)" }
+        $expected = $expectedEntries[$entry.Name]
+        if ($entry.Length -ne $expected.Length -or $entry.Hash -ne $expected.Hash) {
+            throw "Published release file changed: $($entry.Name)"
+        }
+    }
+}
+
+function Open-VerifiedReleaseDirectory([string]$Path, $Snapshot, [scriptblock]$Verifier) {
+    $manifest = @($Snapshot.Entries | ForEach-Object { $_.Name })
+    $expected = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($name in $manifest) { [void]$expected.Add($name) }
+    Assert-TreeHasNoReparsePoints $Path
+    $found = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($file in [IO.Directory]::EnumerateFiles([IO.Path]::GetFullPath($Path), '*', [IO.SearchOption]::AllDirectories)) {
+        $relative = [IO.Path]::GetRelativePath([IO.Path]::GetFullPath($Path), $file).Replace('\', '/')
+        Assert-NormalizedReleaseEntry $relative
+        if (-not $expected.Contains($relative)) { throw "Unexpected published release file: $relative" }
+        if (-not $found.Add($relative)) { throw "Duplicate published release file: $relative" }
+    }
+    if ($found.Count -ne $expected.Count) { throw 'Published release inventory is incomplete.' }
+    $lease = Open-ReleaseSnapshot -Stage $Path -Manifest $manifest -AllowDeleteShare
+    try {
+        Assert-ReleaseSnapshotsMatch -Expected $Snapshot -Actual $lease
+        if ($null -ne $Verifier) { & $Verifier $lease.Stage $lease }
+        return $lease
+    } catch {
+        Close-ReleaseSnapshot $lease
+        throw
     }
 }
 
@@ -280,7 +319,14 @@ function Close-InnoFileManifest($Lease) {
     if ($null -ne $Lease -and $null -ne $Lease.Stream) { $Lease.Stream.Dispose() }
 }
 
-function Publish-ReleaseDirectory([string]$Source, [string]$Destination, [string]$TrustedParent) {
+function Publish-ReleaseDirectory(
+    [string]$Source,
+    [string]$Destination,
+    [string]$TrustedParent,
+    $Snapshot,
+    [scriptblock]$Verifier,
+    [scriptblock]$AfterHandoffMoveProbe
+) {
     $sourcePath = [IO.Path]::GetFullPath($Source).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
     $destinationPath = [IO.Path]::GetFullPath($Destination).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
     $parentPath = [IO.Path]::GetFullPath($TrustedParent).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
@@ -292,24 +338,88 @@ function Publish-ReleaseDirectory([string]$Source, [string]$Destination, [string
     if ((Split-Path -Parent $destinationPath) -ne $parentPath) { throw "Release publication must target a direct child of its trusted parent: $destinationPath" }
     if ([IO.Path]::GetPathRoot($sourcePath) -ne [IO.Path]::GetPathRoot($destinationPath)) { throw 'Release publication must stay on one volume.' }
 
-    $quarantine = $null
-    if (Test-Path -LiteralPath $destinationPath) {
-        if (-not (Test-Path -LiteralPath $destinationPath -PathType Container)) { throw "Release destination is not a directory: $destinationPath" }
-        Assert-NotReparsePoint $destinationPath
-        do {
-            $random = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(16)).ToLowerInvariant()
-            $quarantine = Join-Path $parentPath "release-quarantine-$random"
-        } while (Test-Path -LiteralPath $quarantine)
-        [IO.Directory]::Move($destinationPath, $quarantine)
+    if ($null -eq $Snapshot) {
+        $quarantine = $null
+        if (Test-Path -LiteralPath $destinationPath) {
+            if (-not (Test-Path -LiteralPath $destinationPath -PathType Container)) { throw "Release destination is not a directory: $destinationPath" }
+            Assert-NotReparsePoint $destinationPath
+            do {
+                $random = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(16)).ToLowerInvariant()
+                $quarantine = Join-Path $parentPath "release-quarantine-$random"
+            } while (Test-Path -LiteralPath $quarantine)
+            [IO.Directory]::Move($destinationPath, $quarantine)
+        }
+
+        try {
+            [IO.Directory]::Move($sourcePath, $destinationPath)
+        } catch {
+            if ($null -ne $quarantine -and (Test-Path -LiteralPath $quarantine) -and -not (Test-Path -LiteralPath $destinationPath)) {
+                [IO.Directory]::Move($quarantine, $destinationPath)
+            }
+            throw
+        }
+        return $destinationPath
     }
 
+    Assert-ReleaseSnapshotUnchanged $Snapshot
+    $expectedSnapshot = [pscustomobject]@{
+        Stage = $Snapshot.Stage
+        Entries = @($Snapshot.Entries | ForEach-Object {
+            [pscustomobject]@{ Name = $_.Name; Length = $_.Length; Hash = $_.Hash }
+        })
+        Handles = @()
+    }
+    Close-ReleaseSnapshot $Snapshot
+    do {
+        $random = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(16)).ToLowerInvariant()
+        $handoff = Join-Path $parentPath "release-handoff-$random"
+    } while (Test-Path -LiteralPath $handoff)
+
+    $handoffLease = $null
+    $publishedLease = $null
+    $quarantine = $null
+    $candidateIsAtDestination = $false
     try {
-        [IO.Directory]::Move($sourcePath, $destinationPath)
+        [IO.Directory]::Move($sourcePath, $handoff)
+        if ($null -ne $AfterHandoffMoveProbe) { & $AfterHandoffMoveProbe $handoff }
+        $handoffLease = Open-VerifiedReleaseDirectory -Path $handoff -Snapshot $expectedSnapshot -Verifier $Verifier
+
+        if (Test-Path -LiteralPath $destinationPath) {
+            if (-not (Test-Path -LiteralPath $destinationPath -PathType Container)) { throw "Release destination is not a directory: $destinationPath" }
+            Assert-NotReparsePoint $destinationPath
+            do {
+                $random = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(16)).ToLowerInvariant()
+                $quarantine = Join-Path $parentPath "release-quarantine-$random"
+            } while (Test-Path -LiteralPath $quarantine)
+            [IO.Directory]::Move($destinationPath, $quarantine)
+        }
+
+        Close-ReleaseSnapshot $handoffLease
+        $handoffLease = $null
+        [IO.Directory]::Move($handoff, $destinationPath)
+        $candidateIsAtDestination = $true
+        $publishedLease = Open-VerifiedReleaseDirectory -Path $destinationPath -Snapshot $expectedSnapshot -Verifier $Verifier
+        return $publishedLease
     } catch {
+        if ($null -ne $publishedLease) { Close-ReleaseSnapshot $publishedLease; $publishedLease = $null }
+        if ($candidateIsAtDestination -and (Test-Path -LiteralPath $destinationPath -PathType Container)) {
+            do {
+                $random = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(16)).ToLowerInvariant()
+                $failed = Join-Path $parentPath "release-quarantine-$random"
+            } while (Test-Path -LiteralPath $failed)
+            [IO.Directory]::Move($destinationPath, $failed)
+        } elseif (Test-Path -LiteralPath $handoff -PathType Container) {
+            do {
+                $random = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(16)).ToLowerInvariant()
+                $failed = Join-Path $parentPath "release-quarantine-$random"
+            } while (Test-Path -LiteralPath $failed)
+            [IO.Directory]::Move($handoff, $failed)
+        }
         if ($null -ne $quarantine -and (Test-Path -LiteralPath $quarantine) -and -not (Test-Path -LiteralPath $destinationPath)) {
             [IO.Directory]::Move($quarantine, $destinationPath)
         }
         throw
+    } finally {
+        if ($null -ne $handoffLease) { Close-ReleaseSnapshot $handoffLease }
     }
-    return $destinationPath
 }

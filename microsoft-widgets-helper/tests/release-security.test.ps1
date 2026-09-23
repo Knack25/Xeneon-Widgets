@@ -29,6 +29,7 @@ Assert-True ($null -ne (Get-Command Close-VerifiedReleaseArchive -ErrorAction Si
 Assert-True ($null -ne (Get-Command New-InnoFileManifest -ErrorAction SilentlyContinue)) 'Exact Inno file manifest generator is missing.'
 Assert-True ($null -ne (Get-Command Close-InnoFileManifest -ErrorAction SilentlyContinue)) 'Exact Inno file manifest lease cleanup is missing.'
 Assert-True ($null -ne (Get-Command Publish-ReleaseDirectory -ErrorAction SilentlyContinue)) 'Atomic release-directory publisher is missing.'
+Assert-True ($null -ne (Get-Command Open-VerifiedReleaseDirectory -ErrorAction SilentlyContinue)) 'Verified release-directory opener is missing.'
 
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ("MicrosoftWidgetsReleaseSecurity-" + [Guid]::NewGuid().ToString('N'))
 $stage = Join-Path $testRoot 'stage'
@@ -176,6 +177,39 @@ try {
     $quarantines = @(Get-ChildItem -LiteralPath $publishRoot -Directory -Filter 'release-quarantine-*')
     Assert-True ($quarantines.Count -eq 1) 'Prior release directory was not preserved in a unique quarantine.'
     Assert-True (Test-Path -LiteralPath (Join-Path $quarantines[0].FullName 'old.txt')) 'Prior release content was recursively deleted instead of quarantined.'
+
+    $stableRelease = Join-Path $publishRoot 'verified-release'
+    New-Item -ItemType Directory -Path $stableRelease | Out-Null
+    Set-Content -NoNewline -LiteralPath (Join-Path $stableRelease 'previous.txt') -Value 'previous-release'
+    $releaseCandidate = New-ReleaseWorkspace -Parent $publishRoot -Prefix 'verified-candidate'
+    $releaseManifest = @(
+        'MicrosoftWidgetsSetup-test.exe',
+        'PlannerEdgeWidget-test.icuewidget',
+        'OutlookEdgeWidget-test.icuewidget',
+        'MicrosoftWidgetsHelper-test-portable-win-x64.zip',
+        'INSTALL.md',
+        'OUTLOOK.md',
+        'SHA256SUMS.txt'
+    )
+    foreach ($name in $releaseManifest) {
+        Set-Content -NoNewline -LiteralPath (Join-Path $releaseCandidate $name) -Value "trusted:$name"
+    }
+    $releaseSnapshot = Open-ReleaseSnapshot -Stage $releaseCandidate -Manifest $releaseManifest -AllowDeleteShare
+    try {
+        Assert-Fails {
+            $lease = Publish-ReleaseDirectory -Source $releaseCandidate -Destination $stableRelease -TrustedParent $publishRoot -Snapshot $releaseSnapshot -AfterHandoffMoveProbe {
+                param($handoff)
+                $target = Join-Path $handoff 'INSTALL.md'
+                Remove-Item -LiteralPath $target -Force
+                Set-Content -NoNewline -LiteralPath $target -Value 'handoff-tamper'
+            }
+            if ($null -ne $lease) { Close-ReleaseSnapshot $lease }
+        } 'A release changed during handoff must fail closed.'
+        Assert-True (Test-Path -LiteralPath (Join-Path $stableRelease 'previous.txt')) 'A failed handoff must not replace the current release.'
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $stableRelease 'INSTALL.md'))) 'A tampered handoff was exposed as the current release.'
+    } finally {
+        Close-ReleaseSnapshot $releaseSnapshot
+    }
 } finally {
     if (Test-Path -LiteralPath $testRoot) {
         $resolvedTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
@@ -214,6 +248,19 @@ Assert-True ($stopScriptSource -match 'Knack25\.MicrosoftWidgetsHelper\.Control\
 Assert-True ($stopScriptSource -match 'Local\\Knack25\.MicrosoftWidgetsHelper') 'Installer must check the helper instance mutex before accepting a connection timeout.'
 Assert-True ($stopScriptSource -notmatch '(ReadTimeout|WriteTimeout)\s*=') 'NamedPipeClientStream timeout properties cannot provide a real bounded shutdown.'
 Assert-True ($installerSource -match 'Stop-MicrosoftWidgetsHelper\.ps1') 'Installer must use the tested bounded helper-stop script.'
+Assert-True ($installerSource -notmatch "StopScript\s*:=\s*ExpandConstant\('\{app\}\\Stop-MicrosoftWidgetsHelper\.ps1'\)") 'Installer must never execute the mutable installed stop script.'
+Assert-True ($installerSource -match 'ExtractTemporaryFile\(''Stop-MicrosoftWidgetsHelper\.ps1''\)') 'Installer must extract the trusted embedded stop script for every stop attempt.'
+Assert-True ($installerSource -match '\{tmp\}\\\{#StopScriptTempName\}\.ps1') 'Installer must copy the embedded stop script to a private unpredictable temporary path.'
+Assert-True ($buildReleaseSource -match 'RandomNumberGenerator[^\r\n]*StopScriptTempName|stopScriptTempName\s*=\s*\[Convert\]::ToHexString\(\[Security\.Cryptography\.RandomNumberGenerator\]') 'Release build must generate an unpredictable stop-script name.'
+$tamperedInstalledScript = Join-Path $testRoot 'installed\Stop-MicrosoftWidgetsHelper.ps1'
+New-Item -ItemType Directory -Path (Split-Path -Parent $tamperedInstalledScript) -Force | Out-Null
+Set-Content -NoNewline -LiteralPath $tamperedInstalledScript -Value 'exit 0 # malicious installed bypass'
+$trustedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $stopScript).Hash
+$tamperedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $tamperedInstalledScript).Hash
+Assert-True ($trustedHash -ne $tamperedHash) 'Tampered installed stop-script fixture unexpectedly matches the trusted script.'
+Assert-True ($installerSource -match "GetSHA256OfFile\(InstalledScript\)[^\r\n]*'\{#StopScriptHash\}'") 'Installed shutdown tooling must be rejected unless it matches the embedded compile-time digest.'
+Assert-True ($installerSource -match 'CopyFile\(TrustedSource, StopScript') 'Only a verified source may be copied to the random executable path.'
+Remove-Item -LiteralPath $testRoot -Recurse -Force
 Assert-True ($installerSource -match '#include\s+HelperManifest') 'Installer must consume an exact generated file manifest.'
 Assert-True ($installerSource -notmatch 'Source:\s*"\{#HelperSource\}\\\*"') 'Installer must not recursively enumerate the helper stage.'
 Assert-True ($installerSource -notmatch 'Source:\s*"Stop-MicrosoftWidgetsHelper\.ps1"') 'Installer stop script must come from the immutable generated stage manifest.'
