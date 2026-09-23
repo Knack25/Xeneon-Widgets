@@ -55,7 +55,8 @@ public sealed class TaskCreationService
         if (!buckets.Any(bucket => bucket.Id == bucketId))
             throw new ArgumentException("Choose a bucket on the selected board.");
         var distinctAssignees = assigneeIds.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-        await selection.RunAsync(ticket, ct => members.ValidateAsync(distinctAssignees, ct), cancellationToken);
+        await selection.RunAsync(ticket,
+            ct => members.ValidateWithinSelectionAsync(distinctAssignees, ticket.PlanId, ct), cancellationToken);
         var distinctLabels = (labelIds ?? []).Distinct(StringComparer.Ordinal).ToArray();
         if (distinctLabels.Length > 0)
         {

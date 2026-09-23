@@ -5,28 +5,49 @@ using PlannerEdge.Helper.Storage;
 
 namespace PlannerEdge.Helper.Planner;
 
-public sealed class BoardMemberService(IPlannerGraphClient graphClient, IPlannerSettingsStore settingsStore,
-    PlannerDataLifecycle lifecycle)
+public sealed class BoardMemberService(IPlannerGraphClient graphClient, PlannerDataLifecycle lifecycle,
+    IBoardSelectionCoordinator selection)
 {
+    internal BoardMemberService(IPlannerGraphClient graphClient, IPlannerSettingsStore settingsStore,
+        PlannerDataLifecycle lifecycle)
+        : this(graphClient, lifecycle, new BoardSelectionCoordinator(settingsStore)) { }
+
     internal BoardMemberService(IPlannerGraphClient graphClient, IPlannerSettingsStore settingsStore)
-        : this(graphClient, settingsStore,
-            new PlannerDataLifecycle(new Microsoft.Extensions.Caching.Memory.MemoryCache(
-                new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()))) { }
+        : this(graphClient, new PlannerDataLifecycle(new Microsoft.Extensions.Caching.Memory.MemoryCache(
+                new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions())),
+            new BoardSelectionCoordinator(settingsStore)) { }
+
     public async Task<IReadOnlyList<GraphMember>> GetAsync(CancellationToken cancellationToken)
     {
         using var operation = lifecycle.BindOperation();
-        var ticket = lifecycle.CaptureTicket();
-        var settings = await settingsStore.LoadSettingsAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(settings.SelectedPlanId))
-            throw new ArgumentException("Choose a board first.");
+        var lifecycleTicket = lifecycle.CaptureTicket();
+        var selectionTicket = await selection.CaptureAsync(cancellationToken);
+        return await selection.RunAsync(selectionTicket,
+            ct => GetForPlanAsync(selectionTicket.PlanId, lifecycleTicket, ct), cancellationToken);
+    }
+
+    internal async Task ValidateWithinSelectionAsync(IReadOnlyList<string> userIds, string planId,
+        CancellationToken cancellationToken)
+    {
+        if (userIds.Count == 0) return;
+        using var operation = lifecycle.BindOperation();
+        var members = await GetForPlanAsync(planId, lifecycle.CaptureTicket(), cancellationToken);
+        var valid = members.Select(member => member.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (userIds.Any(id => !valid.Contains(id)))
+            throw new ArgumentException("Choose people from the selected board's member list.");
+    }
+
+    private async Task<IReadOnlyList<GraphMember>> GetForPlanAsync(string planId, PlannerDataTicket lifecycleTicket,
+        CancellationToken cancellationToken)
+    {
         var plans = await graphClient.GetMyPlansAsync(cancellationToken);
-        var plan = plans.FirstOrDefault(value => value.Id == settings.SelectedPlanId);
+        var plan = plans.FirstOrDefault(value => value.Id == planId);
         if (plan is null || !Guid.TryParse(plan.GroupId, out _))
             throw new BoardMembersUnavailableException("This board does not have a supported member list.");
         try
         {
             var members = await graphClient.GetGroupMembersAsync(plan.GroupId, cancellationToken);
-            lifecycle.RequireCurrent(ticket);
+            lifecycle.RequireCurrent(lifecycleTicket);
             return members;
         }
         catch (MsalUiRequiredException)
@@ -38,15 +59,6 @@ public sealed class BoardMemberService(IPlannerGraphClient graphClient, IPlanner
             await lifecycle.PurgeAsync(CancellationToken.None);
             throw new BoardMembersUnavailableException("Board member access was denied. Ask your work administrator to approve it.");
         }
-    }
-
-    public async Task ValidateAsync(IReadOnlyList<string> userIds, CancellationToken cancellationToken)
-    {
-        if (userIds.Count == 0) return;
-        var members = await GetAsync(cancellationToken);
-        var valid = members.Select(member => member.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        if (userIds.Any(id => !valid.Contains(id)))
-            throw new ArgumentException("Choose people from the selected board's member list.");
     }
 }
 

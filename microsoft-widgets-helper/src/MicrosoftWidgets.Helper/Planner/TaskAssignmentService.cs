@@ -16,7 +16,8 @@ public sealed class TaskAssignmentService(IPlannerGraphClient graphClient, Selec
         var added = desired.Except(task.Assignments, StringComparer.OrdinalIgnoreCase).ToArray();
         var removed = task.Assignments.Except(desired, StringComparer.OrdinalIgnoreCase).ToArray();
         if (added.Length == 0 && removed.Length == 0) return;
-        await selectedPlanTasks.RunAsync(selected, ct => members.ValidateAsync(added, ct), cancellationToken);
+        await selectedPlanTasks.RunAsync(selected,
+            ct => members.ValidateWithinSelectionAsync(added, selected.Selection.PlanId, ct), cancellationToken);
         await selectedPlanTasks.RunAsync(selected,
             ct => graphClient.SetAssignmentsAsync(taskId, added, removed, task.ETag, ct), cancellationToken);
         cache.Remove(taskId);

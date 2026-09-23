@@ -169,6 +169,24 @@ public sealed class PlannerHttpIntegrationTests
         await app.StopAsync();
     }
 
+    [Theory]
+    [InlineData("/members")]
+    [InlineData("/api/planner/members")]
+    public async Task MemberRouteRejectsPriorBoardMembersWhenSelectionChangesAfterPlanCapture(string path)
+    {
+        await using var host = await MemberRaceHost.StartAsync();
+        var responseTask = host.Client.GetAsync(path);
+        await host.Graph.PlansRequested.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        host.Selection.SwitchBoard();
+        host.Graph.ReleasePlans();
+
+        using var response = await responseTask.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.DoesNotContain("Prior board member", await response.Content.ReadAsStringAsync(),
+            StringComparison.Ordinal);
+    }
+
     private static void AssertHeader(HttpResponseMessage response, string name, string value)
     {
         Assert.True(response.Headers.TryGetValues(name, out var values));
@@ -205,6 +223,138 @@ public sealed class PlannerHttpIntegrationTests
         public Task<IReadOnlyList<GraphTask>> GetTasksAsync(string planId, CancellationToken ct) => throw new NotSupportedException();
         public Task CompleteTaskAsync(string taskId, string etag, CancellationToken ct) => throw new NotSupportedException();
     }
+}
+
+internal sealed class MemberRaceHost(WebApplication app, HttpClient client, MemberRaceGraph graph,
+    MemberRaceSelectionCoordinator selection) : IAsyncDisposable
+{
+    public HttpClient Client => client;
+    public MemberRaceGraph Graph => graph;
+    public MemberRaceSelectionCoordinator Selection => selection;
+
+    public static async Task<MemberRaceHost> StartAsync()
+    {
+        var graph = new MemberRaceGraph();
+        var selection = new MemberRaceSelectionCoordinator();
+        var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = "Testing" });
+        builder.Logging.ClearProviders();
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
+        builder.Services.AddMemoryCache();
+        builder.Services.AddPlannerIntegration();
+        builder.Services.AddOutlookIntegration();
+        builder.Services.AddSingleton<IOutlookTokenProvider, OutlookTokens>();
+        builder.Services.AddSingleton<ILocalJsonStore, OutlookMemoryStore>();
+        builder.Services.AddSingleton<LocalAccessService>();
+        builder.Services.AddSingleton<IMicrosoftAuthService>(new OutlookFakeAuth { SignedIn = true });
+        builder.Services.AddSingleton<IGraphTokenProvider>(sp => sp.GetRequiredService<IMicrosoftAuthService>());
+        builder.Services.AddSingleton<IPlannerGraphClient>(graph);
+        builder.Services.AddSingleton<IPlannerSettingsStore, MemberRaceSettings>();
+        builder.Services.AddSingleton<IBoardSelectionCoordinator>(selection);
+        var app = builder.Build();
+        app.Use(async (context, next) =>
+        {
+            try { await next(context); }
+            catch (ArgumentException)
+            {
+                context.Response.StatusCode = StatusCodes.Status409Conflict;
+            }
+        });
+        app.UseRouting();
+        app.UsePlannerRequestPolicy();
+        app.UseWidgetCors();
+        app.MapPlannerIntegration();
+        await app.StartAsync();
+        var address = app.Services.GetRequiredService<IServer>().Features
+            .Get<IServerAddressesFeature>()!.Addresses.Single();
+        var client = new HttpClient { BaseAddress = new Uri(address) };
+        const string secret = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+        var pairing = app.Services.GetRequiredService<WidgetPairingService>();
+        var lease = await app.Services.GetRequiredService<MicrosoftAccountState>().GetAsync(default);
+        var pending = await pairing.CreateAsync(WidgetScope.Planner, new("member-race", secret), lease, default);
+        await pairing.ApproveAsync(pending.Id, default);
+        client.DefaultRequestHeaders.Add("Origin", "null");
+        client.DefaultRequestHeaders.Add(LocalAccessHeaders.Credential,
+            (await pairing.PollAsync(pending.Id, secret, default)).Credential);
+        return new MemberRaceHost(app, client, graph, selection);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        client.Dispose();
+        await app.StopAsync();
+        await app.DisposeAsync();
+    }
+}
+
+internal sealed class MemberRaceSelectionCoordinator : IBoardSelectionCoordinator
+{
+    private long revision = 1;
+
+    public Task<BoardSelectionTicket> CaptureAsync(CancellationToken cancellationToken) =>
+        Task.FromResult(new BoardSelectionTicket("plan-a", Volatile.Read(ref revision)));
+
+    public Task<SettingsDto> ChangeAsync(Func<CancellationToken, Task<SettingsDto>> change,
+        CancellationToken cancellationToken) => change(cancellationToken);
+
+    public Task RunAsync(BoardSelectionTicket ticket, Func<CancellationToken, Task> operation,
+        CancellationToken cancellationToken) => RunAsync<object?>(ticket, async ct =>
+    {
+        await operation(ct);
+        return null;
+    }, cancellationToken);
+
+    public async Task<T> RunAsync<T>(BoardSelectionTicket ticket, Func<CancellationToken, Task<T>> operation,
+        CancellationToken cancellationToken)
+    {
+        RequireCurrent(ticket);
+        var result = await operation(cancellationToken);
+        RequireCurrent(ticket);
+        return result;
+    }
+
+    public void SwitchBoard() => Interlocked.Increment(ref revision);
+
+    private void RequireCurrent(BoardSelectionTicket ticket)
+    {
+        if (ticket.Revision != Volatile.Read(ref revision))
+            throw new ArgumentException("The selected board changed. Try again.");
+    }
+}
+
+internal sealed class MemberRaceGraph : IPlannerGraphClient
+{
+    private readonly TaskCompletionSource releasePlans = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public TaskCompletionSource PlansRequested { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public async Task<IReadOnlyList<GraphPlan>> GetMyPlansAsync(CancellationToken cancellationToken)
+    {
+        PlansRequested.TrySetResult();
+        await releasePlans.Task.WaitAsync(cancellationToken);
+        return [new("plan-a", "Prior board", "33333333-3333-3333-3333-333333333333", null)];
+    }
+
+    public Task<IReadOnlyList<GraphMember>> GetGroupMembersAsync(string groupId, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<GraphMember>>([new("11111111-1111-1111-1111-111111111111", "Prior board member")]);
+
+    public void ReleasePlans() => releasePlans.TrySetResult();
+    public Task<IReadOnlyList<GraphGroup>> GetMemberGroupsAsync(CancellationToken ct) => throw new NotSupportedException();
+    public Task<IReadOnlyList<GraphPlan>> GetPlansForGroupAsync(string groupId, CancellationToken ct) => throw new NotSupportedException();
+    public Task<IReadOnlyList<GraphBucket>> GetBucketsAsync(string planId, CancellationToken ct) => throw new NotSupportedException();
+    public Task<IReadOnlyList<GraphTask>> GetTasksAsync(string planId, CancellationToken ct) => throw new NotSupportedException();
+    public Task<GraphTask?> GetTaskAsync(string taskId, CancellationToken ct) => throw new NotSupportedException();
+    public Task<string?> GetUserDisplayNameAsync(string userId, CancellationToken ct) => throw new NotSupportedException();
+    public Task<GraphTaskDetails> GetTaskDetailsAsync(string taskId, CancellationToken ct) => throw new NotSupportedException();
+    public Task CompleteChecklistItemAsync(string taskId, string itemId, string etag, CancellationToken ct) => throw new NotSupportedException();
+    public Task CompleteTaskAsync(string taskId, string etag, CancellationToken ct) => throw new NotSupportedException();
+}
+
+internal sealed class MemberRaceSettings : IPlannerSettingsStore
+{
+    public Task<SettingsDto> LoadSettingsAsync(CancellationToken cancellationToken) =>
+        Task.FromResult(new SettingsDto("plan-a", "Prior board", true));
+    public Task SaveSettingsAsync(SettingsDto value, CancellationToken cancellationToken) => throw new NotSupportedException();
+    public Task<BoardDisplay?> LoadCachedDisplayAsync(CancellationToken cancellationToken) => throw new NotSupportedException();
+    public Task SaveCachedDisplayAsync(BoardDisplay display, CancellationToken cancellationToken) => throw new NotSupportedException();
 }
 
 internal sealed class BoundaryTestHost(WebApplication app, HttpClient client, string staticRoot) : IAsyncDisposable
