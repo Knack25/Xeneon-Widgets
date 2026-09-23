@@ -61,7 +61,7 @@ internal sealed class BufferedHttpResponse
         {
             if (bytes < 0 || Position > maximumBytes - bytes)
                 throw new OutlookException("response_too_large",
-                    "The Planner response is too large to publish safely.",
+                    "The response is too large to publish safely.",
                     StatusCodes.Status503ServiceUnavailable);
         }
 
@@ -100,7 +100,7 @@ internal sealed class BufferedHttpResponse
         {
             if (value > maximumBytes)
                 throw new OutlookException("response_too_large",
-                    "The Planner response is too large to publish safely.",
+                    "The response is too large to publish safely.",
                     StatusCodes.Status503ServiceUnavailable);
             base.SetLength(value);
         }

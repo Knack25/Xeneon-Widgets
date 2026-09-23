@@ -341,7 +341,8 @@ public sealed class OutlookEndpointTests
     [InlineData(true, false)]
     [InlineData(false, true)]
     [InlineData(true, true)]
-    public async Task AccountTransitionOrPurgeWaitsForAuthorizedLaunchOrResponseWrite(bool blockLaunch, bool purge)
+    public async Task Account_transition_or_purge_waits_for_launch_but_not_response_backpressure(
+        bool blockLaunch, bool purge)
     {
         var tokens = new OutlookTokens();
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -377,7 +378,19 @@ public sealed class OutlookEndpointTests
             transitioned = true;
             return Task.FromResult(true);
         }, default);
-        try { Assert.False(transitioned); Assert.False(transition.IsCompleted); }
+        try
+        {
+            if (blockLaunch)
+            {
+                Assert.False(transitioned);
+                Assert.False(transition.IsCompleted);
+            }
+            else
+            {
+                await transition.WaitAsync(TimeSpan.FromSeconds(2));
+                Assert.True(purge || transitioned);
+            }
+        }
         finally { release.TrySetResult(); }
         await transition;
         await response;

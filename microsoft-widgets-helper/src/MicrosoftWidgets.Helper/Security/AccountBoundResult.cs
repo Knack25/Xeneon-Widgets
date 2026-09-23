@@ -5,19 +5,19 @@ namespace PlannerEdge.Helper.Security;
 
 public sealed class AccountBoundResult(IResult inner, MicrosoftAccountState state, AccountLease lease) : IResult
 {
+    internal const int MaximumBufferedBytes = 4 * 1024 * 1024;
+
     public async Task ExecuteAsync(HttpContext http)
     {
         try
         {
             using var binding = state.BindRequest(lease);
-            if (inner is IBufferedHttpResult buffered)
-            {
-                var response = await state.ExecuteAuthorizedAsync(lease,
-                    () => buffered.PrepareAsync(http), http.RequestAborted);
-                await response.CopyToAsync(http);
-                return;
-            }
-            await state.ExecuteAuthorizedAsync(lease, () => inner.ExecuteAsync(http), http.RequestAborted);
+            var response = await state.ExecuteAuthorizedAsync(lease,
+                () => inner is IBufferedHttpResult buffered
+                    ? buffered.PrepareAsync(http)
+                    : BufferedHttpResponse.CreateAsync(inner, http, MaximumBufferedBytes, http.RequestAborted),
+                http.RequestAborted);
+            await response.CopyToAsync(http);
         }
         catch (OutlookException ex) when (!http.Response.HasStarted)
         {
