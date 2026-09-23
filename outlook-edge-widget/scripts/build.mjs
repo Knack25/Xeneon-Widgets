@@ -1,10 +1,29 @@
 import { build } from 'esbuild';
-import { readFile, writeFile, mkdir, cp, readdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, cp, readdir, lstat, realpath, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CalendarDays } from 'lucide';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
-const dist=path.join(root,'dist');await mkdir(path.join(dist,'assets'),{recursive:true});
+const dist=path.join(root,'dist');
+async function assertNoLinks(directory){
+  let stat;
+  try{stat=await lstat(directory);}catch(error){if(error.code==='ENOENT')return;throw error;}
+  if(stat.isSymbolicLink())throw new Error(`Refusing to clean linked build path: ${directory}`);
+  if(!stat.isDirectory())throw new Error(`Build output is not a directory: ${directory}`);
+  for(const entry of await readdir(directory,{withFileTypes:true})){
+    const entryPath=path.join(directory,entry.name);
+    const entryStat=await lstat(entryPath);
+    if(entryStat.isSymbolicLink())throw new Error(`Refusing to clean linked build entry: ${entryPath}`);
+    if(entryStat.isDirectory())await assertNoLinks(entryPath);
+  }
+}
+await assertNoLinks(dist);
+try{
+  const [realRoot,realDist]=await Promise.all([realpath(root),realpath(dist)]);
+  if(!realDist.startsWith(`${realRoot}${path.sep}`))throw new Error(`Build output escapes widget root: ${realDist}`);
+}catch(error){if(error.code!=='ENOENT')throw error;}
+await rm(dist, { recursive: true, force: true });
+await mkdir(path.join(dist,'assets'),{recursive:true});
 await build({entryPoints:[path.join(root,'widget/src/app.js')],bundle:true,outfile:path.join(dist,'assets/app.js'),format:'iife',target:['chrome110'],minify:true,legalComments:'eof'});
 for(const file of ['index.html','manifest.json','translation.json','translations'])await cp(path.join(root,'widget',file),path.join(dist,file),{recursive:true});
 await mkdir(path.join(dist,'resources'),{recursive:true});

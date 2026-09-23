@@ -1,6 +1,9 @@
 param([string]$InnoCompiler)
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$inventoryVerifier = Join-Path $PSScriptRoot 'verify-release-inventory.ps1'
+. (Join-Path $PSScriptRoot 'release-safety.ps1')
+. (Join-Path $PSScriptRoot 'release-manifests.ps1')
 $widgetRoot = Join-Path $root 'planner-edge-widget'
 $helperRoot = Join-Path $root 'microsoft-widgets-helper'
 $manifest = Get-Content -Raw (Join-Path $widgetRoot 'widget\manifest.json') | ConvertFrom-Json
@@ -11,7 +14,8 @@ $widgetVersion = $manifest.version
 $outlookRoot = Join-Path $root 'outlook-edge-widget'
 $outlookManifest = Get-Content -Raw (Join-Path $outlookRoot 'widget/manifest.json') | ConvertFrom-Json
 $outlookVersion = $outlookManifest.version
-$release = Join-Path $root 'dist\release'
+$distRoot = Initialize-TrustedDirectory -Path (Join-Path $root 'dist') -Anchor $root
+$release = Reset-TrustedDirectory -Path (Join-Path $distRoot 'release') -Root $distRoot
 $stage = Join-Path $helperRoot 'dist\release-helper'
 if (-not $InnoCompiler) {
     $candidates = @((Join-Path ${env:LOCALAPPDATA} 'Programs\Inno Setup 6\ISCC.exe'), (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'))
@@ -29,13 +33,15 @@ try {
 & (Join-Path $widgetRoot 'scripts\package.ps1')
 & (Join-Path $root 'scripts/package-outlook.ps1')
 & (Join-Path $helperRoot 'scripts\publish.ps1') -OutputDirectory $stage -SkipArchive -SkipWidgetBuild
-New-Item -ItemType Directory -Force -Path $release, (Join-Path $stage 'widgets') | Out-Null
+[void][IO.Directory]::CreateDirectory((Join-Path $stage 'widgets'))
 $widget = Join-Path $widgetRoot "dist\PlannerEdgeWidget-$widgetVersion.icuewidget"
 Copy-Item -LiteralPath $widget -Destination (Join-Path $stage 'widgets\PlannerEdgeWidget.icuewidget') -Force
 $outlookWidget = Join-Path $root "dist/OutlookEdgeWidget-$outlookVersion.icuewidget"
 Copy-Item -LiteralPath $outlookWidget -Destination (Join-Path $stage 'widgets/OutlookEdgeWidget.icuewidget') -Force
 Copy-Item -LiteralPath (Join-Path $root 'docs\INSTALL.md') -Destination $stage -Force
 Copy-Item -LiteralPath (Join-Path $root 'docs\OUTLOOK.md') -Destination $stage -Force
+$installerStageManifest = @($HelperPublishManifest) + @('widgets/PlannerEdgeWidget.icuewidget', 'widgets/OutlookEdgeWidget.icuewidget', 'INSTALL.md', 'OUTLOOK.md')
+& $inventoryVerifier -Stage $stage -Manifest (ConvertTo-Json -InputObject $installerStageManifest -Compress)
 & $InnoCompiler "/DReleaseVersion=$releaseVersion" "/DHelperSource=$stage" (Join-Path $helperRoot 'installer\MicrosoftWidgets.iss')
 if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed.' }
 Copy-Item -LiteralPath $widget -Destination $release -Force
@@ -45,9 +51,11 @@ Copy-Item -LiteralPath (Join-Path $root 'docs\INSTALL.md') -Destination $release
 $portable = Join-Path $release "MicrosoftWidgetsHelper-$helperVersion-portable-win-x64.zip"
 Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $portable -Force
 $assets = @("MicrosoftWidgetsSetup-$releaseVersion.exe", "PlannerEdgeWidget-$widgetVersion.icuewidget", "OutlookEdgeWidget-$outlookVersion.icuewidget", "MicrosoftWidgetsHelper-$helperVersion-portable-win-x64.zip", 'INSTALL.md', 'OUTLOOK.md')
+& $inventoryVerifier -Stage $release -Manifest (ConvertTo-Json -InputObject $assets -Compress)
 $checksums = foreach ($asset in $assets) {
     $hash = Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $release $asset)
     "$($hash.Hash.ToLowerInvariant())  $asset"
 }
 $checksums | Set-Content -LiteralPath (Join-Path $release 'SHA256SUMS.txt') -Encoding ascii
+& $inventoryVerifier -Stage $release -Manifest (ConvertTo-Json -InputObject (@($assets) + 'SHA256SUMS.txt') -Compress)
 Write-Host "Release files: $release"

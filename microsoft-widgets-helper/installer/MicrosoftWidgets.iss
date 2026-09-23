@@ -36,7 +36,6 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 
 [Files]
 Source: "{#HelperSource}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "..\..\docs\INSTALL.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\Microsoft Widgets Setup"; Filename: "{app}\MicrosoftWidgets.Helper.exe"; WorkingDir: "{app}"
@@ -50,25 +49,60 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 [Run]
 Filename: "{app}\MicrosoftWidgets.Helper.exe"; Description: "Open Microsoft Widgets setup"; Flags: nowait postinstall skipifsilent; Check: not IsHelperUpdate
 
-[UninstallRun]
-Filename: "{app}\MicrosoftWidgets.Helper.exe"; Parameters: "--stop"; Flags: runhidden waituntilterminated; RunOnceId: "StopHelper"
-
 [Code]
 function IsHelperUpdate: Boolean;
 begin
   Result := ExpandConstant('{param:HELPERUPDATE|0}') <> '0';
 end;
 
-function PrepareToInstall(var NeedsRestart: Boolean): String;
+function RequestHelperStop: Boolean;
+forward;
+
+function InitializeSetup: Boolean;
+begin
+  Result := not IsAdmin;
+  if not Result then
+    MsgBox('Microsoft Widgets is a per-user app. Close this installer and run it normally; do not use "Run as administrator".', mbError, MB_OK);
+end;
+
+function InitializeUninstall: Boolean;
+begin
+  if IsAdmin then
+  begin
+    Result := False;
+    MsgBox('Microsoft Widgets must be removed by the signed-in user. Close this uninstaller and run it normally; do not use "Run as administrator".', mbError, MB_OK);
+    Exit;
+  end;
+
+  Result := RequestHelperStop;
+  if not Result then
+    MsgBox('Microsoft Widgets Helper could not be stopped safely. Close it from the notification area, then try uninstalling again.', mbError, MB_OK)
+  else
+    Sleep(1000);
+end;
+
+function RequestHelperStop: Boolean;
 var
   ResultCode: Integer;
-  HelperPath: String;
+  PowerShellPath: String;
+  Command: String;
+begin
+  PowerShellPath := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+  Command := '$pipe = [IO.Pipes.NamedPipeClientStream]::new(''.'', ''Knack25.MicrosoftWidgetsHelper.Control.v1'', [IO.Pipes.PipeDirection]::InOut); ' +
+    'try { $pipe.Connect(3000); $message = [Text.Encoding]::UTF8.GetBytes(''stop''); ' +
+    '$pipe.WriteByte([byte]$message.Length); $pipe.Write($message, 0, $message.Length); $pipe.Flush(); ' +
+    'if ($pipe.ReadByte() -ne 1) { exit 2 } } ' +
+    'catch [TimeoutException] { exit 0 } catch [IO.IOException] { exit 3 } ' +
+    'finally { if ($null -ne $pipe) { $pipe.Dispose() } }';
+  Result := Exec(PowerShellPath, '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -Command "' + Command + '"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
-  HelperPath := ExpandConstant('{app}\MicrosoftWidgets.Helper.exe');
-  if FileExists(HelperPath) then
-  begin
-    Exec(HelperPath, '--stop', ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if not RequestHelperStop then
+    Result := 'Microsoft Widgets Helper could not be stopped safely. Close it from the notification area and try again.'
+  else
     Sleep(1000);
-  end;
 end;
