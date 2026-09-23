@@ -150,8 +150,12 @@ public static class PlannerIntegration
         app.MapPut("/view-preferences/{planId}", async (string planId, PlanViewPreferences request,
             PlannerViewPreferenceService preferences, CancellationToken ct) =>
             Results.Ok(await preferences.SaveAsync(planId, request, ct))).WithMetadata(new PlannerJsonBodyMetadata());
-        app.MapGet("/members", async (BoardMemberService members, CancellationToken ct) =>
-            Results.Ok(await members.GetAsync(ct)));
+        app.MapGet("/members", async (BoardMemberService members, IBoardSelectionCoordinator selection,
+            CancellationToken ct) =>
+        {
+            var response = await members.GetAsync(ct);
+            return new BoardSelectionBoundResult(Results.Ok(response.Members), selection, response.Selection);
+        });
         app.MapPost("/tasks", async (CreateTaskRequest request, TaskCreationService creation, CancellationToken ct) =>
         {
             await creation.CreateAsync(request.Title, request.BucketId, request.Date, request.UserIds, ct,

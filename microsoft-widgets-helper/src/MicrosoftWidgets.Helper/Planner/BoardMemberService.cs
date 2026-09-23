@@ -17,13 +17,14 @@ public sealed class BoardMemberService(IPlannerGraphClient graphClient, PlannerD
                 new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions())),
             new BoardSelectionCoordinator(settingsStore)) { }
 
-    public async Task<IReadOnlyList<GraphMember>> GetAsync(CancellationToken cancellationToken)
+    public async Task<BoardMemberSelection> GetAsync(CancellationToken cancellationToken)
     {
         using var operation = lifecycle.BindOperation();
         var lifecycleTicket = lifecycle.CaptureTicket();
         var selectionTicket = await selection.CaptureAsync(cancellationToken);
-        return await selection.RunAsync(selectionTicket,
+        var members = await selection.RunAsync(selectionTicket,
             ct => GetForPlanAsync(selectionTicket.PlanId, lifecycleTicket, ct), cancellationToken);
+        return new BoardMemberSelection(members, selectionTicket);
     }
 
     internal async Task ValidateWithinSelectionAsync(IReadOnlyList<string> userIds, string planId,
@@ -61,5 +62,7 @@ public sealed class BoardMemberService(IPlannerGraphClient graphClient, PlannerD
         }
     }
 }
+
+public sealed record BoardMemberSelection(IReadOnlyList<GraphMember> Members, BoardSelectionTicket Selection);
 
 public sealed class BoardMembersUnavailableException(string message) : Exception(message);

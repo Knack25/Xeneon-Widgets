@@ -96,3 +96,10 @@ public sealed class BoardSelectionCoordinator(IPlannerSettingsStore settingsStor
             throw new ArgumentException("The selected board changed. Try again.");
     }
 }
+
+public sealed class BoardSelectionBoundResult(IResult inner, IBoardSelectionCoordinator selection,
+    BoardSelectionTicket ticket) : IResult
+{
+    public Task ExecuteAsync(HttpContext http) => selection.RunAsync(ticket,
+        _ => inner.ExecuteAsync(http), http.RequestAborted);
+}
