@@ -40,7 +40,7 @@ The final review remained open until the following regressions and the complete 
 | I-4 hostile bootstrap input reached identity work without bounded throttling | Remediated | `OwnerBootstrapEndpointTests.Invalid_bootstrap_flood_is_throttled_without_identity_work_or_starving_a_valid_exchange`; owning suites 70/70 | `4e15f5f` |
 | M-1 Host policy accepted IPv4 loopback aliases | Remediated | `LoopbackRequestPolicyTests` accepts only `localhost`, `127.0.0.1`, and `::1` forms and rejects `127.0.0.2` | `0d220db` |
 | M-2 recovery paths ignored configured helper port | Remediated | `UpdateTests.Configured_helper_port_drives_setup_tray_and_update_recovery_addresses` at port 9123; owning suites 43/43 | `0d220db` |
-| M-3 final remediation evidence preceded final fixes | Remediated in this appendix | final statuses were recorded only after the focused, full, audit, secret-scan, and clean-release gates passed | this documentation commit |
+| M-3 final remediation evidence preceded final fixes | Remediated in this appendix | final statuses were recorded only after the focused, full, audit, secret-scan, and clean-release gates passed | `c54a56d` |
 | M-4 authoritative-range whitespace failure | Remediated | `git diff --check 46770b1..HEAD` passes | `38e85b9` |
 
 ## Operational status
