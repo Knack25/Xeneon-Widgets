@@ -51,7 +51,7 @@ public sealed class TaskDetailsService(IPlannerGraphClient graphClient, Selected
             details.Description, task.Assignments, task.StartDateTime, task.Priority, task.PercentComplete,
             task.AppliedCategories ?? []);
         await lifecycle.SetSelectionBoundAsync("task-details", taskId, response, TimeSpan.FromSeconds(45),
-            publish => selectedPlanTasks.RunAsync(selected, _ => publish(), cancellationToken), cancellationToken);
+            publish => selectedPlanTasks.RunPublicationAsync(selected, _ => publish(), cancellationToken), cancellationToken);
         return response;
     }
 

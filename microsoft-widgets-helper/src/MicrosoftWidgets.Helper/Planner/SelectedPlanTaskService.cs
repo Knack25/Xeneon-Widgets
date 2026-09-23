@@ -24,7 +24,7 @@ public sealed class SelectedPlanTaskService
     public async Task<SelectedPlanTask> GetBoundAsync(string taskId, CancellationToken cancellationToken)
     {
         var ticket = await selection.CaptureAsync(cancellationToken);
-        var task = await selection.RunAsync(ticket, ct => graphClient.GetTaskAsync(taskId, ct), cancellationToken)
+        var task = await selection.RunOperationAsync(ticket, ct => graphClient.GetTaskAsync(taskId, ct), cancellationToken)
             ?? throw new InvalidOperationException("Planner task was not found.");
         if (!string.Equals(task.PlanId, ticket.PlanId, StringComparison.Ordinal))
             throw new ArgumentException("This task is not on the selected board.");
@@ -32,10 +32,13 @@ public sealed class SelectedPlanTaskService
     }
 
     public Task RunAsync(SelectedPlanTask task, Func<CancellationToken, Task> operation,
-        CancellationToken cancellationToken) => selection.RunAsync(task.Selection, operation, cancellationToken);
+        CancellationToken cancellationToken) => selection.RunOperationAsync(task.Selection, operation, cancellationToken);
 
     public Task<T> RunAsync<T>(SelectedPlanTask task, Func<CancellationToken, Task<T>> operation,
-        CancellationToken cancellationToken) => selection.RunAsync(task.Selection, operation, cancellationToken);
+        CancellationToken cancellationToken) => selection.RunOperationAsync(task.Selection, operation, cancellationToken);
+
+    internal Task RunPublicationAsync(SelectedPlanTask task, Func<CancellationToken, Task> publication,
+        CancellationToken cancellationToken) => selection.RunAsync(task.Selection, publication, cancellationToken);
 
     public async Task<SelectedPlanTask> RefreshAsync(SelectedPlanTask selected, CancellationToken cancellationToken)
     {

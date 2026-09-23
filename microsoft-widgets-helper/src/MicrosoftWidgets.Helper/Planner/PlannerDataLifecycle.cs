@@ -165,14 +165,15 @@ public sealed class PlannerDataLifecycle : IHostedService
         var key = Key(category, id);
         try
         {
-            await accessGate.ExecutePublicationAsync(ticket, () => bindSelection(() =>
-            {
-                accountState.RequireCurrent(lease);
-                memoryKeys.TryAdd(key, 0);
-                cache.Set(key, new AccountBoundValue<T>(lease, value), lifetime);
-                accountState.RequireCurrent(lease);
-                return Task.CompletedTask;
-            }), cancellationToken);
+            await accountState.ExecuteAuthorizedAsync(lease, () =>
+                accessGate.ExecutePublicationAsync(ticket, () => bindSelection(() =>
+                {
+                    accountState.RequireCurrent(lease);
+                    memoryKeys.TryAdd(key, 0);
+                    cache.Set(key, new AccountBoundValue<T>(lease, value), lifetime);
+                    accountState.RequireCurrent(lease);
+                    return Task.CompletedTask;
+                }), cancellationToken), cancellationToken);
         }
         catch
         {

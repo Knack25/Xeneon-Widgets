@@ -24,7 +24,7 @@ public sealed class BoardMemberService(IPlannerGraphClient graphClient, PlannerD
         var selectionTicket = await selection.CaptureAsync(cancellationToken);
         try
         {
-            var members = await selection.RunAsync(selectionTicket,
+            var members = await selection.RunOperationAsync(selectionTicket,
                 ct => GetForPlanAsync(selectionTicket.PlanId, lifecycleTicket, ct), cancellationToken);
             return new BoardMemberSelection(members, selectionTicket);
         }

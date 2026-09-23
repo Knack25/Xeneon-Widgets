@@ -1,4 +1,5 @@
 using PlannerEdge.Helper.Contracts;
+using PlannerEdge.Helper.Auth;
 using PlannerEdge.Helper.Security;
 using PlannerEdge.Helper.Storage;
 
@@ -17,14 +18,32 @@ public interface IBoardSelectionCoordinator
         CancellationToken cancellationToken);
     Task<T> RunAsync<T>(BoardSelectionTicket ticket, Func<CancellationToken, Task<T>> operation,
         CancellationToken cancellationToken);
+    Task RunOperationAsync(BoardSelectionTicket ticket, Func<CancellationToken, Task> operation,
+        CancellationToken cancellationToken) => RunAsync(ticket, operation, cancellationToken);
+    Task<T> RunOperationAsync<T>(BoardSelectionTicket ticket, Func<CancellationToken, Task<T>> operation,
+        CancellationToken cancellationToken) => RunAsync(ticket, operation, cancellationToken);
 }
 
-public sealed class BoardSelectionCoordinator(IPlannerSettingsStore settingsStore) : IBoardSelectionCoordinator
+public sealed class BoardSelectionCoordinator : IBoardSelectionCoordinator
 {
     private readonly SemaphoreSlim gate = new(1, 1);
+    private readonly IPlannerSettingsStore settingsStore;
+    private readonly MicrosoftAccountState? accountState;
     private string? selectedPlanId;
     private long revision;
     private bool initialized;
+
+    [ActivatorUtilitiesConstructor]
+    public BoardSelectionCoordinator(IPlannerSettingsStore settingsStore, MicrosoftAccountState accountState)
+    {
+        this.settingsStore = settingsStore;
+        this.accountState = accountState;
+    }
+
+    public BoardSelectionCoordinator(IPlannerSettingsStore settingsStore)
+    {
+        this.settingsStore = settingsStore;
+    }
 
     public async Task<BoardSelectionTicket> CaptureAsync(CancellationToken cancellationToken)
     {
@@ -81,6 +100,19 @@ public sealed class BoardSelectionCoordinator(IPlannerSettingsStore settingsStor
             gate.Release();
         }
     }
+
+    public Task RunOperationAsync(BoardSelectionTicket ticket, Func<CancellationToken, Task> operation,
+        CancellationToken cancellationToken) => RunOperationAsync<object?>(ticket, async ct =>
+    {
+        await operation(ct);
+        return null;
+    }, cancellationToken);
+
+    public Task<T> RunOperationAsync<T>(BoardSelectionTicket ticket,
+        Func<CancellationToken, Task<T>> operation, CancellationToken cancellationToken) =>
+        accountState is null
+            ? RunAsync(ticket, operation, cancellationToken)
+            : accountState.ExecuteBoundAsync(() => RunAsync(ticket, operation, cancellationToken), cancellationToken);
 
     private void Synchronize(string? planId)
     {
