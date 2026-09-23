@@ -7,14 +7,16 @@ public sealed class TaskCompletionService(IPlannerGraphClient graphClient, Selec
 {
     public async Task<CompleteTaskResponse> CompleteAsync(string taskId, CancellationToken cancellationToken)
     {
-        var task = await selectedPlanTasks.GetAsync(taskId, cancellationToken);
+        var selected = await selectedPlanTasks.GetBoundAsync(taskId, cancellationToken);
+        var task = selected.Task;
 
         if (task.PercentComplete >= 100)
         {
             return new CompleteTaskResponse(taskId, Completed: true, Board: null);
         }
 
-        await graphClient.CompleteTaskAsync(taskId, task.ETag, cancellationToken);
+        await selectedPlanTasks.RunAsync(selected, ct => graphClient.CompleteTaskAsync(taskId, task.ETag, ct),
+            cancellationToken);
         return new CompleteTaskResponse(taskId, Completed: true, Board: null);
     }
 }

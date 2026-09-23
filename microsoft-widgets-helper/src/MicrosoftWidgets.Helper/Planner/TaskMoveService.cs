@@ -10,14 +10,17 @@ public sealed class TaskMoveService(IPlannerGraphClient graphClient, SelectedPla
     {
         if (string.IsNullOrWhiteSpace(bucketId)) throw new ArgumentException("Choose a destination bucket.");
 
-        var task = await selectedPlanTasks.GetAsync(taskId, cancellationToken);
+        var selected = await selectedPlanTasks.GetBoundAsync(taskId, cancellationToken);
+        var task = selected.Task;
 
-        var buckets = await graphClient.GetBucketsAsync(task.PlanId, cancellationToken);
+        var buckets = await selectedPlanTasks.RunAsync(selected,
+            ct => graphClient.GetBucketsAsync(task.PlanId, ct), cancellationToken);
         if (!buckets.Any(bucket => bucket.Id == bucketId))
             throw new ArgumentException("Choose a bucket on the selected board.");
         if (task.BucketId == bucketId) return;
 
-        await graphClient.MoveTaskAsync(taskId, bucketId, task.ETag, cancellationToken);
+        await selectedPlanTasks.RunAsync(selected,
+            ct => graphClient.MoveTaskAsync(taskId, bucketId, task.ETag, ct), cancellationToken);
         cache.Remove(taskId);
     }
 }

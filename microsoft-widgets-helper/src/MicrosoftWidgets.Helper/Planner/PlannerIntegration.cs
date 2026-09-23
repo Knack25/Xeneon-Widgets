@@ -24,6 +24,7 @@ public static class PlannerIntegration
             client.BaseAddress = new Uri("https://graph.microsoft.com/v1.0/"))
             .ConfigurePrimaryHttpMessageHandler(PlannerGraphHttpHandlerFactory.Create);
         services.AddSingleton<PlannerBoardService>();
+        services.AddSingleton<IBoardSelectionCoordinator, BoardSelectionCoordinator>();
         services.AddSingleton<BoardSelectionService>();
         services.AddSingleton<PlannerDisplayService>();
         services.AddSingleton<TaskCompletionService>();
@@ -129,11 +130,8 @@ public static class PlannerIntegration
             Results.Ok(await boards.GetPlansAsync(ct)));
         app.MapGet("/settings", async (IPlannerSettingsStore settings, CancellationToken ct) =>
             Results.Ok(await settings.LoadSettingsAsync(ct)));
-        app.MapPut("/settings", async (SettingsDto dto, IPlannerSettingsStore settings, CancellationToken ct) =>
-        {
-            await settings.SaveSettingsAsync(dto, ct);
-            return Results.Ok(dto);
-        }).WithMetadata(new PlannerJsonBodyMetadata());
+        app.MapPut("/settings", async (SettingsDto dto, BoardSelectionService selection, CancellationToken ct) =>
+            Results.Ok(await selection.SaveAsync(dto, ct))).WithMetadata(new PlannerJsonBodyMetadata());
         app.MapPut("/selected-plan", async (SelectedPlanRequest request, BoardSelectionService selection, CancellationToken ct) =>
             Results.Ok(await selection.SelectAsync(request.PlanId, ct))).WithMetadata(new PlannerJsonBodyMetadata());
         app.MapGet("/display", async (PlannerCoordinator coordinator, CancellationToken ct) =>

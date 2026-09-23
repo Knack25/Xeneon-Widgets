@@ -4,8 +4,24 @@ using PlannerEdge.Helper.Storage;
 
 namespace PlannerEdge.Helper.Planner;
 
-public sealed class TaskCreationService(IPlannerGraphClient graphClient, IPlannerSettingsStore settingsStore, BoardMemberService members)
+public sealed class TaskCreationService
 {
+    private readonly IPlannerGraphClient graphClient;
+    private readonly BoardMemberService members;
+    private readonly IBoardSelectionCoordinator selection;
+
+    public TaskCreationService(IPlannerGraphClient graphClient, IPlannerSettingsStore settingsStore,
+        BoardMemberService members, IBoardSelectionCoordinator selection)
+    {
+        this.graphClient = graphClient;
+        this.members = members;
+        this.selection = selection;
+    }
+
+    public TaskCreationService(IPlannerGraphClient graphClient, IPlannerSettingsStore settingsStore,
+        BoardMemberService members) : this(graphClient, settingsStore, members,
+        new BoardSelectionCoordinator(settingsStore)) { }
+
     public async Task CreateAsync(string title, string bucketId, string? date, IReadOnlyList<string> assigneeIds,
         CancellationToken cancellationToken, string? startDate = null, int? priority = null,
         IReadOnlyList<string>? labelIds = null)
@@ -33,22 +49,24 @@ public sealed class TaskCreationService(IPlannerGraphClient graphClient, IPlanne
         var resolvedPriority = priority ?? 5;
         if (resolvedPriority is not (1 or 3 or 5 or 9))
             throw new ArgumentException("Choose a valid priority.");
-        var settings = await settingsStore.LoadSettingsAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(settings.SelectedPlanId)) throw new ArgumentException("Choose a board first.");
-        var buckets = await graphClient.GetBucketsAsync(settings.SelectedPlanId, cancellationToken);
+        var ticket = await selection.CaptureAsync(cancellationToken);
+        var buckets = await selection.RunAsync(ticket,
+            ct => graphClient.GetBucketsAsync(ticket.PlanId, ct), cancellationToken);
         if (!buckets.Any(bucket => bucket.Id == bucketId))
             throw new ArgumentException("Choose a bucket on the selected board.");
         var distinctAssignees = assigneeIds.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-        await members.ValidateAsync(distinctAssignees, cancellationToken);
+        await selection.RunAsync(ticket, ct => members.ValidateAsync(distinctAssignees, ct), cancellationToken);
         var distinctLabels = (labelIds ?? []).Distinct(StringComparer.Ordinal).ToArray();
         if (distinctLabels.Length > 0)
         {
-            var validLabels = (await graphClient.GetPlanLabelsAsync(settings.SelectedPlanId, cancellationToken))
+            var validLabels = (await selection.RunAsync(ticket,
+                    ct => graphClient.GetPlanLabelsAsync(ticket.PlanId, ct), cancellationToken))
                 .Select(label => label.Id).ToHashSet(StringComparer.Ordinal);
             if (distinctLabels.Any(labelId => !validLabels.Contains(labelId)))
                 throw new ArgumentException("Choose labels from the selected board.");
         }
-        await graphClient.CreateTaskAsync(settings.SelectedPlanId, bucketId, title, due, distinctAssignees,
-            start, resolvedPriority, distinctLabels, cancellationToken);
+        await selection.RunAsync(ticket,
+            ct => graphClient.CreateTaskAsync(ticket.PlanId, bucketId, title, due, distinctAssignees,
+                start, resolvedPriority, distinctLabels, ct), cancellationToken);
     }
 }

@@ -11,28 +11,31 @@ public sealed class ChecklistService(
     public async Task AddAsync(string taskId, string title, CancellationToken cancellationToken)
     {
         title = ValidateTitle(title);
-        await selectedPlanTasks.GetAsync(taskId, cancellationToken);
-        var details = await graphClient.GetTaskDetailsAsync(taskId, cancellationToken);
+        var selected = await selectedPlanTasks.GetBoundAsync(taskId, cancellationToken);
+        var details = await selectedPlanTasks.RunAsync(selected,
+            ct => graphClient.GetTaskDetailsAsync(taskId, ct), cancellationToken);
         var hint = $"{details.Checklist.LastOrDefault()?.OrderHint ?? string.Empty} !";
-        await PatchAsync(taskId, Guid.NewGuid().ToString("D"), new GraphChecklistPatch(title, hint),
+        await PatchAsync(selected, taskId, Guid.NewGuid().ToString("D"), new GraphChecklistPatch(title, hint),
             details.ETag, cancellationToken);
     }
 
     public async Task RenameAsync(string taskId, string itemId, string title, CancellationToken cancellationToken)
     {
         title = ValidateTitle(title);
-        await selectedPlanTasks.GetAsync(taskId, cancellationToken);
-        var details = await graphClient.GetTaskDetailsAsync(taskId, cancellationToken);
+        var selected = await selectedPlanTasks.GetBoundAsync(taskId, cancellationToken);
+        var details = await selectedPlanTasks.RunAsync(selected,
+            ct => graphClient.GetTaskDetailsAsync(taskId, ct), cancellationToken);
         FindItem(details, itemId);
-        await PatchAsync(taskId, itemId, new GraphChecklistPatch(Title: title), details.ETag, cancellationToken);
+        await PatchAsync(selected, taskId, itemId, new GraphChecklistPatch(Title: title), details.ETag, cancellationToken);
     }
 
     public async Task DeleteAsync(string taskId, string itemId, CancellationToken cancellationToken)
     {
-        await selectedPlanTasks.GetAsync(taskId, cancellationToken);
-        var details = await graphClient.GetTaskDetailsAsync(taskId, cancellationToken);
+        var selected = await selectedPlanTasks.GetBoundAsync(taskId, cancellationToken);
+        var details = await selectedPlanTasks.RunAsync(selected,
+            ct => graphClient.GetTaskDetailsAsync(taskId, ct), cancellationToken);
         FindItem(details, itemId);
-        await PatchAsync(taskId, itemId, null, details.ETag, cancellationToken);
+        await PatchAsync(selected, taskId, itemId, null, details.ETag, cancellationToken);
     }
 
     public async Task MoveAsync(string taskId, string itemId, string direction, CancellationToken cancellationToken)
@@ -40,8 +43,9 @@ public sealed class ChecklistService(
         if (direction is not ("up" or "down"))
             throw new ArgumentException("Choose up or down.");
 
-        await selectedPlanTasks.GetAsync(taskId, cancellationToken);
-        var details = await graphClient.GetTaskDetailsAsync(taskId, cancellationToken);
+        var selected = await selectedPlanTasks.GetBoundAsync(taskId, cancellationToken);
+        var details = await selectedPlanTasks.RunAsync(selected,
+            ct => graphClient.GetTaskDetailsAsync(taskId, ct), cancellationToken);
         var reordered = PlannerOrderHints.InCanonicalOrder(details.Checklist);
         var current = reordered.FindIndex(item => item.Id == itemId);
         if (current < 0) throw new InvalidOperationException("Checklist item was not found.");
@@ -55,14 +59,16 @@ public sealed class ChecklistService(
         var previous = target > 0 ? reordered[target - 1].OrderHint ?? "" : "";
         var next = target + 1 < reordered.Count ? reordered[target + 1].OrderHint ?? "" : "";
         var hint = $"{previous} {next}!";
-        await PatchAsync(taskId, itemId, new GraphChecklistPatch(OrderHint: hint), details.ETag,
+        await PatchAsync(selected, taskId, itemId, new GraphChecklistPatch(OrderHint: hint), details.ETag,
             cancellationToken);
     }
 
-    private async Task PatchAsync(string taskId, string itemId, GraphChecklistPatch? patch, string etag,
+    private async Task PatchAsync(SelectedPlanTask selected, string taskId, string itemId,
+        GraphChecklistPatch? patch, string etag,
         CancellationToken cancellationToken)
     {
-        await graphClient.PatchChecklistAsync(taskId, itemId, patch, etag, cancellationToken);
+        await selectedPlanTasks.RunAsync(selected,
+            ct => graphClient.PatchChecklistAsync(taskId, itemId, patch, etag, ct), cancellationToken);
         cache.Remove(taskId);
     }
 

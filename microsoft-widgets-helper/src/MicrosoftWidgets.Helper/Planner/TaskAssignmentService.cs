@@ -11,12 +11,14 @@ public sealed class TaskAssignmentService(IPlannerGraphClient graphClient, Selec
         if (userIds.Count > 50 || userIds.Any(id => !Guid.TryParse(id, out _)))
             throw new ArgumentException("Choose valid board members.");
         var desired = userIds.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-        var task = await selectedPlanTasks.GetAsync(taskId, cancellationToken);
+        var selected = await selectedPlanTasks.GetBoundAsync(taskId, cancellationToken);
+        var task = selected.Task;
         var added = desired.Except(task.Assignments, StringComparer.OrdinalIgnoreCase).ToArray();
         var removed = task.Assignments.Except(desired, StringComparer.OrdinalIgnoreCase).ToArray();
         if (added.Length == 0 && removed.Length == 0) return;
-        await members.ValidateAsync(added, cancellationToken);
-        await graphClient.SetAssignmentsAsync(taskId, added, removed, task.ETag, cancellationToken);
+        await selectedPlanTasks.RunAsync(selected, ct => members.ValidateAsync(added, ct), cancellationToken);
+        await selectedPlanTasks.RunAsync(selected,
+            ct => graphClient.SetAssignmentsAsync(taskId, added, removed, task.ETag, ct), cancellationToken);
         cache.Remove(taskId);
     }
 }

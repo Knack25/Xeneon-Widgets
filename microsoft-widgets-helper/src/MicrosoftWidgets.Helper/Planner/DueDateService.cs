@@ -17,11 +17,13 @@ public sealed class DueDateService(IPlannerGraphClient graphClient, SelectedPlan
             due = new DateTimeOffset(day.Year, day.Month, day.Day, 12, 0, 0, TimeSpan.Zero);
         }
 
-        var task = await selectedPlanTasks.GetAsync(taskId, cancellationToken);
+        var selected = await selectedPlanTasks.GetBoundAsync(taskId, cancellationToken);
+        var task = selected.Task;
         if (due is not null && task.StartDateTime is not null && due < task.StartDateTime)
             throw new ArgumentException("Due date cannot be before the task start date.");
 
-        await graphClient.SetDueDateAsync(taskId, due, task.ETag, cancellationToken);
+        await selectedPlanTasks.RunAsync(selected,
+            ct => graphClient.SetDueDateAsync(taskId, due, task.ETag, ct), cancellationToken);
         cache.Remove(taskId);
     }
 }

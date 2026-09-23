@@ -10,12 +10,14 @@ public sealed class ChecklistCompletionService(
 {
     public async Task CompleteAsync(string taskId, string itemId, CancellationToken cancellationToken)
     {
-        await selectedPlanTasks.GetAsync(taskId, cancellationToken);
-        var details = await graphClient.GetTaskDetailsAsync(taskId, cancellationToken);
+        var selected = await selectedPlanTasks.GetBoundAsync(taskId, cancellationToken);
+        var details = await selectedPlanTasks.RunAsync(selected,
+            ct => graphClient.GetTaskDetailsAsync(taskId, ct), cancellationToken);
         var item = details.Checklist.SingleOrDefault(value => value.Id == itemId)
             ?? throw new InvalidOperationException("Checklist item was not found.");
         if (!item.IsChecked)
-            await graphClient.CompleteChecklistItemAsync(taskId, itemId, details.ETag, cancellationToken);
+            await selectedPlanTasks.RunAsync(selected,
+                ct => graphClient.CompleteChecklistItemAsync(taskId, itemId, details.ETag, ct), cancellationToken);
         cache.Remove(taskId);
     }
 }
