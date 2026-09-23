@@ -27,3 +27,5 @@ if ($findings.Count -gt 0) {
 }
 
 Write-Host "Tracked secret-pattern scan passed across the working tree and $($revisions.Count) revision(s)."
+# GitHub Actions propagates the last native exit code from a PowerShell step.
+$global:LASTEXITCODE = 0
