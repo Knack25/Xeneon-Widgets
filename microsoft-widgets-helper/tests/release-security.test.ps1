@@ -11,6 +11,7 @@ $rootVerifier = Join-Path $repositoryRoot 'scripts\verify.ps1'
 $securityWorkflow = Join-Path $repositoryRoot '.github\workflows\security.yml'
 $dependabot = Join-Path $repositoryRoot '.github\dependabot.yml'
 $secretScanner = Join-Path $repositoryRoot 'scripts\scan-secrets.ps1'
+$dependencyAuditor = Join-Path $repositoryRoot 'scripts\audit-dependencies.ps1'
 
 function Assert-True([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
@@ -53,13 +54,23 @@ Assert-True ($plannerVerifierSource -match 'outlook-edge-widget') 'Combined widg
 Assert-True (Test-Path -LiteralPath $securityWorkflow -PathType Leaf) 'Security CI workflow is missing.'
 Assert-True (Test-Path -LiteralPath $dependabot -PathType Leaf) 'Dependabot configuration is missing.'
 Assert-True (Test-Path -LiteralPath $secretScanner -PathType Leaf) 'Tracked-history secret scanner is missing.'
+Assert-True (Test-Path -LiteralPath $dependencyAuditor -PathType Leaf) 'Fail-closed dependency auditor is missing.'
 $securityWorkflowSource = Get-Content -Raw -LiteralPath $securityWorkflow
 $dependabotSource = Get-Content -Raw -LiteralPath $dependabot
+$dependencyAuditorSource = Get-Content -Raw -LiteralPath $dependencyAuditor
 Assert-True ($securityWorkflowSource -match 'permissions:\s*\r?\n\s*contents:\s*read') 'Security CI must grant only read access to repository contents.'
 Assert-True ($securityWorkflowSource -match 'runs-on:\s*windows-latest') 'Security CI must run on Windows.'
 Assert-True (($securityWorkflowSource | Select-String -AllMatches 'npm ci --ignore-scripts').Matches.Count -eq 2) 'Security CI must use locked installs for both npm projects.'
-Assert-True ($securityWorkflowSource -match 'NuGetAuditMode=all' -and $securityWorkflowSource -match 'package --vulnerable --include-transitive') 'Security CI must freshly audit direct and transitive NuGet dependencies.'
 Assert-True ($securityWorkflowSource -match 'scripts[/\\]verify\.ps1' -and $securityWorkflowSource -match 'scripts[/\\]scan-secrets\.ps1') 'Security CI must run complete verification and tracked-history secret scanning.'
+Assert-True ($rootVerifierSource -match 'audit-dependencies\.ps1') 'Root verification must run the same fail-closed dependency audits as CI.'
+Assert-True (($dependencyAuditorSource | Select-String -AllMatches 'npm\s+audit\s+--audit-level=low').Matches.Count -eq 2) 'Dependency auditing must fail on every known npm advisory in both npm roots.'
+Assert-True ($dependencyAuditorSource -match 'planner-edge-widget' -and $dependencyAuditorSource -match 'outlook-edge-widget') 'Dependency auditing must cover both npm roots.'
+Assert-True ($dependencyAuditorSource -match 'NuGetAuditMode=all' -and $dependencyAuditorSource -match 'warnaserror:NU1901,NU1902,NU1903,NU1904') 'NuGet advisory warnings NU1901-NU1904 must fail dependency auditing.'
+Assert-True ($dependencyAuditorSource -match 'package\s+--vulnerable\s+--include-transitive') 'Dependency auditing must query direct and transitive NuGet advisories.'
+Assert-True (($dependencyAuditorSource | Select-String -AllMatches '\$LASTEXITCODE\s+-ne\s+0').Matches.Count -ge 4) 'Every native dependency-audit command must preserve a nonzero exit.'
+$firstLockedInstall = $securityWorkflowSource.IndexOf('npm ci --ignore-scripts', [StringComparison]::Ordinal)
+$rootVerification = $securityWorkflowSource.IndexOf('./scripts/verify.ps1', [StringComparison]::Ordinal)
+Assert-True ($firstLockedInstall -ge 0 -and $rootVerification -gt $firstLockedInstall) 'CI must run fail-closed dependency auditing after locked npm installs.'
 foreach ($ecosystem in @('npm', 'nuget', 'github-actions')) {
     Assert-True ($dependabotSource -match "package-ecosystem:\s*'$ecosystem'") "Dependabot does not cover $ecosystem."
 }

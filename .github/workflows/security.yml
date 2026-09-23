@@ -45,13 +45,7 @@ jobs:
         working-directory: outlook-edge-widget
         run: npx playwright install chromium
 
-      - name: Restore and audit NuGet dependencies
-        shell: pwsh
-        run: |
-          dotnet restore microsoft-widgets-helper/tests/MicrosoftWidgets.Helper.Tests/MicrosoftWidgets.Helper.Tests.csproj --force-evaluate -p:NuGetAudit=true -p:NuGetAuditMode=all
-          dotnet list microsoft-widgets-helper/tests/MicrosoftWidgets.Helper.Tests/MicrosoftWidgets.Helper.Tests.csproj package --vulnerable --include-transitive
-
-      - name: Run complete security verification
+      - name: Audit dependencies and run complete security verification
         shell: pwsh
         run: ./scripts/verify.ps1
 
