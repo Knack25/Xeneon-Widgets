@@ -1,6 +1,6 @@
 # Outlook Edge Widget
 
-Read-only Outlook calendars for XENEON EDGE, using the same Microsoft Widgets Helper as Planner. This is development documentation for the next widget, not an announcement of a published release.
+Read-only Outlook calendars for XENEON EDGE, using the same Microsoft Widgets Helper as Planner.
 
 ## One-Time Microsoft Approval
 
@@ -28,7 +28,7 @@ See [Microsoft's permission reference](https://learn.microsoft.com/en-us/graph/p
 ## Add the Widget
 
 1. In helper setup, connect Outlook and check **Available calendars**.
-2. Download the Outlook widget from setup when using a build that includes it.
+2. Download the Outlook widget from setup.
 3. In iCUE, select **XENEON EDGE > Widgets > +** and import the `.icuewidget` file.
 4. Allow `localhost:8787`, then compare the connection code shown on the widget with the pending request in setup. Approve only matching requests you initiated.
 5. Choose calendars on the display. Add more instances for different selections or views; each instance remembers its own settings.

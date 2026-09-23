@@ -12,7 +12,7 @@ class Element {
   append(...children) { this.children.push(...children); }
   setAttribute(name, value) { this[name] = value; }
 }
-function setup({ approval = true, error = null, discoveryErrors = [], statusError = null, ready = true, statusCode = 'consent_required' } = {}) {
+function setup({ approval = true, error = null, pairingError = false, discoveryErrors = [], statusError = null, ready = true, statusCode = 'consent_required' } = {}) {
   const elements = new Map();
   const calls = [];
   const timers = [];
@@ -23,6 +23,7 @@ function setup({ approval = true, error = null, discoveryErrors = [], statusErro
       calls.push({ path, options });
       if (statusError && path.endsWith('/status')) return { ok: false, status: 401, json: async () => ({ error: { message: statusError } }) };
       if (error && path.endsWith('/connect')) return { ok: false, status: 403, json: async () => ({ message: error }) };
+      if (pairingError && path.endsWith('/approve')) return { ok: false, status: 409, json: async () => ({ message: 'Pairing expired.' }) };
       const value = path.endsWith('/session') ? { token: 'local-session' }
         : path.endsWith('/status') ? { configured: true, signedIn: true, ready, discoveryErrors, error: ready ? null : { code: statusCode, message: 'Not ready' } }
         : path.endsWith('/pairings') ? ['planner', 'outlook'].map(scope => ({ scope, id: `${scope}-id`, code: '123456', instanceId: 'widget-a', expiresAt: new Date().toISOString() }))
@@ -67,15 +68,17 @@ test('Connect Outlook sends one bundled connection request only after clicking',
   assert.equal(consent[0].options.headers['X-Outlook-Session'], undefined);
 });
 
-test('setup lists scope labels and administers both scopes through shared owner routes', async () => {
+test('setup places Planner and Outlook pairings in their matching tabs', async () => {
   const app = setup(); await settle();
-  const pending = app.elements.get('#outlook-pairings').children;
-  const paired = app.elements.get('#outlook-paired').children;
-  for (const [index, scope] of ['planner', 'outlook'].entries()) {
-    assert.match(pending[index].children[0].textContent, new RegExp(scope, 'i'));
-    assert.match(paired[index].children[0].textContent, new RegExp(scope, 'i'));
-    await pending[index].children[1].click();
-    await paired[index].children[1].click();
+  for (const scope of ['planner', 'outlook']) {
+    const pending = app.elements.get(`#${scope}-pairings`).children;
+    const paired = app.elements.get(`#${scope}-paired`).children;
+    assert.equal(pending.length, 1);
+    assert.equal(paired.length, 1);
+    assert.match(pending[0].children[0].textContent, new RegExp(scope, 'i'));
+    assert.match(paired[0].children[0].textContent, new RegExp(scope, 'i'));
+    await pending[0].children[1].click();
+    await paired[0].children[1].click();
     assert.ok(app.calls.some(c => c.path === `/api/local-access/pairings/${scope}-id/approve`));
     assert.ok(app.calls.some(c => c.path === '/api/local-access/pairings/revoke' && JSON.parse(c.options.body).credentialId === `${scope}-credential`));
   }
@@ -88,9 +91,17 @@ test('admin consent failure remains visible and does not trigger further prompts
 });
 test('pair approval requires a confirmation and never uses a Graph write', async () => {
   const app = setup({ approval: false }); await settle();
-  const row = app.elements.get('#outlook-pairings').children[0];
+  const row = app.elements.get('#planner-pairings').children[0];
   await row.children.find(c => c.textContent === 'Approve').click();
   assert.equal(app.calls.some(c => c.path.endsWith('/approve')), false);
+});
+test('pairing errors appear in the matching widget tab', async () => {
+  const app = setup({ pairingError: true }); await settle();
+  await app.elements.get('#planner-pairings').children[0].children[1].click();
+  assert.equal(app.elements.get('#message').textContent, 'Pairing expired.');
+  assert.notEqual(app.elements.get('#outlook-message').textContent, 'Pairing expired.');
+  await app.elements.get('#outlook-pairings').children[0].children[1].click();
+  assert.equal(app.elements.get('#outlook-message').textContent, 'Pairing expired.');
 });
 test('calendar text is not inserted as HTML', async () => {
   const app = setup(); await settle();

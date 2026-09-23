@@ -7,8 +7,8 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>PlannerEdge.Helper</RootNamespace>
-    <Version>0.1.4</Version>
-    <ReleaseVersion>0.3.3</ReleaseVersion>
+    <Version>0.1.5</Version>
+    <ReleaseVersion>0.3.4</ReleaseVersion>
     <OutputType>WinExe</OutputType>
     <Product>Microsoft Widgets Helper</Product>
   </PropertyGroup>

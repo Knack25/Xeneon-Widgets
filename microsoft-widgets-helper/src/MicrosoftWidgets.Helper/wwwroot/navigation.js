@@ -26,12 +26,17 @@
   mirror('#sign-in', '#overview-planner');
   mirror('#outlook-status', '#overview-outlook');
   mirror('#update-status', '#overview-update');
-  const pairings = document.querySelector('#outlook-pairings');
+  const pairings = ['planner', 'outlook'].map(scope => ({
+    list: document.querySelector(`#${scope}-pairings`),
+    summary: document.querySelector(`#overview-${scope}-approvals`)
+  }));
   const approvals = () => {
-    const count = pairings.children.length;
-    document.querySelector('#overview-approvals').textContent = count ? `${count} widget connection${count === 1 ? '' : 's'} awaiting approval` : '';
+    for (const { list, summary } of pairings) {
+      const count = list.children.length;
+      summary.textContent = count ? `${count} widget connection${count === 1 ? '' : 's'} awaiting approval` : '';
+    }
   };
-  new MutationObserver(approvals).observe(pairings, {childList:true});
+  for (const { list } of pairings) new MutationObserver(approvals).observe(list, {childList:true});
   document.querySelector('#client-id').addEventListener('input', () => {
     document.querySelector('#app-configuration').open = true;
   });
