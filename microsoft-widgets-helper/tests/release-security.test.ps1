@@ -281,6 +281,30 @@ try {
         Close-ReleaseSnapshot $releaseSnapshot
     }
 
+    $unexpectedConsumerRoot = Join-Path $testRoot 'unexpected-consumer-release'
+    $unexpectedConsumerSnapshots = Join-Path $unexpectedConsumerRoot 'release-snapshots'
+    New-Item -ItemType Directory -Path $unexpectedConsumerRoot, $unexpectedConsumerSnapshots | Out-Null
+    $unexpectedConsumerCandidate = New-ReleaseWorkspace -Parent $unexpectedConsumerRoot -Prefix 'consumer-candidate'
+    Set-Content -NoNewline -LiteralPath (Join-Path $unexpectedConsumerCandidate 'unexpected.bin') -Value 'self-consistent but unreviewed'
+    $unexpectedConsumerFiles = @(
+        [ordered]@{
+            name = 'unexpected.bin'
+            length = (Get-Item -LiteralPath (Join-Path $unexpectedConsumerCandidate 'unexpected.bin')).Length
+            sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $unexpectedConsumerCandidate 'unexpected.bin')).Hash.ToLowerInvariant()
+        }
+    )
+    [ordered]@{ schemaVersion = 1; files = $unexpectedConsumerFiles } | ConvertTo-Json -Depth 6 |
+        Set-Content -LiteralPath (Join-Path $unexpectedConsumerCandidate 'RELEASE-MANIFEST.json') -Encoding utf8
+    @('unexpected.bin', 'RELEASE-MANIFEST.json' | ForEach-Object {
+        "$(Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $unexpectedConsumerCandidate $_) | Select-Object -ExpandProperty Hash)  $_".ToLowerInvariant()
+    }) | Set-Content -LiteralPath (Join-Path $unexpectedConsumerCandidate 'SHA256SUMS.txt') -Encoding ascii
+    $unexpectedConsumerManifest = @('unexpected.bin', 'RELEASE-MANIFEST.json', 'SHA256SUMS.txt')
+    $unexpectedConsumerSnapshot = Open-ReleaseSnapshot -Stage $unexpectedConsumerCandidate -Manifest $unexpectedConsumerManifest -AllowDeleteShare
+    $unexpectedConsumerLease = Publish-VerifiedReleaseSnapshot -Source $unexpectedConsumerCandidate -SnapshotRoot $unexpectedConsumerSnapshots -CurrentPointer (Join-Path $unexpectedConsumerRoot 'release-current.txt') -TrustedParent $unexpectedConsumerRoot -Snapshot $unexpectedConsumerSnapshot
+    Close-VerifiedReleaseSnapshot $unexpectedConsumerLease
+    Close-ReleaseSnapshot $unexpectedConsumerSnapshot
+    Assert-Fails { & $releaseResolver -ReleaseRoot $unexpectedConsumerRoot } 'Resolver must reject a self-consistent release with an unexpected top-level file.'
+
     $consumerRoot = Join-Path $testRoot 'consumer-release'
     $consumerSnapshots = Join-Path $consumerRoot 'release-snapshots'
     New-Item -ItemType Directory -Path $consumerRoot, $consumerSnapshots | Out-Null
@@ -288,25 +312,34 @@ try {
     Set-Content -NoNewline -LiteralPath (Join-Path $consumerArchiveStage 'payload.txt') -Value 'payload'
     $consumerArchiveSnapshot = Open-ReleaseSnapshot -Stage $consumerArchiveStage -Manifest @('payload.txt')
     $consumerCandidate = New-ReleaseWorkspace -Parent $consumerRoot -Prefix 'consumer-candidate'
-    $consumerArchive = Join-Path $consumerCandidate 'package.zip'
-    [IO.Compression.ZipFile]::CreateFromDirectory($consumerArchiveStage, $consumerArchive)
-    Set-Content -NoNewline -LiteralPath (Join-Path $consumerCandidate 'INSTALL.md') -Value 'install'
-    $consumerFiles = @(
-        [ordered]@{
-            name = 'package.zip'
-            length = (Get-Item -LiteralPath $consumerArchive).Length
-            sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $consumerArchive).Hash.ToLowerInvariant()
-            archiveEntries = @($consumerArchiveSnapshot.Entries | ForEach-Object { [ordered]@{ name = $_.Name; length = $_.Length; sha256 = $_.Hash } })
-        },
-        [ordered]@{
-            name = 'INSTALL.md'
-            length = (Get-Item -LiteralPath (Join-Path $consumerCandidate 'INSTALL.md')).Length
-            sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $consumerCandidate 'INSTALL.md')).Hash.ToLowerInvariant()
-        }
+    $consumerArchiveNames = @(
+        'PlannerEdgeWidget-0.3.0.icuewidget',
+        'OutlookEdgeWidget-0.2.0.icuewidget',
+        'MicrosoftWidgetsHelper-0.1.4-portable-win-x64.zip'
     )
+    foreach ($archiveName in $consumerArchiveNames) {
+        [IO.Compression.ZipFile]::CreateFromDirectory($consumerArchiveStage, (Join-Path $consumerCandidate $archiveName))
+    }
+    Set-Content -NoNewline -LiteralPath (Join-Path $consumerCandidate 'MicrosoftWidgetsSetup-0.3.3.exe') -Value 'installer'
+    Set-Content -NoNewline -LiteralPath (Join-Path $consumerCandidate 'INSTALL.md') -Value 'install'
+    Set-Content -NoNewline -LiteralPath (Join-Path $consumerCandidate 'OUTLOOK.md') -Value 'outlook'
+    $consumerAssetNames = @('MicrosoftWidgetsSetup-0.3.3.exe') + $consumerArchiveNames + @('INSTALL.md', 'OUTLOOK.md')
+    $consumerFiles = @($consumerAssetNames | ForEach-Object {
+        $assetName = $_
+        $assetPath = Join-Path $consumerCandidate $assetName
+        $record = [ordered]@{
+            name = $assetName
+            length = (Get-Item -LiteralPath $assetPath).Length
+            sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $assetPath).Hash.ToLowerInvariant()
+        }
+        if ($assetName -in $consumerArchiveNames) {
+            $record.archiveEntries = @($consumerArchiveSnapshot.Entries | ForEach-Object { [ordered]@{ name = $_.Name; length = $_.Length; sha256 = $_.Hash } })
+        }
+        $record
+    })
     [ordered]@{ schemaVersion = 1; files = $consumerFiles } | ConvertTo-Json -Depth 6 |
         Set-Content -LiteralPath (Join-Path $consumerCandidate 'RELEASE-MANIFEST.json') -Encoding utf8
-    $consumerChecksumTargets = @('package.zip', 'INSTALL.md', 'RELEASE-MANIFEST.json')
+    $consumerChecksumTargets = @($consumerAssetNames) + 'RELEASE-MANIFEST.json'
     @($consumerChecksumTargets | ForEach-Object {
         "$(Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $consumerCandidate $_) | Select-Object -ExpandProperty Hash)  $_".ToLowerInvariant()
     }) | Set-Content -LiteralPath (Join-Path $consumerCandidate 'SHA256SUMS.txt') -Encoding ascii

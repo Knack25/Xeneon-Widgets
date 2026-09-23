@@ -578,17 +578,39 @@ function Resolve-VerifiedReleaseDescriptor([string]$TrustedParent) {
     catch { throw 'Release descriptor is not valid JSON.' }
     if ([int]$descriptor.schemaVersion -ne 1) { throw 'Release descriptor schema is unsupported.' }
     $describedFiles = @($descriptor.files)
-    if ($describedFiles.Count -eq 0) { throw 'Release descriptor contains no files.' }
+    if ($describedFiles.Count -ne 6) { throw 'Release descriptor must contain the six expected release assets.' }
 
     $manifest = [Collections.Generic.List[string]]::new()
     $describedNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $describedRoles = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $archiveNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $versionPattern = '[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?'
+    $releaseRoles = @(
+        [pscustomobject]@{ Role = 'installer'; Pattern = "^MicrosoftWidgetsSetup-$versionPattern\.exe$"; Archive = $false },
+        [pscustomobject]@{ Role = 'planner-widget'; Pattern = "^PlannerEdgeWidget-$versionPattern\.icuewidget$"; Archive = $true },
+        [pscustomobject]@{ Role = 'outlook-widget'; Pattern = "^OutlookEdgeWidget-$versionPattern\.icuewidget$"; Archive = $true },
+        [pscustomobject]@{ Role = 'portable-helper'; Pattern = "^MicrosoftWidgetsHelper-$versionPattern-portable-win-x64\.zip$"; Archive = $true },
+        [pscustomobject]@{ Role = 'install-doc'; Pattern = '^INSTALL\.md$'; Archive = $false },
+        [pscustomobject]@{ Role = 'outlook-doc'; Pattern = '^OUTLOOK\.md$'; Archive = $false }
+    )
     foreach ($file in $describedFiles) {
         $name = [string]$file.name
         Assert-NormalizedReleaseEntry $name
         if ($name -in @('RELEASE-MANIFEST.json', 'SHA256SUMS.txt') -or -not $describedNames.Add($name)) { throw "Release descriptor has an invalid file name: $name" }
+        $matchedRoles = @($releaseRoles | Where-Object { $name -match $_.Pattern })
+        if ($matchedRoles.Count -ne 1 -or -not $describedRoles.Add($matchedRoles[0].Role)) { throw "Release descriptor has an unexpected or duplicate asset: $name" }
         if ($file.sha256 -notmatch '^[0-9a-f]{64}$' -or [long]$file.length -lt 0) { throw "Release descriptor entry is invalid: $name" }
+        $hasArchiveDescriptor = $null -ne $file.PSObject.Properties['archiveEntries']
+        $archiveEntries = if ($hasArchiveDescriptor) { @($file.archiveEntries) } else { @() }
+        if ($matchedRoles[0].Archive) {
+            if ($archiveEntries.Count -eq 0) { throw "Release archive has no internal descriptor: $name" }
+            [void]$archiveNames.Add($name)
+        } elseif ($hasArchiveDescriptor) {
+            throw "Non-archive release asset has an internal descriptor: $name"
+        }
         $manifest.Add($name)
     }
+    if ($describedRoles.Count -ne $releaseRoles.Count) { throw 'Release descriptor is missing an expected release asset.' }
     $manifest.Add('RELEASE-MANIFEST.json')
     $manifest.Add('SHA256SUMS.txt')
 
@@ -601,8 +623,7 @@ function Resolve-VerifiedReleaseDescriptor([string]$TrustedParent) {
             if ($entry.Length -ne [long]$file.length -or $entry.Hash -ne [string]$file.sha256) { throw "Release file does not match its descriptor: $($file.name)" }
             $archiveEntries = @()
             if ($null -ne $file.PSObject.Properties['archiveEntries']) { $archiveEntries = @($file.archiveEntries) }
-            if ($entry.Name -match '\.(zip|icuewidget)$' -and $archiveEntries.Count -eq 0) { throw "Release archive has no internal descriptor: $($entry.Name)" }
-            if ($archiveEntries.Count -gt 0) { Assert-DescribedReleaseArchive -Stream $entry.Stream -DisplayName $entry.Name -ExpectedEntries $archiveEntries }
+            if ($archiveNames.Contains($entry.Name)) { Assert-DescribedReleaseArchive -Stream $entry.Stream -DisplayName $entry.Name -ExpectedEntries $archiveEntries }
         }
 
         $checksumTargets = @($describedFiles | ForEach-Object { [string]$_.name }) + 'RELEASE-MANIFEST.json'
