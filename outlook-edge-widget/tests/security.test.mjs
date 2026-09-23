@@ -41,3 +41,15 @@ test('credentials remain isolated by instance and widget namespace', () => {
   assert.equal(settingsStore(storage, 'two').load().credential, '');
   assert.equal(JSON.parse(values.get('one')).planner.credential, 'planner-secret');
 });
+
+test('authorization callback runs for forbidden event details and Join requests', async () => {
+  for (const path of ['event-details', 'join']) {
+    let invalidations = 0;
+    const api = new OutlookApi({ native: true, credential: 'paired', fetch: async () => new Response('{}', { status: 403 }) });
+    api.onUnauthorized = () => invalidations++;
+
+    await assert.rejects(() => api.post(path, { calendarKey: 'calendar', reference: 'event' }));
+
+    assert.equal(invalidations, 1);
+  }
+});

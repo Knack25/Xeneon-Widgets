@@ -9,6 +9,55 @@ namespace MicrosoftWidgets.Helper.Tests;
 
 public sealed class OutlookConcurrencyTests
 {
+    [Theory]
+    [InlineData(nameof(SourceReadStage.VersionCaptured))]
+    [InlineData(nameof(SourceReadStage.SourceResolved))]
+    [InlineData(nameof(SourceReadStage.BeforePublication))]
+    public async Task SourceRemovalAtEveryReadStageCannotPublishOrEnterCache(string stageName)
+    {
+        var stage = Enum.Parse<SourceReadStage>(stageName);
+        for (var iteration = 0; iteration < 34; iteration++)
+        {
+            var stageEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var releaseStage = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var handler = new OutlookAsyncHandler((uri, _) => Task.FromResult(uri.AbsolutePath switch
+            {
+                "/v1.0/me/calendars" or "/v1.0/me/memberOf" => """{"value":[]}""",
+                _ when uri.AbsolutePath.EndsWith("/calendar") => """{"id":"shared","name":"Room"}""",
+                _ when uri.AbsolutePath.EndsWith("/calendarView") => """{"value":[{"id":"secret","subject":"Sensitive","start":{"dateTime":"2026-09-01T00:00:00","timeZone":"UTC"},"end":{"dateTime":"2026-09-02T00:00:00","timeZone":"UTC"}}]}""",
+                _ => throw new InvalidOperationException(uri.AbsolutePath)
+            }));
+            var tokens = new OutlookTokens();
+            var store = new OutlookMemoryStore();
+            var state = new MicrosoftAccountState(tokens, store);
+            var clock = new OutlookClock();
+            var graph = new OutlookGraphClient(new HttpClient(handler), tokens);
+            var catalog = new CalendarCatalogService(graph, state, new OutlookSettingsStore(store), clock);
+            var hooks = new CalendarViewTestHooks
+            {
+                PauseAsync = async (reached, _, _, ct) =>
+                {
+                    if (reached != stage) return;
+                    stageEntered.TrySetResult();
+                    await releaseStage.Task.WaitAsync(ct);
+                }
+            };
+            var views = new CalendarViewService(graph, catalog, state, clock, hooks);
+            var key = (await catalog.AddAsync("room@example.com", default)).Key;
+            var request = new ViewRequest([key], "2026-09-01T00:00:00Z", "2026-09-08T00:00:00Z");
+
+            var read = views.GetAsync(request, default);
+            await stageEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await catalog.RemoveAsync(key, default);
+            releaseStage.TrySetResult();
+
+            var response = await read;
+            Assert.Empty(response.Events);
+            Assert.Empty((await views.GetCachedAsync(request, default)).Events);
+            Assert.Equal("source_removed", Assert.Single(response.Sources).Error?.Code);
+        }
+    }
+
     [Fact]
     public async Task GraphAllowsAtMostFourConcurrentRequestsAndCancelsQueuedReads()
     {

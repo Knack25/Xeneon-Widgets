@@ -24,8 +24,10 @@ export function maskEvent(e) {
 export const eventId = e => JSON.stringify([e.calendarKey,e.reference]);
 export const ageLimit=86400000;
 export class RefreshState {
-  generation=0; resolvedGeneration=0; key=''; cache=new Map(); events=[]; sources=[]; offline=false;
+  generation=0; resolvedGeneration=0; key=''; cache=new Map(); events=[]; sources=[]; offline=false; controllers=new Set();
   begin(key) {this.key=key; this.generation++; this.events=this.cached(); return {generation:this.generation,key};}
+  track(controller){this.controllers.add(controller);return controller;}
+  release(controller){this.controllers.delete(controller);}
   current(t){return t.generation===this.generation && t.key===this.key;}
   cached(now=Date.now()) {const item=this.cache.get(this.key);return item?item.events.filter(e=>now-(item.sourceTimes?.get(e.calendarKey)??item.at)<ageLimit):[];}
   seed(t,result,now=Date.now()) {
@@ -37,7 +39,7 @@ export class RefreshState {
     if(!this.current(t)) return false;
     this.sources=result.sources||[];
     const auth=this.sources.find(s=>['sign_in_required','consent_required','account_changed','unauthorized'].includes(s.error?.code));
-    if(auth){this.clear();const error=new Error(auth.error.message||'Reconnect Outlook in helper setup.');error.status=401;error.code=auth.error.code;throw error;}
+    if(auth){this.clearAuthorization();const error=new Error(auth.error.message||'Reconnect Outlook in helper setup.');error.status=401;error.code=auth.error.code;throw error;}
     const denied=new Set(this.sources.filter(s=>['source_access_denied','source_not_found','source_removed','forbidden','not_found'].includes(s.error?.code)).map(s=>s.calendarKey));
     const expired=new Set(this.sources.filter(s=>s.stale && (!s.fetchedAt || now-Date.parse(s.fetchedAt)>=ageLimit)).map(s=>s.calendarKey));
     this.events=(result.events||[]).filter(e=>!e.isCancelled && !denied.has(e.calendarKey) && !expired.has(e.calendarKey)).map(maskEvent);
@@ -49,10 +51,16 @@ export class RefreshState {
     return true;
   }
   removeSource(key) {for(const item of this.cache.values()) item.events=item.events.filter(e=>e.calendarKey!==key);this.events=this.events.filter(e=>e.calendarKey!==key);}
-  clear(){this.cache.clear();this.events=[];this.sources=[];this.resolvedGeneration=0;}
+  clear(){this.cache.clear();this.events=[];this.sources=[];this.resolvedGeneration=0;this.offline=false;}
+  clearAuthorization(){
+    this.generation++;this.key='';
+    for(const controller of this.controllers)controller.abort();
+    this.controllers.clear();this.clear();
+  }
   fail(t,error,now=Date.now()) {
     if(!this.current(t)) return this.events;
-    if([401,403,404].includes(error.status)) this.clear();
+    if([401,403].includes(error.status)){this.clearAuthorization();return this.events;}
+    if(error.status===404)this.clear();
     this.offline=true; this.events=this.cached(now); return this.events;
   }
 }

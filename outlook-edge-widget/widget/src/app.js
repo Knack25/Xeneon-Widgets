@@ -46,7 +46,7 @@ export async function start(root,environment={}) {
   const footer=el('footer',{},sync,zone,el('label',{},weekends,'Show weekends'));
   shell.append(toolbar,subbar,status,board,footer);root.replaceChildren(shell);
   const dialogs=new Dialogs(root,pickerButton);
-  api.onUnauthorized=()=>{state.clear();dialogs.unavailable();showEvents();if(identity.native){settings.credential='';api.credential='';save();ready=false;notice('Pairing expired or revoked.');status.append(' ',button('Pair again',pair));}};
+  api.onUnauthorized=()=>{state.clearAuthorization();dialogs.unavailable();showEvents();if(identity.native){settings.credential='';api.credential='';save();ready=false;notice('Pairing expired or revoked.');status.append(' ',button('Pair again',pair));}};
   const pickerClose=()=>{picker.hidden=true;pickerButton.setAttribute('aria-expanded','false');};
   document.addEventListener('pointerdown',e=>{if(!pickerWrap.contains(e.target))pickerClose();});
   pickerWrap.addEventListener('keydown',e=>{if(e.key==='Escape'){pickerClose();pickerButton.focus();}});
@@ -82,10 +82,10 @@ export async function start(root,environment={}) {
   }
   async function refresh(forceMetadata=false) {
     if(!ready)return;
-    controller?.abort();controller=new AbortController();const signal=controller.signal;
+    controller?.abort();const refreshController=state.track(new AbortController());controller=refreshController;const signal=refreshController.signal;
     const range=rangeFor(anchor,settings), keys=selectedKeys(settings,catalog);
     const ticket=state.begin(JSON.stringify([range.start,range.end,[...keys].sort()]));showEvents();
-    if(!keys.length){state.accept(ticket,{events:[],sources:[]});showEvents();notice('');sync.textContent=identity.demo?'Demo':'Ready';return;}
+    if(!keys.length){state.release(refreshController);state.accept(ticket,{events:[],sources:[]});showEvents();notice('');sync.textContent=identity.demo?'Demo':'Ready';return;}
     refreshButton.disabled=true;
     try {
       // Revalidate helper authorization before replacing a retained offline snapshot.
@@ -126,7 +126,7 @@ export async function start(root,environment={}) {
       if(error.status===401 && !identity.native){ready=false;status.append(' ',button('Reconnect',initialize));}
       if(identity.native && !error.status)status.append(' ',button('Pair again',pair));
       sync.textContent='Unavailable';showEvents();
-    }finally{if(state.current(ticket))refreshButton.disabled=false;}
+    }finally{state.release(refreshController);if(state.current(ticket))refreshButton.disabled=false;}
   }
   function openSettings() {
     pickerClose();dialogs.open('Calendar settings');
@@ -176,7 +176,7 @@ export async function start(root,environment={}) {
       if(identity.native && !settings.credential){notice('Pair this widget with Microsoft Widgets Helper.');status.append(' ',button('Pair widget',pair));sync.textContent='Not paired';return;}
       await api.initialize();
       await metadata();ready=true;if(!adapter)makeCalendar();await refresh();
-    }catch(error){state.clear();dialogs.unavailable();showEvents();notice(error.message);sync.textContent='Unavailable';
+    }catch(error){state.clearAuthorization();dialogs.unavailable();showEvents();notice(error.message);sync.textContent='Unavailable';
       if(error.status===401 && identity.native){settings.credential='';api.credential='';save();ready=false;status.append(' ',button('Pair again',pair));}
       else {status.append(' ',button('Retry',initialize));if(identity.native)status.append(' ',button('Pair again',pair));}
     }
@@ -189,7 +189,7 @@ export async function start(root,environment={}) {
   },60000);
   document.addEventListener('visibilitychange',()=>{if(!document.hidden){reconfigure();refresh();}});
   window.addEventListener('online',()=>refresh(true));
-  window.addEventListener('pagehide',()=>{clearInterval(tick);clearTimeout(pairTimer);controller?.abort();dialogs.close();state.clear();},{once:true});
+  window.addEventListener('pagehide',()=>{clearInterval(tick);clearTimeout(pairTimer);dialogs.close();state.clearAuthorization();},{once:true});
   // Fixture controls are available only behind the explicit demo query flag.
   if(identity.demo)window.outlookDemo={refresh,api,state,settings:()=>({...settings}),navigate,change,dialogs};
   return {refresh};

@@ -45,6 +45,7 @@ public sealed class OutlookGraphClient(HttpClient http, IOutlookTokenProvider to
         await concurrency.WaitAsync(ct);
         try
         {
+            ct.ThrowIfCancellationRequested();
             var token = await tokens.GetTokenAsync(ct);
             for (var attempt = 0; ; attempt++)
             {

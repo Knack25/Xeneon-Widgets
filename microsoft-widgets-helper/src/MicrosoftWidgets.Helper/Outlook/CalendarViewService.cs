@@ -3,6 +3,16 @@ using System.Globalization;
 
 namespace PlannerEdge.Helper.Outlook;
 
+internal enum SourceReadStage { VersionCaptured, SourceResolved, BeforePublication }
+
+internal sealed class CalendarViewTestHooks
+{
+    public Func<SourceReadStage, string, long, CancellationToken, Task>? PauseAsync { get; init; }
+
+    public Task ReachAsync(SourceReadStage stage, string key, long version, CancellationToken ct) =>
+        PauseAsync?.Invoke(stage, key, version, ct) ?? Task.CompletedTask;
+}
+
 public sealed class CalendarViewService
 {
     private sealed record Snapshot(EventSummary[] Events, Dictionary<string, string> References, DateTimeOffset FetchedAt, long Use);
@@ -17,6 +27,7 @@ public sealed class CalendarViewService
     private readonly CalendarCatalogService catalog;
     private readonly MicrosoftAccountState state;
     private readonly TimeProvider clock;
+    private readonly CalendarViewTestHooks? testHooks;
     private readonly object sync = new();
     private readonly Dictionary<CacheKey, Snapshot> cache = [];
     private readonly Dictionary<CacheKey, Flight> flights = [];
@@ -24,8 +35,12 @@ public sealed class CalendarViewService
     private long use;
 
     public CalendarViewService(OutlookGraphClient graph, CalendarCatalogService catalog, MicrosoftAccountState state, TimeProvider clock)
+        : this(graph, catalog, state, clock, null) { }
+
+    internal CalendarViewService(OutlookGraphClient graph, CalendarCatalogService catalog, MicrosoftAccountState state, TimeProvider clock,
+        CalendarViewTestHooks? testHooks)
     {
-        this.graph = graph; this.catalog = catalog; this.state = state; this.clock = clock;
+        this.graph = graph; this.catalog = catalog; this.state = state; this.clock = clock; this.testHooks = testHooks;
         state.Invalidated += () => { lock (sync) { cache.Clear(); foreach (var flight in flights.Values) flight.Cancellation.Cancel(); flights.Clear(); sourceVersions.Clear(); } };
         state.SourceInvalidated += key =>
         {
@@ -78,19 +93,30 @@ public sealed class CalendarViewService
 
     private async Task<(EventSummary[] Events, SourceStatus Status)> ReadSourceAsync(AccountLease lease, CacheKey key, CancellationToken ct)
     {
+        long sourceVersion;
+        lock (sync) sourceVersion = sourceVersions.GetValueOrDefault(key.Calendar);
         try
         {
-            var source = await catalog.ResolveAsync(key.Calendar, ct);
+            if (testHooks is not null) await testHooks.ReachAsync(SourceReadStage.VersionCaptured, key.Calendar, sourceVersion, ct);
+            CalendarSource source;
+            try { source = await catalog.ResolveAsync(key.Calendar, ct); }
+            catch (OutlookException ex) when (ex.StatusCode == 404 && !IsSourceCurrent(key.Calendar, sourceVersion))
+            {
+                throw SourceRemoved();
+            }
             state.RequireCurrent(lease);
+            if (testHooks is not null) await testHooks.ReachAsync(SourceReadStage.SourceResolved, key.Calendar, sourceVersion, ct);
             Flight flight;
             lock (sync)
             {
                 Expire();
+                if (sourceVersion != sourceVersions.GetValueOrDefault(key.Calendar))
+                    throw SourceRemoved();
                 if (!flights.TryGetValue(key, out flight!))
                 {
                     flight = new();
                     flights[key] = flight;
-                    flight.Task = FetchAsync(lease, key, source, sourceVersions.GetValueOrDefault(key.Calendar), flight.Cancellation.Token);
+                    flight.Task = FetchAsync(lease, key, source, sourceVersion, flight.Cancellation.Token);
                 }
                 flight.Waiters++;
             }
@@ -107,7 +133,13 @@ public sealed class CalendarViewService
                     }
                 }
             }
-            state.RequireCurrent(lease);
+            if (testHooks is not null) await testHooks.ReachAsync(SourceReadStage.BeforePublication, key.Calendar, sourceVersion, ct);
+            lock (sync)
+            {
+                state.RequireCurrent(lease);
+                if (sourceVersion != sourceVersions.GetValueOrDefault(key.Calendar))
+                    throw SourceRemoved();
+            }
             return (snapshot.Events, new(key.Calendar, snapshot.FetchedAt, false, null));
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
@@ -117,11 +149,12 @@ public sealed class CalendarViewService
         catch (OutlookException ex)
         {
             if (ex.StatusCode == 401 && state.IsCurrent(lease)) await state.PurgeDataAsync(CancellationToken.None);
-            else if (ex.StatusCode is 403 or 404) state.PurgeSource(key.Calendar);
+            else if ((ex.StatusCode is 403 or 404) && ex.Code != "source_removed") state.PurgeSource(key.Calendar);
             lock (sync)
             {
                 Expire();
-                if (state.IsCurrent(lease) && ex.Code is "offline" or "throttled" && cache.TryGetValue(key, out var stale))
+                if (state.IsCurrent(lease) && sourceVersion == sourceVersions.GetValueOrDefault(key.Calendar) &&
+                    ex.Code is ("offline" or "throttled") && cache.TryGetValue(key, out var stale))
                 {
                     cache[key] = stale with { Use = ++use };
                     return (stale.Events, new(key.Calendar, stale.FetchedAt, true, ex.Error));
@@ -130,6 +163,13 @@ public sealed class CalendarViewService
             return ([], new(key.Calendar, null, false, ex.Error));
         }
     }
+
+    private bool IsSourceCurrent(string key, long version)
+    {
+        lock (sync) return version == sourceVersions.GetValueOrDefault(key);
+    }
+
+    private static OutlookException SourceRemoved() => new("source_removed", "The calendar was removed.", 404);
 
     private async Task<Snapshot> FetchAsync(AccountLease lease, CacheKey key, CalendarSource source, long version, CancellationToken ct)
     {

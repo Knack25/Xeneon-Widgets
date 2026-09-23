@@ -17,7 +17,7 @@ export class OutlookApi {
     const fetcher=this.native?this.fetch:this.helperApi.fetch.bind(this.helperApi);
     const response=await fetcher(`${this.base}${bootstrap?'/api/local-access/':'/api/outlook/'}${path}`,{method:body===undefined?'GET':'POST',headers,
       body:body===undefined?undefined:JSON.stringify(body),signal,cache:'no-store',credentials:'omit'});
-    if(response.status===401 && !bootstrap) {
+    if((response.status===401 || response.status===403) && !bootstrap) {
       this.onUnauthorized?.();
     }
     if(!response.ok) {let data;try{data=await response.json();}catch{}const error=new Error(data?.error?.message||data?.message||`Outlook unavailable (${response.status})`);error.status=response.status;error.code=data?.error?.code||data?.code;throw error;}
