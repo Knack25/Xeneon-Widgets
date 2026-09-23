@@ -189,6 +189,97 @@ public sealed class PlannerHttpIntegrationTests
             StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task MemberAuthorizationLossDoesNotDeadlockLifecyclePublication()
+    {
+        var graph = new MemberRaceGraph { Failure = new GraphApiException(HttpStatusCode.Forbidden, "denied") };
+        var settings = new MemberRaceSettings();
+        var selection = new BoardSelectionCoordinator(settings);
+        var lifecycle = new PlannerDataLifecycle(new MemoryCache(new MemoryCacheOptions()),
+            new PlannerDataAccessGate());
+        var service = new BoardMemberService(graph, lifecycle, selection);
+        using var publicationCancellation = new CancellationTokenSource();
+        var publicationEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var memberRequest = service.GetAsync(default);
+        await graph.MembersReady.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var publication = lifecycle.ExecutePublicationAsync(lifecycle.CaptureTicket(), async () =>
+        {
+            publicationEntered.TrySetResult();
+            await selection.CaptureAsync(publicationCancellation.Token);
+        }, publicationCancellation.Token);
+        await publicationEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        graph.ReleaseMembers();
+
+        try
+        {
+            await Assert.ThrowsAsync<BoardMembersUnavailableException>(() =>
+                memberRequest.WaitAsync(TimeSpan.FromSeconds(2)));
+            await publication.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+        finally
+        {
+            publicationCancellation.Cancel();
+            try { await publication; } catch (OperationCanceledException) { }
+            try { await memberRequest; } catch (BoardMembersUnavailableException) { }
+        }
+    }
+
+    [Theory]
+    [InlineData("/members")]
+    [InlineData("/api/planner/members")]
+    public async Task MemberResponseDoesNotHoldSecurityGatesWhileClientIsBlocked(string path)
+    {
+        var writeEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseWrite = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var host = await MemberRaceHost.StartAsync(http =>
+            http.Response.Body = new OutlookBlockedWriteStream(http.Response.Body, writeEntered, releaseWrite));
+        var responseTask = host.Client.GetAsync(path);
+        await host.Graph.MembersReady.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        host.Graph.ReleaseMembers();
+        await writeEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var boardChange = host.Selection.ChangeAsync(
+            _ => host.Settings.SelectAsync("plan-b", "Current board"), default);
+        var lifecyclePurge = host.Lifecycle.PurgeAsync(default);
+        var accountPurge = host.Account.PurgeDataAsync(default);
+
+        try
+        {
+            await Task.WhenAll(boardChange, lifecyclePurge, accountPurge).WaitAsync(TimeSpan.FromSeconds(2));
+        }
+        finally
+        {
+            releaseWrite.TrySetResult();
+        }
+
+        using var response = await responseTask.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains("Prior board member", await response.Content.ReadAsStringAsync(),
+            StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("/members")]
+    [InlineData("/api/planner/members")]
+    public async Task MemberResponseFailsClosedBeforeSuccessHeadersWhenBufferLimitIsExceeded(string path)
+    {
+        await using var host = await MemberRaceHost.StartAsync();
+        host.Graph.Members = Enumerable.Range(0, 5_000)
+            .Select(index => new GraphMember(index.ToString("D36"), new string('x', 1_000)))
+            .ToArray();
+
+        var responseTask = host.Client.GetAsync(path);
+        await host.Graph.MembersReady.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        host.Graph.ReleaseMembers();
+
+        using var response = await responseTask.WaitAsync(TimeSpan.FromSeconds(10));
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Contains("response_too_large", body, StringComparison.Ordinal);
+        Assert.DoesNotContain(new string('x', 1_000), body, StringComparison.Ordinal);
+    }
+
     private static void AssertHeader(HttpResponseMessage response, string name, string value)
     {
         Assert.True(response.Headers.TryGetValues(name, out var values));
@@ -228,14 +319,17 @@ public sealed class PlannerHttpIntegrationTests
 }
 
 internal sealed class MemberRaceHost(WebApplication app, HttpClient client, MemberRaceGraph graph,
-    BoardSelectionCoordinator selection, MemberRaceSettings settings) : IAsyncDisposable
+    BoardSelectionCoordinator selection, MemberRaceSettings settings, PlannerDataLifecycle lifecycle,
+    MicrosoftAccountState account) : IAsyncDisposable
 {
     public HttpClient Client => client;
     public MemberRaceGraph Graph => graph;
     public BoardSelectionCoordinator Selection => selection;
     public MemberRaceSettings Settings => settings;
+    public PlannerDataLifecycle Lifecycle => lifecycle;
+    public MicrosoftAccountState Account => account;
 
-    public static async Task<MemberRaceHost> StartAsync()
+    public static async Task<MemberRaceHost> StartAsync(Action<HttpContext>? beforeRequest = null)
     {
         var graph = new MemberRaceGraph();
         var settings = new MemberRaceSettings();
@@ -255,6 +349,8 @@ internal sealed class MemberRaceHost(WebApplication app, HttpClient client, Memb
         builder.Services.AddSingleton<IPlannerSettingsStore>(settings);
         builder.Services.AddSingleton<IBoardSelectionCoordinator>(selection);
         var app = builder.Build();
+        if (beforeRequest is not null)
+            app.Use(async (context, next) => { beforeRequest(context); await next(context); });
         app.Use(async (context, next) =>
         {
             try { await next(context); }
@@ -279,7 +375,9 @@ internal sealed class MemberRaceHost(WebApplication app, HttpClient client, Memb
         client.DefaultRequestHeaders.Add("Origin", "null");
         client.DefaultRequestHeaders.Add(LocalAccessHeaders.Credential,
             (await pairing.PollAsync(pending.Id, secret, default)).Credential);
-        return new MemberRaceHost(app, client, graph, selection, settings);
+        return new MemberRaceHost(app, client, graph, selection, settings,
+            app.Services.GetRequiredService<PlannerDataLifecycle>(),
+            app.Services.GetRequiredService<MicrosoftAccountState>());
     }
 
     public async ValueTask DisposeAsync()
@@ -294,6 +392,9 @@ internal sealed class MemberRaceGraph : IPlannerGraphClient
 {
     private readonly TaskCompletionSource releaseMembers = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public TaskCompletionSource MembersReady { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public IReadOnlyList<GraphMember> Members { get; set; } =
+        [new("11111111-1111-1111-1111-111111111111", "Prior board member")];
+    public Exception? Failure { get; set; }
 
     public Task<IReadOnlyList<GraphPlan>> GetMyPlansAsync(CancellationToken cancellationToken) =>
         Task.FromResult<IReadOnlyList<GraphPlan>>(
@@ -304,7 +405,8 @@ internal sealed class MemberRaceGraph : IPlannerGraphClient
     {
         MembersReady.TrySetResult();
         await releaseMembers.Task.WaitAsync(cancellationToken);
-        return [new("11111111-1111-1111-1111-111111111111", "Prior board member")];
+        if (Failure is not null) throw Failure;
+        return Members;
     }
 
     public void ReleaseMembers() => releaseMembers.TrySetResult();

@@ -35,7 +35,9 @@ public sealed class WidgetAuthorizationFilter(WidgetScope scope) : IEndpointFilt
             {
                 var lifecycle = http.RequestServices.GetRequiredService<PlannerDataLifecycle>();
                 lifecycle.RequireCurrent(plannerTicket);
-                response = new PlannerDataBoundResult(response, lifecycle, plannerTicket);
+                response = response is IBufferedHttpResult buffered
+                    ? new PlannerDataBufferedBoundResult(buffered, lifecycle, plannerTicket)
+                    : new PlannerDataBoundResult(response, lifecycle, plannerTicket);
             }
             return new AccountBoundResult(response, state, lease.Value);
         }

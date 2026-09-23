@@ -1,4 +1,5 @@
 using PlannerEdge.Helper.Contracts;
+using PlannerEdge.Helper.Security;
 using PlannerEdge.Helper.Storage;
 
 namespace PlannerEdge.Helper.Planner;
@@ -7,6 +8,8 @@ public readonly record struct BoardSelectionTicket(string PlanId, long Revision)
 
 public interface IBoardSelectionCoordinator
 {
+    // Gate order is Microsoft account -> Planner lifecycle -> board selection. Code running in
+    // RunAsync must not enter either outer gate; authorization-loss cleanup runs after it returns.
     Task<BoardSelectionTicket> CaptureAsync(CancellationToken cancellationToken);
     Task<SettingsDto> ChangeAsync(Func<CancellationToken, Task<SettingsDto>> change,
         CancellationToken cancellationToken);
@@ -97,9 +100,15 @@ public sealed class BoardSelectionCoordinator(IPlannerSettingsStore settingsStor
     }
 }
 
-public sealed class BoardSelectionBoundResult(IResult inner, IBoardSelectionCoordinator selection,
-    BoardSelectionTicket ticket) : IResult
+internal sealed class BoardSelectionBoundResult(IResult inner, IBoardSelectionCoordinator selection,
+    BoardSelectionTicket ticket) : IResult, IBufferedHttpResult
 {
-    public Task ExecuteAsync(HttpContext http) => selection.RunAsync(ticket,
-        _ => inner.ExecuteAsync(http), http.RequestAborted);
+    internal const long MaximumBufferedBytes = 4L * 1024 * 1024;
+
+    // Serialization is the logical publication commit. Client I/O happens only after every gate is released.
+    public Task<BufferedHttpResponse> PrepareAsync(HttpContext http) => selection.RunAsync(ticket,
+        ct => BufferedHttpResponse.CreateAsync(inner, http, MaximumBufferedBytes, ct), http.RequestAborted);
+
+    public async Task ExecuteAsync(HttpContext http) =>
+        await (await PrepareAsync(http)).CopyToAsync(http);
 }

@@ -10,6 +10,13 @@ public sealed class AccountBoundResult(IResult inner, MicrosoftAccountState stat
         try
         {
             using var binding = state.BindRequest(lease);
+            if (inner is IBufferedHttpResult buffered)
+            {
+                var response = await state.ExecuteAuthorizedAsync(lease,
+                    () => buffered.PrepareAsync(http), http.RequestAborted);
+                await response.CopyToAsync(http);
+                return;
+            }
             await state.ExecuteAuthorizedAsync(lease, () => inner.ExecuteAsync(http), http.RequestAborted);
         }
         catch (OutlookException ex) when (!http.Response.HasStarted)

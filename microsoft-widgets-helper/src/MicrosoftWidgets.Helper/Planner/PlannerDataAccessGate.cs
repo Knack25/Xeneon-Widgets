@@ -1,4 +1,5 @@
 using PlannerEdge.Helper.Outlook;
+using PlannerEdge.Helper.Security;
 
 namespace PlannerEdge.Helper.Planner;
 
@@ -39,6 +40,20 @@ public sealed class PlannerDataAccessGate
         finally { gate.Release(); }
     }
 
+    public async Task<T> ExecutePublicationAsync<T>(PlannerDataTicket ticket, Func<Task<T>> publication,
+        CancellationToken cancellationToken)
+    {
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            RequireCurrent(ticket);
+            var result = await publication();
+            RequireCurrent(ticket);
+            return result;
+        }
+        finally { gate.Release(); }
+    }
+
     public async Task AdvanceAsync(Action invalidateMemory, CancellationToken cancellationToken)
     {
         await gate.WaitAsync(cancellationToken);
@@ -64,4 +79,14 @@ public sealed class PlannerDataBoundResult(IResult inner, PlannerDataLifecycle l
 {
     public Task ExecuteAsync(HttpContext http) => lifecycle.ExecutePublicationAsync(
         ticket, () => inner.ExecuteAsync(http), http.RequestAborted);
+}
+
+internal sealed class PlannerDataBufferedBoundResult(IBufferedHttpResult inner,
+    PlannerDataLifecycle lifecycle, PlannerDataTicket ticket) : IResult, IBufferedHttpResult
+{
+    public Task<BufferedHttpResponse> PrepareAsync(HttpContext http) => lifecycle.ExecutePublicationAsync(
+        ticket, () => inner.PrepareAsync(http), http.RequestAborted);
+
+    public async Task ExecuteAsync(HttpContext http) =>
+        await (await PrepareAsync(http)).CopyToAsync(http);
 }

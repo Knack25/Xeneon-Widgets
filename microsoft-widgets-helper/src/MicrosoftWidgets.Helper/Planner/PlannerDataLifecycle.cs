@@ -73,6 +73,10 @@ public sealed class PlannerDataLifecycle : IHostedService
         CancellationToken cancellationToken) =>
         accessGate.ExecutePublicationAsync(ticket, publication, cancellationToken);
 
+    public Task<T> ExecutePublicationAsync<T>(PlannerDataTicket ticket, Func<Task<T>> publication,
+        CancellationToken cancellationToken) =>
+        accessGate.ExecutePublicationAsync(ticket, publication, cancellationToken);
+
     public async Task<(bool Found, T? Value)> TryGetAsync<T>(string category, string id,
         CancellationToken cancellationToken)
     {
@@ -131,6 +135,44 @@ public sealed class PlannerDataLifecycle : IHostedService
                 accountState.RequireCurrent(lease);
                 return Task.CompletedTask;
             }, cancellationToken);
+        }
+        catch
+        {
+            cache.Remove(key);
+            memoryKeys.TryRemove(key, out _);
+            throw;
+        }
+    }
+
+    internal async Task SetSelectionBoundAsync<T>(string category, string id, T value, TimeSpan lifetime,
+        Func<Func<Task>, Task> bindSelection, CancellationToken cancellationToken)
+    {
+        var ticket = accessGate.CaptureTicket();
+        if (accountState is null)
+        {
+            var legacyKey = $"planner:test:{category}:{id}";
+            await accessGate.ExecutePublicationAsync(ticket, () => bindSelection(() =>
+            {
+                memoryKeys.TryAdd(legacyKey, 0);
+                cache.Set(legacyKey, value, lifetime);
+                return Task.CompletedTask;
+            }), cancellationToken);
+            return;
+        }
+
+        var lease = await accountState.GetAsync(cancellationToken);
+        accountState.RequireCurrent(lease);
+        var key = Key(category, id);
+        try
+        {
+            await accessGate.ExecutePublicationAsync(ticket, () => bindSelection(() =>
+            {
+                accountState.RequireCurrent(lease);
+                memoryKeys.TryAdd(key, 0);
+                cache.Set(key, new AccountBoundValue<T>(lease, value), lifetime);
+                accountState.RequireCurrent(lease);
+                return Task.CompletedTask;
+            }), cancellationToken);
         }
         catch
         {

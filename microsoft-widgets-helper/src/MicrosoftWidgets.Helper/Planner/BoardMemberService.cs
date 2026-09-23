@@ -22,9 +22,17 @@ public sealed class BoardMemberService(IPlannerGraphClient graphClient, PlannerD
         using var operation = lifecycle.BindOperation();
         var lifecycleTicket = lifecycle.CaptureTicket();
         var selectionTicket = await selection.CaptureAsync(cancellationToken);
-        var members = await selection.RunAsync(selectionTicket,
-            ct => GetForPlanAsync(selectionTicket.PlanId, lifecycleTicket, ct), cancellationToken);
-        return new BoardMemberSelection(members, selectionTicket);
+        try
+        {
+            var members = await selection.RunAsync(selectionTicket,
+                ct => GetForPlanAsync(selectionTicket.PlanId, lifecycleTicket, ct), cancellationToken);
+            return new BoardMemberSelection(members, selectionTicket);
+        }
+        catch (BoardMemberAuthorizationLostException error)
+        {
+            await lifecycle.PurgeAsync(CancellationToken.None);
+            throw new BoardMembersUnavailableException(error.Message);
+        }
     }
 
     internal async Task ValidateWithinSelectionAsync(IReadOnlyList<string> userIds, string planId,
@@ -57,8 +65,8 @@ public sealed class BoardMemberService(IPlannerGraphClient graphClient, PlannerD
         }
         catch (GraphApiException error) when (error.StatusCode == HttpStatusCode.Forbidden)
         {
-            await lifecycle.PurgeAsync(CancellationToken.None);
-            throw new BoardMembersUnavailableException("Board member access was denied. Ask your work administrator to approve it.");
+            throw new BoardMemberAuthorizationLostException(
+                "Board member access was denied. Ask your work administrator to approve it.", error);
         }
     }
 }
@@ -66,3 +74,6 @@ public sealed class BoardMemberService(IPlannerGraphClient graphClient, PlannerD
 public sealed record BoardMemberSelection(IReadOnlyList<GraphMember> Members, BoardSelectionTicket Selection);
 
 public sealed class BoardMembersUnavailableException(string message) : Exception(message);
+
+internal sealed class BoardMemberAuthorizationLostException(string message, Exception inner)
+    : Exception(message, inner);

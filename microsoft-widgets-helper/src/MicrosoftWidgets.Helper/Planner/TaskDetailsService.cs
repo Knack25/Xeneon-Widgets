@@ -50,9 +50,8 @@ public sealed class TaskDetailsService(IPlannerGraphClient graphClient, Selected
             details.Checklist.Select(item => new ChecklistItemDisplay(item.Id, item.Title, item.IsChecked)).ToList(),
             details.Description, task.Assignments, task.StartDateTime, task.Priority, task.PercentComplete,
             task.AppliedCategories ?? []);
-        await selectedPlanTasks.RunAsync(selected,
-            ct => lifecycle.SetAsync("task-details", taskId, response, TimeSpan.FromSeconds(45), ct),
-            cancellationToken);
+        await lifecycle.SetSelectionBoundAsync("task-details", taskId, response, TimeSpan.FromSeconds(45),
+            publish => selectedPlanTasks.RunAsync(selected, _ => publish(), cancellationToken), cancellationToken);
         return response;
     }
 

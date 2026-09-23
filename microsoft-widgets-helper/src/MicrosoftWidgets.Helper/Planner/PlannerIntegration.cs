@@ -114,6 +114,11 @@ public static class PlannerIntegration
             await http.RequestServices.GetRequiredService<PlannerDataLifecycle>().PurgeAsync(CancellationToken.None);
             throw;
         }
+        catch (BoardMemberAuthorizationLostException ex)
+        {
+            await http.RequestServices.GetRequiredService<PlannerDataLifecycle>().PurgeAsync(CancellationToken.None);
+            throw new BoardMembersUnavailableException(ex.Message);
+        }
     });
 
     private static Task WritePolicyErrorAsync(HttpContext http, int statusCode, string message) =>
