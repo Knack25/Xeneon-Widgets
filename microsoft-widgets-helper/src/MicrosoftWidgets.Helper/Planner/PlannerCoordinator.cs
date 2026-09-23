@@ -12,6 +12,7 @@ public sealed class PlannerCoordinator(IPlannerSettingsStore settingsStore, Plan
                 new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()))) { }
     public async Task<BoardDisplay?> GetCachedDisplayAsync(CancellationToken cancellationToken)
     {
+        using var operation = lifecycle.BindOperation();
         var settings = await settingsStore.LoadSettingsAsync(cancellationToken);
         if (string.IsNullOrWhiteSpace(settings.SelectedPlanId)) return null;
 
@@ -21,6 +22,7 @@ public sealed class PlannerCoordinator(IPlannerSettingsStore settingsStore, Plan
 
     public async Task<BoardDisplay?> GetDisplayAsync(CancellationToken cancellationToken)
     {
+        using var operation = lifecycle.BindOperation();
         var settings = await settingsStore.LoadSettingsAsync(cancellationToken);
         if (string.IsNullOrWhiteSpace(settings.SelectedPlanId)) return null;
 

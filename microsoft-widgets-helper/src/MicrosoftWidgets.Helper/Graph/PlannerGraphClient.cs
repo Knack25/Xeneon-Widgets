@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Collections.Concurrent;
 using PlannerEdge.Helper.Auth;
+using PlannerEdge.Helper.Planner;
 
 namespace PlannerEdge.Helper.Graph;
 
@@ -13,20 +14,33 @@ public sealed class PlannerGraphClient : IPlannerGraphClient
     private readonly HttpClient httpClient;
     private readonly IGraphTokenProvider tokenProvider;
     private readonly MicrosoftAccountState? accountState;
+    private readonly PlannerDataAccessGate dataAccess;
     private readonly ConcurrentDictionary<string, OrderHintEntry> orderHints = new();
     private readonly SemaphoreSlim formatGate = new(4);
 
-    public PlannerGraphClient(HttpClient httpClient, IGraphTokenProvider tokenProvider, MicrosoftAccountState accountState)
+    [ActivatorUtilitiesConstructor]
+    public PlannerGraphClient(HttpClient httpClient, IGraphTokenProvider tokenProvider,
+        MicrosoftAccountState accountState, PlannerDataAccessGate dataAccess)
     {
         this.httpClient = httpClient;
         this.tokenProvider = tokenProvider;
         this.accountState = accountState;
+        this.dataAccess = dataAccess;
     }
 
+    internal PlannerGraphClient(HttpClient httpClient, IGraphTokenProvider tokenProvider,
+        MicrosoftAccountState accountState) : this(httpClient, tokenProvider, accountState,
+        new PlannerDataAccessGate()) { }
+
     internal PlannerGraphClient(HttpClient httpClient, IGraphTokenProvider tokenProvider)
+        : this(httpClient, tokenProvider, new PlannerDataAccessGate()) { }
+
+    private PlannerGraphClient(HttpClient httpClient, IGraphTokenProvider tokenProvider,
+        PlannerDataAccessGate dataAccess)
     {
         this.httpClient = httpClient;
         this.tokenProvider = tokenProvider;
+        this.dataAccess = dataAccess;
     }
 
     public async Task<string> GetCurrentUserIdAsync(CancellationToken cancellationToken)
@@ -131,15 +145,17 @@ public sealed class PlannerGraphClient : IPlannerGraphClient
     private async Task<string?> GetBucketOrderHintAsync(string taskId, AccountLease? lease,
         CancellationToken cancellationToken)
     {
-        if (orderHints.TryGetValue(taskId, out var previous) && previous.Lease != lease)
+        var ticket = dataAccess.CaptureTicket();
+        if (orderHints.TryGetValue(taskId, out var previous) &&
+            (previous.Lease != lease || previous.Ticket != ticket))
             orderHints.TryRemove(new KeyValuePair<string, OrderHintEntry>(taskId, previous));
-        if (orderHints.TryGetValue(taskId, out var cached) && cached.Lease == lease &&
+        if (orderHints.TryGetValue(taskId, out var cached) && cached.Lease == lease && cached.Ticket == ticket &&
             cached.Expires > DateTimeOffset.UtcNow)
             return cached.Hint;
         await formatGate.WaitAsync(cancellationToken);
         try
         {
-            if (orderHints.TryGetValue(taskId, out cached) && cached.Lease == lease &&
+            if (orderHints.TryGetValue(taskId, out cached) && cached.Lease == lease && cached.Ticket == ticket &&
                 cached.Expires > DateTimeOffset.UtcNow)
                 return cached.Hint;
             try
@@ -148,7 +164,7 @@ public sealed class PlannerGraphClient : IPlannerGraphClient
                     $"planner/tasks/{Uri.EscapeDataString(taskId)}/bucketTaskBoardFormat"), cancellationToken);
                 using var document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellationToken), cancellationToken: cancellationToken);
                 var hint = document.RootElement.TryGetProperty("orderHint", out var value) ? value.GetString() : null;
-                await PublishOrderHintAsync(taskId, lease, hint, TimeSpan.FromMinutes(5), cancellationToken);
+                await PublishOrderHintAsync(taskId, lease, ticket, hint, TimeSpan.FromMinutes(5), cancellationToken);
                 return hint;
             }
             catch (GraphApiException error) when (error.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
@@ -157,7 +173,7 @@ public sealed class PlannerGraphClient : IPlannerGraphClient
             }
             catch (Exception error) when (error is GraphApiException or HttpRequestException or System.Text.Json.JsonException)
             {
-                await PublishOrderHintAsync(taskId, lease, null, TimeSpan.FromMinutes(1), cancellationToken);
+                await PublishOrderHintAsync(taskId, lease, ticket, null, TimeSpan.FromMinutes(1), cancellationToken);
                 return null;
             }
         }
@@ -504,24 +520,30 @@ public sealed class PlannerGraphClient : IPlannerGraphClient
         if (lease is { } value) accountState!.RequireCurrent(value);
     }
 
-    private async Task PublishOrderHintAsync(string taskId, AccountLease? lease, string? hint,
+    private async Task PublishOrderHintAsync(string taskId, AccountLease? lease, PlannerDataTicket ticket, string? hint,
         TimeSpan lifetime, CancellationToken cancellationToken)
     {
-        var entry = new OrderHintEntry(lease, hint, DateTimeOffset.UtcNow.Add(lifetime));
+        var entry = new OrderHintEntry(lease, ticket, hint, DateTimeOffset.UtcNow.Add(lifetime));
         if (lease is null)
         {
-            orderHints[taskId] = entry;
+            await dataAccess.ExecutePublicationAsync(ticket, () =>
+            {
+                orderHints[taskId] = entry;
+                return Task.CompletedTask;
+            }, cancellationToken);
             return;
         }
 
         await accountState!.ExecuteAuthorizedAsync(lease.Value, () =>
-        {
-            orderHints[taskId] = entry;
-            return Task.CompletedTask;
-        }, cancellationToken);
+            dataAccess.ExecutePublicationAsync(ticket, () =>
+            {
+                orderHints[taskId] = entry;
+                return Task.CompletedTask;
+            }, cancellationToken), cancellationToken);
     }
 
-    private sealed record OrderHintEntry(AccountLease? Lease, string? Hint, DateTimeOffset Expires);
+    private sealed record OrderHintEntry(AccountLease? Lease, PlannerDataTicket Ticket, string? Hint,
+        DateTimeOffset Expires);
 
     private static void ValidateConversationContinuation(Uri uri, string escapedGroup, string escapedThread)
     {

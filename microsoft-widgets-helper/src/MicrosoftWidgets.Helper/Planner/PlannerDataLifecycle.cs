@@ -10,6 +10,7 @@ public sealed class PlannerDataLifecycle : IHostedService
     private readonly MicrosoftAccountState? accountState;
     private readonly IPlannerSettingsStore? settingsStore;
     private readonly IMemoryCache cache;
+    private readonly PlannerDataAccessGate accessGate;
     private readonly ConcurrentDictionary<string, byte> memoryKeys = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim purgeGate = new(1, 1);
     private long purgeVersion;
@@ -21,27 +22,46 @@ public sealed class PlannerDataLifecycle : IHostedService
 
     [ActivatorUtilitiesConstructor]
     public PlannerDataLifecycle(MicrosoftAccountState accountState, IPlannerSettingsStore settingsStore,
-        IMemoryCache cache)
+        IMemoryCache cache, PlannerDataAccessGate accessGate)
     {
         this.accountState = accountState;
         this.settingsStore = settingsStore;
         this.cache = cache;
+        this.accessGate = accessGate;
         accountState.Invalidated += OnInvalidated;
     }
 
-    internal PlannerDataLifecycle(IMemoryCache cache)
+    internal PlannerDataLifecycle(MicrosoftAccountState accountState, IPlannerSettingsStore settingsStore,
+        IMemoryCache cache) : this(accountState, settingsStore, cache, new PlannerDataAccessGate()) { }
+
+    internal PlannerDataLifecycle(IMemoryCache cache) : this(cache, new PlannerDataAccessGate()) { }
+
+    internal PlannerDataLifecycle(IMemoryCache cache, PlannerDataAccessGate accessGate)
     {
         this.cache = cache;
+        this.accessGate = accessGate;
     }
+
+    public PlannerDataTicket CaptureTicket() => accessGate.CaptureTicket();
+    public IDisposable BindOperation() => accessGate.BindOperation();
+    public void RequireCurrent(PlannerDataTicket ticket) => accessGate.RequireCurrent(ticket);
+    public Task ExecutePublicationAsync(PlannerDataTicket ticket, Func<Task> publication,
+        CancellationToken cancellationToken) =>
+        accessGate.ExecutePublicationAsync(ticket, publication, cancellationToken);
 
     public async Task<(bool Found, T? Value)> TryGetAsync<T>(string category, string id,
         CancellationToken cancellationToken)
     {
+        var ticket = accessGate.CaptureTicket();
         if (accountState is null)
         {
             var legacyKey = $"planner:test:{category}:{id}";
             memoryKeys.TryAdd(legacyKey, 0);
-            return cache.TryGetValue<T>(legacyKey, out var legacyValue) ? (true, legacyValue) : (false, default);
+            var result = cache.TryGetValue<T>(legacyKey, out var legacyValue)
+                ? (true, legacyValue)
+                : (false, default);
+            accessGate.RequireCurrent(ticket);
+            return result;
         }
         var lease = await accountState.GetAsync(cancellationToken);
         var key = Key(category, id);
@@ -55,27 +75,38 @@ public sealed class PlannerDataLifecycle : IHostedService
             return (false, default);
         }
         accountState.RequireCurrent(lease);
+        accessGate.RequireCurrent(ticket);
         return (true, stored.Value);
     }
 
     public async Task SetAsync<T>(string category, string id, T value, TimeSpan lifetime,
         CancellationToken cancellationToken)
     {
+        var ticket = accessGate.CaptureTicket();
         if (accountState is null)
         {
             var legacyKey = $"planner:test:{category}:{id}";
-            memoryKeys.TryAdd(legacyKey, 0);
-            cache.Set(legacyKey, value, lifetime);
+            await accessGate.ExecutePublicationAsync(ticket, () =>
+            {
+                memoryKeys.TryAdd(legacyKey, 0);
+                cache.Set(legacyKey, value, lifetime);
+                return Task.CompletedTask;
+            }, cancellationToken);
             return;
         }
         var lease = await accountState.GetAsync(cancellationToken);
         accountState.RequireCurrent(lease);
         var key = Key(category, id);
-        memoryKeys.TryAdd(key, 0);
         try
         {
-            cache.Set(key, new AccountBoundValue<T>(lease, value), lifetime);
-            accountState.RequireCurrent(lease);
+            await accessGate.ExecutePublicationAsync(ticket, () =>
+            {
+                accountState.RequireCurrent(lease);
+                memoryKeys.TryAdd(key, 0);
+                cache.Set(key, new AccountBoundValue<T>(lease, value), lifetime);
+                accountState.RequireCurrent(lease);
+                return Task.CompletedTask;
+            }, cancellationToken);
         }
         catch
         {
@@ -87,24 +118,32 @@ public sealed class PlannerDataLifecycle : IHostedService
 
     public async Task RemoveAsync(string category, string id, CancellationToken cancellationToken = default)
     {
+        var ticket = accessGate.CaptureTicket();
         if (accountState is null)
         {
             var legacyKey = $"planner:test:{category}:{id}";
-            cache.Remove(legacyKey);
-            memoryKeys.TryRemove(legacyKey, out _);
+            await accessGate.ExecutePublicationAsync(ticket, () =>
+            {
+                cache.Remove(legacyKey);
+                memoryKeys.TryRemove(legacyKey, out _);
+                return Task.CompletedTask;
+            }, cancellationToken);
             return;
         }
-        var lease = await accountState.GetAsync(cancellationToken);
+        await accountState.GetAsync(cancellationToken);
         var key = Key(category, id);
-        cache.Remove(key);
-        memoryKeys.TryRemove(key, out _);
+        await accessGate.ExecutePublicationAsync(ticket, () =>
+        {
+            cache.Remove(key);
+            memoryKeys.TryRemove(key, out _);
+            return Task.CompletedTask;
+        }, cancellationToken);
     }
 
     public async Task PurgeAsync(CancellationToken cancellationToken)
     {
-        PurgeMemory();
-        Interlocked.Increment(ref purgeVersion);
-        Volatile.Write(ref purgeRequired, 1);
+        await BeginPurgeAsync(cancellationToken);
+        StartPurgeWorker();
         await RetryPendingPurgeAsync(cancellationToken);
     }
 
@@ -121,8 +160,7 @@ public sealed class PlannerDataLifecycle : IHostedService
         await settingsStore.MarkPurgeRequiredAsync(cancellationToken);
         if (!requiresRecovery) return;
 
-        Interlocked.Increment(ref purgeVersion);
-        Volatile.Write(ref purgeRequired, 1);
+        await BeginPurgeAsync(cancellationToken);
         try { await RetryPendingPurgeAsync(cancellationToken); }
         catch when (!cancellationToken.IsCancellationRequested) { StartPurgeWorker(); }
     }
@@ -178,11 +216,16 @@ public sealed class PlannerDataLifecycle : IHostedService
 
     private void OnInvalidated()
     {
+        BeginPurgeAsync(CancellationToken.None).GetAwaiter().GetResult();
+        StartPurgeWorker();
+    }
+
+    private Task BeginPurgeAsync(CancellationToken cancellationToken) => accessGate.AdvanceAsync(() =>
+    {
         PurgeMemory();
         Interlocked.Increment(ref purgeVersion);
         Volatile.Write(ref purgeRequired, 1);
-        StartPurgeWorker();
-    }
+    }, cancellationToken);
 
     private void StartPurgeWorker()
     {

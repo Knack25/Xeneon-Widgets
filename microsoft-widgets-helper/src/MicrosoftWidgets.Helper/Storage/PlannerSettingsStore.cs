@@ -1,5 +1,6 @@
 using PlannerEdge.Helper.Contracts;
 using PlannerEdge.Helper.Auth;
+using PlannerEdge.Helper.Planner;
 
 namespace PlannerEdge.Helper.Storage;
 
@@ -28,13 +29,28 @@ public sealed record PlannerSettingsSnapshot(int Version, string AccountKey, Set
 public sealed record PlannerSafePreferences(bool HideCompletedTasks);
 public sealed record PlannerPurgeMarker(int Version, bool Required);
 
-public sealed class PlannerSettingsStore(
-    ILocalJsonStore jsonStore,
-    MicrosoftAccountState accountState,
-    TimeProvider timeProvider) : IPlannerSettingsStore
+public sealed class PlannerSettingsStore : IPlannerSettingsStore
 {
+    private readonly ILocalJsonStore jsonStore;
+    private readonly MicrosoftAccountState accountState;
+    private readonly TimeProvider timeProvider;
+    private readonly PlannerDataAccessGate accessGate;
+
+    public PlannerSettingsStore(ILocalJsonStore jsonStore, MicrosoftAccountState accountState,
+        TimeProvider timeProvider, PlannerDataAccessGate accessGate)
+    {
+        this.jsonStore = jsonStore;
+        this.accountState = accountState;
+        this.timeProvider = timeProvider;
+        this.accessGate = accessGate;
+    }
+
+    internal PlannerSettingsStore(ILocalJsonStore jsonStore, MicrosoftAccountState accountState,
+        TimeProvider timeProvider) : this(jsonStore, accountState, timeProvider, new PlannerDataAccessGate()) { }
+
     internal PlannerSettingsStore(ILocalJsonStore jsonStore)
-        : this(jsonStore, new MicrosoftAccountState(new TestIdentityProvider(), jsonStore), TimeProvider.System) { }
+        : this(jsonStore, new MicrosoftAccountState(new TestIdentityProvider(), jsonStore), TimeProvider.System,
+            new PlannerDataAccessGate()) { }
     private const string SettingsFileName = "settings";
     private const string CachedDisplayFileName = "cached-display";
     private const string UiPreferencesFileName = "planner-ui-preferences";
@@ -45,13 +61,15 @@ public sealed class PlannerSettingsStore(
 
     public async Task<SettingsDto> LoadSettingsAsync(CancellationToken cancellationToken)
     {
+        var ticket = accessGate.CaptureTicket();
         var lease = await accountState.GetAsync(cancellationToken);
         await settingsLock.WaitAsync(cancellationToken);
         try
         {
             accountState.RequireCurrent(lease);
-            var result = await LoadSettingsCoreAsync(lease, cancellationToken);
+            var result = await LoadSettingsCoreAsync(lease, ticket, cancellationToken);
             accountState.RequireCurrent(lease);
+            accessGate.RequireCurrent(ticket);
             return result;
         }
         finally
@@ -62,6 +80,7 @@ public sealed class PlannerSettingsStore(
 
     public async Task SaveSettingsAsync(SettingsDto settings, CancellationToken cancellationToken)
     {
+        var ticket = accessGate.CaptureTicket();
         var lease = await accountState.GetAsync(cancellationToken);
         await settingsLock.WaitAsync(cancellationToken);
         try
@@ -69,11 +88,11 @@ public sealed class PlannerSettingsStore(
             accountState.RequireCurrent(lease);
             if (settings.PlanViews is null)
             {
-                var current = await LoadSettingsCoreAsync(lease, cancellationToken);
+                var current = await LoadSettingsCoreAsync(lease, ticket, cancellationToken);
                 settings = settings with { PlanViews = current.PlanViews };
             }
 
-            await SaveSettingsCoreAsync(lease, settings, cancellationToken);
+            await SaveSettingsCoreAsync(lease, ticket, settings, cancellationToken);
             accountState.RequireCurrent(lease);
         }
         finally
@@ -85,13 +104,14 @@ public sealed class PlannerSettingsStore(
     public async Task<SettingsDto> UpdateSettingsAsync(Func<SettingsDto, SettingsDto> update,
         CancellationToken cancellationToken)
     {
+        var ticket = accessGate.CaptureTicket();
         var lease = await accountState.GetAsync(cancellationToken);
         await settingsLock.WaitAsync(cancellationToken);
         try
         {
             accountState.RequireCurrent(lease);
-            var updated = update(await LoadSettingsCoreAsync(lease, cancellationToken));
-            await SaveSettingsCoreAsync(lease, updated, cancellationToken);
+            var updated = update(await LoadSettingsCoreAsync(lease, ticket, cancellationToken));
+            await SaveSettingsCoreAsync(lease, ticket, updated, cancellationToken);
             accountState.RequireCurrent(lease);
             return updated;
         }
@@ -103,6 +123,7 @@ public sealed class PlannerSettingsStore(
 
     public async Task<BoardDisplay?> LoadCachedDisplayAsync(CancellationToken cancellationToken)
     {
+        var ticket = accessGate.CaptureTicket();
         var lease = await accountState.GetAsync(cancellationToken);
         await settingsLock.WaitAsync(cancellationToken);
         try
@@ -113,10 +134,12 @@ public sealed class PlannerSettingsStore(
             if (snapshot is not { Version: CurrentVersion } || snapshot.AccountKey != lease.Key ||
                 snapshot.SavedAt > now || now - snapshot.SavedAt > MaximumSnapshotAge)
             {
-                await jsonStore.DeleteAsync(CachedDisplayFileName, cancellationToken);
+                await accessGate.ExecutePublicationAsync(ticket,
+                    () => jsonStore.DeleteAsync(CachedDisplayFileName, cancellationToken), cancellationToken);
                 return null;
             }
             accountState.RequireCurrent(lease);
+            accessGate.RequireCurrent(ticket);
             return snapshot.Display with { IsStale = true };
         }
         finally { settingsLock.Release(); }
@@ -124,14 +147,15 @@ public sealed class PlannerSettingsStore(
 
     public async Task SaveCachedDisplayAsync(BoardDisplay display, CancellationToken cancellationToken)
     {
+        var ticket = accessGate.CaptureTicket();
         var lease = await accountState.GetAsync(cancellationToken);
         await settingsLock.WaitAsync(cancellationToken);
         try
         {
             accountState.RequireCurrent(lease);
-            await jsonStore.WriteAsync(CachedDisplayFileName,
-                new PlannerSnapshot(CurrentVersion, lease.Key, timeProvider.GetUtcNow(), display with { IsStale = false }),
-                cancellationToken);
+            await accessGate.ExecutePublicationAsync(ticket, () => jsonStore.WriteAsync(CachedDisplayFileName,
+                    new PlannerSnapshot(CurrentVersion, lease.Key, timeProvider.GetUtcNow(), display with { IsStale = false }),
+                    cancellationToken), cancellationToken);
             accountState.RequireCurrent(lease);
         }
         finally { settingsLock.Release(); }
@@ -183,26 +207,31 @@ public sealed class PlannerSettingsStore(
     public Task ClearPurgeRequiredAsync(CancellationToken cancellationToken) =>
         jsonStore.WriteAsync(PurgeMarkerFileName, new PlannerPurgeMarker(1, false), cancellationToken);
 
-    private async Task<SettingsDto> LoadSettingsCoreAsync(AccountLease lease, CancellationToken cancellationToken)
+    private async Task<SettingsDto> LoadSettingsCoreAsync(AccountLease lease, PlannerDataTicket ticket,
+        CancellationToken cancellationToken)
     {
         var safe = await jsonStore.ReadAsync<PlannerSafePreferences>(UiPreferencesFileName, cancellationToken)
             ?? new PlannerSafePreferences(true);
         var stored = await jsonStore.ReadAsync<PlannerSettingsSnapshot>(SettingsFileName, cancellationToken);
         if (stored is not { Version: CurrentVersion } || stored.AccountKey != lease.Key || stored.Settings is null)
         {
-            await jsonStore.DeleteAsync(SettingsFileName, cancellationToken);
+            await accessGate.ExecutePublicationAsync(ticket,
+                () => jsonStore.DeleteAsync(SettingsFileName, cancellationToken), cancellationToken);
             return new SettingsDto(null, null, safe.HideCompletedTasks);
         }
         return stored.Settings with { HideCompletedTasks = safe.HideCompletedTasks };
     }
 
-    private async Task SaveSettingsCoreAsync(AccountLease lease, SettingsDto settings,
+    private Task SaveSettingsCoreAsync(AccountLease lease, PlannerDataTicket ticket, SettingsDto settings,
         CancellationToken cancellationToken)
     {
-        await jsonStore.WriteAsync(UiPreferencesFileName,
-            new PlannerSafePreferences(settings.HideCompletedTasks), cancellationToken);
-        await jsonStore.WriteAsync(SettingsFileName,
-            new PlannerSettingsSnapshot(CurrentVersion, lease.Key, settings), cancellationToken);
+        return accessGate.ExecutePublicationAsync(ticket, async () =>
+        {
+            await jsonStore.WriteAsync(UiPreferencesFileName,
+                new PlannerSafePreferences(settings.HideCompletedTasks), cancellationToken);
+            await jsonStore.WriteAsync(SettingsFileName,
+                new PlannerSettingsSnapshot(CurrentVersion, lease.Key, settings), cancellationToken);
+        }, cancellationToken);
     }
 
     private sealed class TestIdentityProvider : IMicrosoftAccountIdentityProvider

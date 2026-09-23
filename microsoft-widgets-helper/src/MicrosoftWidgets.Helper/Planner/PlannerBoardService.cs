@@ -11,6 +11,7 @@ public sealed class PlannerBoardService(IPlannerGraphClient graphClient, Planner
 
     public async Task<IReadOnlyList<PlanSummary>> GetPlansAsync(CancellationToken cancellationToken)
     {
+        using var operation = lifecycle.BindOperation();
         var cached = await lifecycle.TryGetAsync<IReadOnlyList<PlanSummary>>("plans", "all", cancellationToken);
         if (cached.Found && cached.Value is not null) return cached.Value;
         await gate.WaitAsync(cancellationToken);

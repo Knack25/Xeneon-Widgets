@@ -3,6 +3,7 @@ using Microsoft.Extensions.Caching.Memory;
 using PlannerEdge.Helper.Auth;
 using PlannerEdge.Helper.Contracts;
 using PlannerEdge.Helper.Graph;
+using PlannerEdge.Helper.Outlook;
 using PlannerEdge.Helper.Planner;
 using PlannerEdge.Helper.Storage;
 
@@ -72,6 +73,113 @@ public sealed class PlannerDataLifecycleTests
 
         Assert.False(json.Contains("settings"));
         await lifecycle.StopAsync(default);
+    }
+
+    [Fact]
+    public async Task Direct_purge_retries_transient_failure_without_restart()
+    {
+        var json = new FaultingPlannerJsonStore();
+        var account = new MicrosoftAccountState(new MutableIdentity(), json);
+        await account.GetAsync(default);
+        var settings = new PlannerSettingsStore(json, account,
+            new FakeTimeProvider(DateTimeOffset.Parse("2026-09-22T12:00:00Z")));
+        var lifecycle = new PlannerDataLifecycle(account, settings, new MemoryCache(new MemoryCacheOptions()));
+        await settings.SaveSettingsAsync(new SettingsDto("plan", "Board", true), default);
+        json.DeleteFailuresRemaining = 1;
+
+        try { await lifecycle.PurgeAsync(default); }
+        catch (IOException) { }
+
+        await WaitUntilAsync(() => !lifecycle.PurgeRequired && !json.Contains("settings"));
+        Assert.True(json.DeleteAttempts >= 2);
+    }
+
+    [Fact]
+    public async Task Board_load_started_before_purge_cannot_publish_after_purge()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var graph = PausedPlannerGraph.ForPlans();
+        var service = new PlannerBoardService(graph, fixture.Lifecycle);
+
+        var load = service.GetPlansAsync(default);
+        await graph.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+        await fixture.Lifecycle.PurgeAsync(default);
+        graph.Release();
+
+        var error = await Assert.ThrowsAsync<OutlookException>(() => load);
+        Assert.Equal("planner_data_changed", error.Code);
+        Assert.False((await fixture.Lifecycle.TryGetAsync<IReadOnlyList<PlanSummary>>(
+            "plans", "all", default)).Found);
+    }
+
+    [Fact]
+    public async Task Settings_selection_started_before_purge_cannot_restore_selected_plan()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var graph = PausedPlannerGraph.ForPlans();
+        var service = new BoardSelectionService(new PlannerBoardService(graph, fixture.Lifecycle), fixture.Settings);
+
+        var selection = service.SelectAsync("plan", default);
+        await graph.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+        await fixture.Lifecycle.PurgeAsync(default);
+        graph.Release();
+
+        var error = await Assert.ThrowsAsync<OutlookException>(() => selection);
+        Assert.Equal("planner_data_changed", error.Code);
+        Assert.Null((await fixture.Settings.LoadSettingsAsync(default)).SelectedPlanId);
+    }
+
+    [Fact]
+    public async Task Details_load_started_before_purge_cannot_publish_after_purge()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var graph = PausedPlannerGraph.ForDetails();
+        var service = new TaskDetailsService(graph, fixture.Lifecycle);
+
+        var load = service.GetAsync("task", default);
+        await graph.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+        await fixture.Lifecycle.PurgeAsync(default);
+        graph.Release();
+
+        var error = await Assert.ThrowsAsync<OutlookException>(() => load);
+        Assert.Equal("planner_data_changed", error.Code);
+        Assert.False((await fixture.Lifecycle.TryGetAsync<TaskDetailsResponse>(
+            "task-details", "task", default)).Found);
+    }
+
+    [Fact]
+    public async Task Member_load_started_before_purge_cannot_return_after_purge()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        await fixture.Settings.SaveSettingsAsync(new SettingsDto("plan", "Board", true), default);
+        var graph = PausedPlannerGraph.ForMembers();
+        var service = new BoardMemberService(graph, fixture.Settings, fixture.Lifecycle);
+
+        var load = service.GetAsync(default);
+        await graph.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+        await fixture.Lifecycle.PurgeAsync(default);
+        graph.Release();
+
+        var error = await Assert.ThrowsAsync<OutlookException>(() => load);
+        Assert.Equal("planner_data_changed", error.Code);
+    }
+
+    [Fact]
+    public async Task Chat_load_started_before_purge_cannot_return_after_purge()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        await fixture.Settings.SaveSettingsAsync(new SettingsDto("plan", "Board", true), default);
+        var graph = PausedPlannerGraph.ForChat();
+        var details = new TaskDetailsService(graph, fixture.Lifecycle);
+        var service = new TaskChatService(graph, fixture.Settings, details, fixture.Lifecycle);
+
+        var load = service.GetAsync("task", null, default);
+        await graph.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+        await fixture.Lifecycle.PurgeAsync(default);
+        graph.Release();
+
+        var error = await Assert.ThrowsAsync<OutlookException>(() => load);
+        Assert.Equal("planner_data_changed", error.Code);
     }
 
     [Fact]
@@ -397,8 +505,10 @@ public sealed class PlannerDataLifecycleTests
             var account = new MicrosoftAccountState(identity, json);
             await account.GetAsync(default);
             var clock = new FakeTimeProvider(DateTimeOffset.Parse("2026-09-22T12:00:00Z"));
-            var settings = new PlannerSettingsStore(json, account, clock);
-            var lifecycle = new PlannerDataLifecycle(account, settings, new MemoryCache(new MemoryCacheOptions()));
+            var access = new PlannerDataAccessGate();
+            var settings = new PlannerSettingsStore(json, account, clock, access);
+            var lifecycle = new PlannerDataLifecycle(account, settings,
+                new MemoryCache(new MemoryCacheOptions()), access);
             return new Fixture(root, json, identity, account, clock, settings, lifecycle);
         }
 
@@ -491,6 +601,78 @@ public sealed class PlannerDataLifecycleTests
                 throw new IOException("disk unavailable");
             }
             values.Remove(name);
+        }
+    }
+
+    private sealed class PausedPlannerGraph(string pausePoint) : IPlannerGraphClient
+    {
+        private readonly TaskCompletionSource entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task Entered => entered.Task;
+        public void Release() => release.TrySetResult();
+        public static PausedPlannerGraph ForPlans() => new("plans");
+        public static PausedPlannerGraph ForDetails() => new("details");
+        public static PausedPlannerGraph ForMembers() => new("members");
+        public static PausedPlannerGraph ForChat() => new("chat");
+
+        private async Task PauseAsync(string point, CancellationToken cancellationToken)
+        {
+            if (pausePoint != point) return;
+            entered.TrySetResult();
+            await release.Task.WaitAsync(cancellationToken);
+        }
+
+        public async Task<IReadOnlyList<GraphPlan>> GetMyPlansAsync(CancellationToken cancellationToken)
+        {
+            await PauseAsync("plans", cancellationToken);
+            return [new GraphPlan("plan", "Board", "11111111-1111-1111-1111-111111111111", "Group")];
+        }
+
+        public Task<IReadOnlyList<GraphGroup>> GetMemberGroupsAsync(CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<GraphGroup>>([]);
+
+        public Task<IReadOnlyList<GraphPlan>> GetPlansForGroupAsync(string groupId,
+            CancellationToken cancellationToken) => Task.FromResult<IReadOnlyList<GraphPlan>>([]);
+
+        public Task<IReadOnlyList<GraphBucket>> GetBucketsAsync(string planId,
+            CancellationToken cancellationToken) => Task.FromResult<IReadOnlyList<GraphBucket>>([]);
+
+        public Task<IReadOnlyList<GraphTask>> GetTasksAsync(string planId,
+            CancellationToken cancellationToken) => Task.FromResult<IReadOnlyList<GraphTask>>([]);
+
+        public Task<string?> GetUserDisplayNameAsync(string userId, CancellationToken cancellationToken) =>
+            Task.FromResult<string?>("Person");
+
+        public Task CompleteChecklistItemAsync(string taskId, string itemId, string etag,
+            CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task CompleteTaskAsync(string taskId, string etag, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task<GraphTask?> GetTaskAsync(string taskId, CancellationToken cancellationToken) =>
+            Task.FromResult<GraphTask?>(new GraphTask("task", "Task", "plan", "bucket", null, null, 0,
+                "etag", [], null, null, "thread"));
+
+        public async Task<GraphTaskDetails> GetTaskDetailsAsync(string taskId,
+            CancellationToken cancellationToken)
+        {
+            await PauseAsync("details", cancellationToken);
+            return new GraphTaskDetails("etag", [], "Notes");
+        }
+
+        public async Task<IReadOnlyList<GraphMember>> GetGroupMembersAsync(string groupId,
+            CancellationToken cancellationToken)
+        {
+            await PauseAsync("members", cancellationToken);
+            return [new GraphMember("person", "Person")];
+        }
+
+        public async Task<GraphConversationPage> GetConversationPostsAsync(string groupId, string threadId,
+            Uri? continuationUri, CancellationToken cancellationToken)
+        {
+            await PauseAsync("chat", cancellationToken);
+            return new GraphConversationPage([], null);
         }
     }
 

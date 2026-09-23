@@ -1,11 +1,13 @@
 using PlannerEdge.Helper.Auth;
 using PlannerEdge.Helper.Outlook;
+using PlannerEdge.Helper.Planner;
 
 namespace PlannerEdge.Helper.Security;
 
 public sealed class WidgetAuthorizationFilter(WidgetScope scope) : IEndpointFilter
 {
     internal static readonly object PreauthorizedLeaseKey = new();
+    internal static readonly object PlannerDataTicketKey = new();
 
     public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext context, EndpointFilterDelegate next)
     {
@@ -26,7 +28,16 @@ public sealed class WidgetAuthorizationFilter(WidgetScope scope) : IEndpointFilt
             var result = await next(context);
             await state.GetIdentityAsync(false, http.RequestAborted);
             state.RequireCurrent(lease!.Value);
-            return result is IResult response ? new AccountBoundResult(response, state, lease.Value) : Results.StatusCode(503);
+            if (result is not IResult response) return Results.StatusCode(503);
+            if (scope == WidgetScope.Planner &&
+                http.Items.TryGetValue(PlannerDataTicketKey, out var plannerValue) &&
+                plannerValue is PlannerDataTicket plannerTicket)
+            {
+                var lifecycle = http.RequestServices.GetRequiredService<PlannerDataLifecycle>();
+                lifecycle.RequireCurrent(plannerTicket);
+                response = new PlannerDataBoundResult(response, lifecycle, plannerTicket);
+            }
+            return new AccountBoundResult(response, state, lease.Value);
         }
         catch (OutlookException ex) { return Results.Json(new { error = ex.Error }, statusCode: ex.StatusCode); }
     }

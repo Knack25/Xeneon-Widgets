@@ -16,6 +16,7 @@ public static class PlannerIntegration
 
     public static IServiceCollection AddPlannerIntegration(this IServiceCollection services)
     {
+        services.AddSingleton<PlannerDataAccessGate>();
         services.AddSingleton<IPlannerSettingsStore, PlannerSettingsStore>();
         services.AddSingleton<PlannerDataLifecycle>();
         services.AddHostedService(provider => provider.GetRequiredService<PlannerDataLifecycle>());
@@ -76,7 +77,8 @@ public static class PlannerIntegration
                 await authorization.Failure.ExecuteAsync(http);
                 return;
             }
-            if (!http.RequestServices.GetRequiredService<PlannerDataLifecycle>().ReadyForWork)
+            var lifecycle = http.RequestServices.GetRequiredService<PlannerDataLifecycle>();
+            if (!lifecycle.ReadyForWork)
             {
                 await Results.Json(new { error = new { code = "planner_recovery", message = "Planner data cleanup is still in progress." } },
                     statusCode: StatusCodes.Status503ServiceUnavailable).ExecuteAsync(http);
@@ -91,9 +93,15 @@ public static class PlannerIntegration
 
             var state = http.RequestServices.GetRequiredService<MicrosoftAccountState>();
             using var binding = state.BindRequest(authorization.Lease!.Value);
+            using var plannerBinding = lifecycle.BindOperation();
+            http.Items[WidgetAuthorizationFilter.PlannerDataTicketKey] = lifecycle.CaptureTicket();
             http.Items[WidgetAuthorizationFilter.PreauthorizedLeaseKey] = authorization.Lease.Value;
             try { await next(http); }
-            finally { http.Items.Remove(WidgetAuthorizationFilter.PreauthorizedLeaseKey); }
+            finally
+            {
+                http.Items.Remove(WidgetAuthorizationFilter.PreauthorizedLeaseKey);
+                http.Items.Remove(WidgetAuthorizationFilter.PlannerDataTicketKey);
+            }
         }
         catch (OutlookException ex)
         {

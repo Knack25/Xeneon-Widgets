@@ -4,6 +4,8 @@ using System.Text.Json;
 using PlannerEdge.Helper.Auth;
 using PlannerEdge.Helper.Graph;
 using PlannerEdge.Helper.Outlook;
+using PlannerEdge.Helper.Planner;
+using Microsoft.Extensions.Caching.Memory;
 using MicrosoftWidgets.Helper.Tests;
 
 namespace PlannerEdge.Helper.Tests;
@@ -348,6 +350,41 @@ public sealed class GraphClientTests
         var secondLease = await state.GetAsync(default);
         IReadOnlyList<GraphTask> current;
         using (state.BindRequest(secondLease))
+            current = await client.GetTasksAsync("plan", default);
+
+        Assert.Equal(2, handler.FormatReads);
+        Assert.Equal("new-account-hint", Assert.Single(current).BucketOrderHint);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Late_bucket_format_result_is_not_published_after_planner_purge(bool successfulFormat)
+    {
+        var identities = new MicrosoftAccountStateTests.IdentityProvider(new MicrosoftAccountIdentity(
+            "home", "tenant", "client", "user@example.com"));
+        var state = new MicrosoftAccountState(identities, new OutlookMemoryStore());
+        var access = new PlannerDataAccessGate();
+        var lifecycle = new PlannerDataLifecycle(new MemoryCache(new MemoryCacheOptions()), access);
+        var handler = new DelayedFormatHandler(successfulFormat);
+        var client = new PlannerGraphClient(
+            new HttpClient(handler) { BaseAddress = new Uri("https://graph.microsoft.com/v1.0/") },
+            new StaticTokenProvider(), state, access);
+        var lease = await state.GetAsync(default);
+        Task<IReadOnlyList<GraphTask>> stale;
+        using (state.BindRequest(lease))
+        using (lifecycle.BindOperation())
+            stale = client.GetTasksAsync("plan", default);
+        await handler.FirstFormatStarted.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await lifecycle.PurgeAsync(default);
+        handler.ReleaseFirstFormat();
+        var error = await Assert.ThrowsAsync<OutlookException>(() => stale);
+        Assert.Equal("planner_data_changed", error.Code);
+
+        IReadOnlyList<GraphTask> current;
+        using (state.BindRequest(lease))
+        using (lifecycle.BindOperation())
             current = await client.GetTasksAsync("plan", default);
 
         Assert.Equal(2, handler.FormatReads);

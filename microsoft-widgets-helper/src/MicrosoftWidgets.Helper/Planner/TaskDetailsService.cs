@@ -9,6 +9,7 @@ public sealed class TaskDetailsService(IPlannerGraphClient graphClient, PlannerD
         : this(graphClient, new PlannerDataLifecycle(cache)) { }
     public async Task<TaskDetailsResponse> GetAsync(string taskId, CancellationToken cancellationToken)
     {
+        using var operation = lifecycle.BindOperation();
         var cached = await lifecycle.TryGetAsync<TaskDetailsResponse>("task-details", taskId, cancellationToken);
         if (cached.Found && cached.Value is not null) return cached.Value;
 

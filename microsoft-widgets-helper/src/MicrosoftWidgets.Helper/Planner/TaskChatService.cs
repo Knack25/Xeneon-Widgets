@@ -10,14 +10,22 @@ namespace PlannerEdge.Helper.Planner;
 public sealed class TaskChatService(
     IPlannerGraphClient graphClient,
     IPlannerSettingsStore settingsStore,
-    TaskDetailsService taskDetails)
+    TaskDetailsService taskDetails,
+    PlannerDataLifecycle lifecycle)
 {
     private const string PermissionMessage = "Enable task chat to read and post Planner comments.";
     private const string AttachmentPendingMessage =
         "Your comment was created, but Planner could not attach the conversation. Refresh task details before posting again.";
 
+    internal TaskChatService(IPlannerGraphClient graphClient, IPlannerSettingsStore settingsStore,
+        TaskDetailsService taskDetails) : this(graphClient, settingsStore, taskDetails,
+        new PlannerDataLifecycle(new Microsoft.Extensions.Caching.Memory.MemoryCache(
+            new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()))) { }
+
     public async Task<TaskChatResponse> GetAsync(string taskId, string? cursor, CancellationToken cancellationToken)
     {
+        using var operation = lifecycle.BindOperation();
+        var ticket = lifecycle.CaptureTicket();
         var context = await ResolveAsync(taskId, cancellationToken);
         if (string.IsNullOrWhiteSpace(context.Task.ConversationThreadId))
         {
@@ -26,7 +34,9 @@ public sealed class TaskChatService(
             try
             {
                 await graphClient.EnsureConversationAccessAsync(cancellationToken);
-                return new TaskChatResponse("available", []);
+                var response = new TaskChatResponse("available", []);
+                lifecycle.RequireCurrent(ticket);
+                return response;
             }
             catch (MsalUiRequiredException)
             {
@@ -37,7 +47,9 @@ public sealed class TaskChatService(
         var continuation = DecodeCursor(cursor, context.GroupId, context.Task.ConversationThreadId);
         try
         {
-            return await LoadAsync(context.GroupId, context.Task.ConversationThreadId, continuation, cancellationToken);
+            var response = await LoadAsync(context.GroupId, context.Task.ConversationThreadId, continuation, cancellationToken);
+            lifecycle.RequireCurrent(ticket);
+            return response;
         }
         catch (MsalUiRequiredException)
         {

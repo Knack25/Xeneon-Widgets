@@ -14,6 +14,8 @@ public sealed class BoardMemberService(IPlannerGraphClient graphClient, IPlanner
                 new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()))) { }
     public async Task<IReadOnlyList<GraphMember>> GetAsync(CancellationToken cancellationToken)
     {
+        using var operation = lifecycle.BindOperation();
+        var ticket = lifecycle.CaptureTicket();
         var settings = await settingsStore.LoadSettingsAsync(cancellationToken);
         if (string.IsNullOrWhiteSpace(settings.SelectedPlanId))
             throw new ArgumentException("Choose a board first.");
@@ -21,7 +23,12 @@ public sealed class BoardMemberService(IPlannerGraphClient graphClient, IPlanner
         var plan = plans.FirstOrDefault(value => value.Id == settings.SelectedPlanId);
         if (plan is null || !Guid.TryParse(plan.GroupId, out _))
             throw new BoardMembersUnavailableException("This board does not have a supported member list.");
-        try { return await graphClient.GetGroupMembersAsync(plan.GroupId, cancellationToken); }
+        try
+        {
+            var members = await graphClient.GetGroupMembersAsync(plan.GroupId, cancellationToken);
+            lifecycle.RequireCurrent(ticket);
+            return members;
+        }
         catch (MsalUiRequiredException)
         {
             throw new BoardMembersUnavailableException("Enable board members on the setup page to edit assignees.");
