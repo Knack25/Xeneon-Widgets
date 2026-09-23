@@ -476,6 +476,7 @@ public sealed class PlannerDataLifecycleTests
             TimeSpan.FromMinutes(2), default);
 
         await fixture.Account.InvalidateAsync(default);
+        await WaitUntilAsync(() => !fixture.Lifecycle.PurgeRequired);
 
         Assert.Null(await fixture.Settings.LoadCachedDisplayAsync(default));
         var settings = await fixture.Settings.LoadSettingsAsync(default);
