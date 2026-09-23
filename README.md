@@ -39,6 +39,6 @@ All previews use fictional demo data. Appearance settings are included in releas
 
 ## Build a release
 
-Install the .NET 10 SDK, Node.js, and Inno Setup 6. Run `npm ci` in `planner-edge-widget/widget`, then run `scripts/build-release.ps1` from the repository root. It runs tests and builds the installer, portable archive, widget package, guide, and checksums in a verified content-addressed directory under `dist/release-snapshots`. The exact current directory name is recorded in `dist/release-current.txt`.
+Install PowerShell 7, the .NET 10 SDK, Node.js, and Inno Setup 6. Run `npm ci` in `planner-edge-widget/widget`, then run `scripts/build-release.ps1` from the repository root. It runs tests and builds the installer, portable archive, widget package, guide, and checksums in a verified content-addressed directory under `dist/release-snapshots`. Resolve the current release through `pwsh scripts/resolve-release.ps1`; the command verifies the pointer, snapshot identity, checksums, and archive contents before returning the release path.
 
 Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) for repository changes.

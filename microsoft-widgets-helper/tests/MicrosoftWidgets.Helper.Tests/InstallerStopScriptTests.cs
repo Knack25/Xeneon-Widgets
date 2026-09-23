@@ -24,7 +24,7 @@ public sealed class InstallerStopScriptTests
         await pipe.StartAsync(CancellationToken.None);
         try
         {
-            var result = await RunStopScriptAsync(pipeName, mutexName, 3_000, 1_000, 1_000);
+            var result = await RunExactEncodedPayloadAsync(pipeName, mutexName, 3_000, 1_000, 1_000);
             Assert.Equal(0, result.ExitCode);
             await stopped.Task.WaitAsync(TimeSpan.FromSeconds(2));
         }
@@ -41,7 +41,7 @@ public sealed class InstallerStopScriptTests
         var mutexName = "Local\\MicrosoftWidgets.Helper.InstallerTests." + suffix;
         using var mutex = new Mutex(false, mutexName);
 
-        var result = await RunStopScriptAsync("missing-" + suffix, mutexName, 1_500, 150, 150);
+        var result = await RunExactEncodedPayloadAsync("missing-" + suffix, mutexName, 1_500, 150, 150);
 
         Assert.NotEqual(0, result.ExitCode);
     }
@@ -57,7 +57,7 @@ public sealed class InstallerStopScriptTests
             PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
         var serverTask = AckAsync(server);
 
-        var result = await RunStopScriptAsync(pipeName, mutexName, 2_000, 500, 250);
+        var result = await RunExactEncodedPayloadAsync(pipeName, mutexName, 2_000, 500, 250);
 
         await serverTask.WaitAsync(TimeSpan.FromSeconds(2));
         Assert.NotEqual(0, result.ExitCode);
@@ -76,7 +76,7 @@ public sealed class InstallerStopScriptTests
         var serverTask = HoldWithoutAckAsync(server, hold.Token);
         var started = Stopwatch.StartNew();
 
-        var result = await RunStopScriptAsync(pipeName, mutexName, 700, 500, 250);
+        var result = await RunExactEncodedPayloadAsync(pipeName, mutexName, 700, 500, 250);
 
         Assert.NotEqual(0, result.ExitCode);
         Assert.True(started.Elapsed < TimeSpan.FromSeconds(2), result.Output);
@@ -88,7 +88,7 @@ public sealed class InstallerStopScriptTests
     public async Task Missing_helper_and_mutex_is_already_stopped()
     {
         var suffix = Guid.NewGuid().ToString("N");
-        var result = await RunStopScriptAsync("missing-" + suffix, "Local\\missing-" + suffix, 1_500, 150, 150);
+        var result = await RunExactEncodedPayloadAsync("missing-" + suffix, "Local\\missing-" + suffix, 1_500, 150, 150);
         Assert.Equal(0, result.ExitCode);
     }
 
@@ -113,9 +113,11 @@ public sealed class InstallerStopScriptTests
         await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
     }
 
-    private static async Task<(int ExitCode, string Output)> RunStopScriptAsync(
+    private static async Task<(int ExitCode, string Output)> RunExactEncodedPayloadAsync(
         string pipeName, string mutexName, int overallTimeout, int connectTimeout, int mutexWait)
     {
+        var payload = Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(
+            await File.ReadAllTextAsync(ScriptPath)));
         var startInfo = new ProcessStartInfo
         {
             FileName = "powershell.exe",
@@ -127,18 +129,13 @@ public sealed class InstallerStopScriptTests
         startInfo.ArgumentList.Add("-NoLogo");
         startInfo.ArgumentList.Add("-NoProfile");
         startInfo.ArgumentList.Add("-NonInteractive");
-        startInfo.ArgumentList.Add("-File");
-        startInfo.ArgumentList.Add(ScriptPath);
-        startInfo.ArgumentList.Add("-PipeName");
-        startInfo.ArgumentList.Add(pipeName);
-        startInfo.ArgumentList.Add("-MutexName");
-        startInfo.ArgumentList.Add(mutexName);
-        startInfo.ArgumentList.Add("-OverallTimeoutMilliseconds");
-        startInfo.ArgumentList.Add(overallTimeout.ToString());
-        startInfo.ArgumentList.Add("-ConnectTimeoutMilliseconds");
-        startInfo.ArgumentList.Add(connectTimeout.ToString());
-        startInfo.ArgumentList.Add("-MutexWaitMilliseconds");
-        startInfo.ArgumentList.Add(mutexWait.ToString());
+        startInfo.ArgumentList.Add("-EncodedCommand");
+        startInfo.ArgumentList.Add(payload);
+        startInfo.Environment["MICROSOFT_WIDGETS_STOP_PIPE"] = pipeName;
+        startInfo.Environment["MICROSOFT_WIDGETS_STOP_MUTEX"] = mutexName;
+        startInfo.Environment["MICROSOFT_WIDGETS_STOP_OVERALL_TIMEOUT_MS"] = overallTimeout.ToString();
+        startInfo.Environment["MICROSOFT_WIDGETS_STOP_CONNECT_TIMEOUT_MS"] = connectTimeout.ToString();
+        startInfo.Environment["MICROSOFT_WIDGETS_STOP_MUTEX_WAIT_MS"] = mutexWait.ToString();
 
         using var process = Process.Start(startInfo)!;
         var stdout = process.StandardOutput.ReadToEndAsync();

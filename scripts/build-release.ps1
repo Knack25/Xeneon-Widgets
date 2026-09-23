@@ -66,6 +66,7 @@ $plannerSnapshot = $null
 $outlookSnapshot = $null
 $candidateSnapshot = $null
 $publishedSnapshot = $null
+$resolvedSnapshot = $null
 try {
     $innoManifestLease = New-InnoFileManifest -Snapshot $stageSnapshot -Output $innoFileManifest
     try {
@@ -92,7 +93,30 @@ try {
     Assert-ReleaseArchive -Archive $pendingPortable -Snapshot $stageSnapshot
     $portableLease = Publish-VerifiedReleaseArchive -Source $pendingPortable -Destination $portable -TrustedParent $releaseCandidate -Snapshot $stageSnapshot
     $lockedReleaseAssets.Add($portableLease.Stream)
-    $assets = @("MicrosoftWidgetsSetup-$releaseVersion.exe", "PlannerEdgeWidget-$widgetVersion.icuewidget", "OutlookEdgeWidget-$outlookVersion.icuewidget", "MicrosoftWidgetsHelper-$helperVersion-portable-win-x64.zip", 'INSTALL.md', 'OUTLOOK.md')
+    $baseAssets = @("MicrosoftWidgetsSetup-$releaseVersion.exe", "PlannerEdgeWidget-$widgetVersion.icuewidget", "OutlookEdgeWidget-$outlookVersion.icuewidget", "MicrosoftWidgetsHelper-$helperVersion-portable-win-x64.zip", 'INSTALL.md', 'OUTLOOK.md')
+    $archiveSnapshots = @{
+        (Split-Path -Leaf $widget) = $plannerSnapshot
+        (Split-Path -Leaf $outlookWidget) = $outlookSnapshot
+        (Split-Path -Leaf $portable) = $stageSnapshot
+    }
+    $describedFiles = foreach ($asset in $baseAssets) {
+        $assetPath = Join-Path $releaseCandidate $asset
+        $record = [ordered]@{
+            name = $asset
+            length = (Get-Item -LiteralPath $assetPath).Length
+            sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $assetPath).Hash.ToLowerInvariant()
+        }
+        if ($archiveSnapshots.ContainsKey($asset)) {
+            $record.archiveEntries = @($archiveSnapshots[$asset].Entries | Sort-Object -Property Name | ForEach-Object {
+                [ordered]@{ name = $_.Name; length = $_.Length; sha256 = $_.Hash }
+            })
+        }
+        [pscustomobject]$record
+    }
+    $releaseDescriptorPath = Join-Path $releaseCandidate 'RELEASE-MANIFEST.json'
+    [ordered]@{ schemaVersion = 1; files = @($describedFiles) } |
+        ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $releaseDescriptorPath -Encoding utf8
+    $assets = @($baseAssets) + 'RELEASE-MANIFEST.json'
     & $inventoryVerifier -Stage $releaseCandidate -Manifest (ConvertTo-Json -InputObject $assets -Compress)
     $checksums = foreach ($asset in $assets) {
         $hash = Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $releaseCandidate $asset)
@@ -129,10 +153,12 @@ try {
     }
 
     $publishedSnapshot = Publish-VerifiedReleaseSnapshot -Source $releaseCandidate -SnapshotRoot (Join-Path $distRoot 'release-snapshots') -CurrentPointer (Join-Path $distRoot 'release-current.txt') -TrustedParent $distRoot -Snapshot $candidateSnapshot -Verifier $verifyFinalRelease
-    Write-Host "Release snapshot: $($publishedSnapshot.Snapshot.Stage)"
+    $resolvedSnapshot = Resolve-VerifiedReleaseDescriptor -TrustedParent $distRoot
+    Write-Host "Release snapshot: $($resolvedSnapshot.Snapshot.Stage)"
     Write-Host "Current release pointer: $($publishedSnapshot.PointerPath) -> $($publishedSnapshot.SnapshotName)"
 } finally {
     foreach ($lockedAsset in $lockedReleaseAssets) { $lockedAsset.Dispose() }
+    if ($null -ne $resolvedSnapshot) { Close-VerifiedReleaseSnapshot $resolvedSnapshot }
     if ($null -ne $publishedSnapshot) { Close-VerifiedReleaseSnapshot $publishedSnapshot }
     if ($null -ne $candidateSnapshot) { Close-ReleaseSnapshot $candidateSnapshot }
     if ($null -ne $outlookSnapshot) { Close-ReleaseSnapshot $outlookSnapshot }

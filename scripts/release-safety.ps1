@@ -1,4 +1,5 @@
 Set-StrictMode -Version Latest
+if ($PSVersionTable.PSVersion.Major -lt 7) { throw 'Release tooling requires PowerShell 7 or later.' }
 
 function Test-ReleasePathWithin([string]$Candidate, [string]$Root, [switch]$AllowRoot) {
     $candidatePath = [IO.Path]::GetFullPath($Candidate).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
@@ -439,6 +440,187 @@ function Assert-CurrentReleasePointer([IO.Stream]$Stream, [string]$ExpectedName)
     $reader = [IO.StreamReader]::new($Stream, [Text.Encoding]::ASCII, $false, 1024, $true)
     try { $actual = $reader.ReadToEnd() } finally { $reader.Dispose(); $Stream.Position = 0 }
     if ($actual -ne $ExpectedName) { throw 'Current release pointer does not identify the verified snapshot.' }
+}
+
+function Resolve-VerifiedReleaseSnapshot(
+    [string]$SnapshotRoot,
+    [string]$CurrentPointer,
+    [string]$TrustedParent,
+    [string[]]$Manifest,
+    [scriptblock]$Verifier
+) {
+    $parentPath = [IO.Path]::GetFullPath($TrustedParent).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $snapshotRootPath = [IO.Path]::GetFullPath($SnapshotRoot).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $pointerPath = [IO.Path]::GetFullPath($CurrentPointer)
+    if ((Split-Path -Parent $snapshotRootPath) -ne $parentPath) { throw 'Release snapshot root must be a direct child of its trusted parent.' }
+    if ((Split-Path -Parent $pointerPath) -ne $parentPath) { throw 'Current release pointer must be a direct child of its trusted parent.' }
+    if (-not (Test-Path -LiteralPath $snapshotRootPath -PathType Container)) { throw 'Release snapshot root does not exist.' }
+    if (-not (Test-Path -LiteralPath $pointerPath -PathType Leaf)) { throw 'Current release pointer does not exist.' }
+    Assert-NotReparsePoint $parentPath
+    Assert-NotReparsePoint $snapshotRootPath
+    Assert-NotReparsePoint $pointerPath
+
+    $pointerStream = $null
+    $snapshot = $null
+    try {
+        $pointerStream = [IO.File]::Open($pointerPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        $reader = [IO.StreamReader]::new($pointerStream, [Text.Encoding]::ASCII, $false, 1024, $true)
+        try { $snapshotName = $reader.ReadToEnd() } finally { $reader.Dispose(); $pointerStream.Position = 0 }
+        if ($snapshotName -notmatch '^release-[0-9a-f]{64}$') { throw 'Current release pointer is invalid.' }
+
+        $snapshotPath = [IO.Path]::GetFullPath((Join-Path $snapshotRootPath $snapshotName))
+        if ((Split-Path -Parent $snapshotPath) -ne $snapshotRootPath) { throw 'Current release pointer escapes the snapshot root.' }
+        Assert-TreeHasNoReparsePoints $snapshotPath
+
+        $expected = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        $expectedDirectories = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        foreach ($name in $Manifest) {
+            Assert-NormalizedReleaseEntry $name
+            if (-not $expected.Add($name)) { throw "Duplicate release snapshot entry: $name" }
+            $segments = $name.Split('/')
+            for ($index = 1; $index -lt $segments.Count; $index++) {
+                [void]$expectedDirectories.Add(($segments[0..($index - 1)] -join '/'))
+            }
+        }
+        if ($expected.Count -eq 0) { throw 'Release snapshot manifest cannot be empty.' }
+        $found = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        $pending = [Collections.Generic.Stack[string]]::new()
+        $pending.Push($snapshotPath)
+        while ($pending.Count -gt 0) {
+            $directory = $pending.Pop()
+            foreach ($path in [IO.Directory]::EnumerateFileSystemEntries($directory)) {
+                $relative = [IO.Path]::GetRelativePath($snapshotPath, $path).Replace('\', '/')
+                $attributes = [IO.File]::GetAttributes($path)
+                if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Release entries cannot be links or reparse points: $relative" }
+                if (($attributes -band [IO.FileAttributes]::Directory) -ne 0) {
+                    if (-not $expectedDirectories.Contains($relative)) { throw "Unexpected release directory: $relative" }
+                    $pending.Push($path)
+                } else {
+                    Assert-NormalizedReleaseEntry $relative
+                    if (-not $expected.Contains($relative) -or -not $found.Add($relative)) { throw "Unexpected or duplicate release file: $relative" }
+                }
+            }
+        }
+        if ($found.Count -ne $expected.Count) { throw 'Published release inventory is incomplete.' }
+
+        $snapshot = Open-ReleaseSnapshot -Stage $snapshotPath -Manifest $Manifest
+        if ((Get-ReleaseSnapshotName $snapshot) -ne $snapshotName) { throw 'Activated release content does not match its content-addressed name.' }
+        Assert-CurrentReleasePointer -Stream $pointerStream -ExpectedName $snapshotName
+        if ($null -ne $Verifier) { & $Verifier $snapshot.Stage $snapshot }
+        Assert-ReleaseSnapshotUnchanged $snapshot
+        Assert-CurrentReleasePointer -Stream $pointerStream -ExpectedName $snapshotName
+        return [pscustomobject]@{ SnapshotName = $snapshotName; Snapshot = $snapshot; PointerStream = $pointerStream; PointerPath = $pointerPath }
+    } catch {
+        if ($null -ne $snapshot) { Close-ReleaseSnapshot $snapshot }
+        if ($null -ne $pointerStream) { $pointerStream.Dispose() }
+        throw
+    }
+}
+
+function Assert-DescribedReleaseArchive([IO.Stream]$Stream, [string]$DisplayName, [object[]]$ExpectedEntries) {
+    $expected = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+    $describedTotal = [long]0
+    foreach ($entry in @($ExpectedEntries)) {
+        $name = [string]$entry.name
+        Assert-NormalizedReleaseEntry $name
+        $length = [long]$entry.length
+        if ($entry.sha256 -notmatch '^[0-9a-f]{64}$' -or $length -lt 0 -or $length -gt 268435456) { throw "Archive descriptor is invalid: $DisplayName/$name" }
+        $describedTotal += $length
+        if ($describedTotal -gt 536870912) { throw "Archive descriptor exceeds the total size limit: $DisplayName" }
+        $expected.Add($name, $entry)
+    }
+    if ($expected.Count -eq 0) { throw "Archive descriptor is empty: $DisplayName" }
+
+    $found = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $Stream.Position = 0
+    $zip = [IO.Compression.ZipArchive]::new($Stream, [IO.Compression.ZipArchiveMode]::Read, $true)
+    try {
+        foreach ($entry in $zip.Entries) {
+            $name = $entry.FullName
+            Assert-NormalizedReleaseEntry $name
+            if ([string]::IsNullOrEmpty($entry.Name) -or -not $found.Add($name) -or -not $expected.ContainsKey($name)) {
+                throw "Archive inventory does not match its descriptor: $DisplayName/$name"
+            }
+            $attributeBits = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$entry.ExternalAttributes), 0)
+            if ((($attributeBits -shr 16) -band 0xF000) -eq 0xA000 -or (($attributeBits -band 0xFFFF) -band [uint32][IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Archive links are not allowed: $DisplayName/$name"
+            }
+            $described = $expected[$name]
+            if ($entry.Length -ne [long]$described.length) { throw "Archive entry length does not match: $DisplayName/$name" }
+            $entryStream = $entry.Open()
+            try { $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($entryStream)).ToLowerInvariant() }
+            finally { $entryStream.Dispose() }
+            if ($hash -ne [string]$described.sha256) { throw "Archive entry hash does not match: $DisplayName/$name" }
+        }
+    } finally {
+        $zip.Dispose()
+        $Stream.Position = 0
+    }
+    if ($found.Count -ne $expected.Count) { throw "Archive inventory is incomplete: $DisplayName" }
+}
+
+function Resolve-VerifiedReleaseDescriptor([string]$TrustedParent) {
+    $parentPath = [IO.Path]::GetFullPath($TrustedParent).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $snapshotRoot = Join-Path $parentPath 'release-snapshots'
+    $currentPointer = Join-Path $parentPath 'release-current.txt'
+    if (-not (Test-Path -LiteralPath $currentPointer -PathType Leaf)) { throw 'Current release pointer does not exist.' }
+    Assert-NotReparsePoint $currentPointer
+    $snapshotName = Get-Content -Raw -LiteralPath $currentPointer
+    if ($snapshotName -notmatch '^release-[0-9a-f]{64}$') { throw 'Current release pointer is invalid.' }
+    $snapshotPath = [IO.Path]::GetFullPath((Join-Path $snapshotRoot $snapshotName))
+    if ((Split-Path -Parent $snapshotPath) -ne [IO.Path]::GetFullPath($snapshotRoot).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)) {
+        throw 'Current release pointer escapes the snapshot root.'
+    }
+    $descriptorPath = Join-Path $snapshotPath 'RELEASE-MANIFEST.json'
+    if (-not (Test-Path -LiteralPath $descriptorPath -PathType Leaf)) { throw 'Release descriptor is missing.' }
+    Assert-NotReparsePoint $descriptorPath
+    try { $descriptor = Get-Content -Raw -LiteralPath $descriptorPath | ConvertFrom-Json }
+    catch { throw 'Release descriptor is not valid JSON.' }
+    if ([int]$descriptor.schemaVersion -ne 1) { throw 'Release descriptor schema is unsupported.' }
+    $describedFiles = @($descriptor.files)
+    if ($describedFiles.Count -eq 0) { throw 'Release descriptor contains no files.' }
+
+    $manifest = [Collections.Generic.List[string]]::new()
+    $describedNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($file in $describedFiles) {
+        $name = [string]$file.name
+        Assert-NormalizedReleaseEntry $name
+        if ($name -in @('RELEASE-MANIFEST.json', 'SHA256SUMS.txt') -or -not $describedNames.Add($name)) { throw "Release descriptor has an invalid file name: $name" }
+        if ($file.sha256 -notmatch '^[0-9a-f]{64}$' -or [long]$file.length -lt 0) { throw "Release descriptor entry is invalid: $name" }
+        $manifest.Add($name)
+    }
+    $manifest.Add('RELEASE-MANIFEST.json')
+    $manifest.Add('SHA256SUMS.txt')
+
+    $verifier = {
+        param($publishedPath, $published)
+        $byName = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+        foreach ($entry in $published.Entries) { $byName.Add($entry.Name, $entry) }
+        foreach ($file in $describedFiles) {
+            $entry = $byName[[string]$file.name]
+            if ($entry.Length -ne [long]$file.length -or $entry.Hash -ne [string]$file.sha256) { throw "Release file does not match its descriptor: $($file.name)" }
+            $archiveEntries = @()
+            if ($null -ne $file.PSObject.Properties['archiveEntries']) { $archiveEntries = @($file.archiveEntries) }
+            if ($entry.Name -match '\.(zip|icuewidget)$' -and $archiveEntries.Count -eq 0) { throw "Release archive has no internal descriptor: $($entry.Name)" }
+            if ($archiveEntries.Count -gt 0) { Assert-DescribedReleaseArchive -Stream $entry.Stream -DisplayName $entry.Name -ExpectedEntries $archiveEntries }
+        }
+
+        $checksumTargets = @($describedFiles | ForEach-Object { [string]$_.name }) + 'RELEASE-MANIFEST.json'
+        $checksumEntry = $byName['SHA256SUMS.txt']
+        $checksumEntry.Stream.Position = 0
+        $reader = [IO.StreamReader]::new($checksumEntry.Stream, [Text.Encoding]::ASCII, $true, 1024, $true)
+        try { $checksumLines = @($reader.ReadToEnd() -split "`r?`n" | Where-Object { $_ }) }
+        finally { $reader.Dispose(); $checksumEntry.Stream.Position = 0 }
+        if ($checksumLines.Count -ne $checksumTargets.Count) { throw 'Release checksum inventory is incomplete.' }
+        $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        foreach ($line in $checksumLines) {
+            if ($line -notmatch '^([0-9a-f]{64})  ([^/\\]+)$') { throw "Release checksum line is invalid: $line" }
+            $name = $Matches[2]
+            if ($name -notin $checksumTargets -or -not $seen.Add($name) -or $byName[$name].Hash -ne $Matches[1]) { throw "Release checksum does not match: $name" }
+        }
+    }
+
+    return Resolve-VerifiedReleaseSnapshot -SnapshotRoot $snapshotRoot -CurrentPointer $currentPointer -TrustedParent $parentPath -Manifest $manifest.ToArray() -Verifier $verifier
 }
 
 function Publish-VerifiedReleaseSnapshot(

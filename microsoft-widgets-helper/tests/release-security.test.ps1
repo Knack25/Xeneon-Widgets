@@ -6,6 +6,7 @@ $verifier = Join-Path $repositoryRoot 'scripts\verify-release-inventory.ps1'
 $releaseSafety = Join-Path $repositoryRoot 'scripts\release-safety.ps1'
 $installer = Join-Path $repositoryRoot 'microsoft-widgets-helper\installer\MicrosoftWidgets.iss'
 $stopScript = Join-Path $repositoryRoot 'microsoft-widgets-helper\installer\Stop-MicrosoftWidgetsHelper.ps1'
+$releaseResolver = Join-Path $repositoryRoot 'scripts\resolve-release.ps1'
 
 function Assert-True([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
@@ -31,6 +32,9 @@ Assert-True ($null -ne (Get-Command Close-InnoFileManifest -ErrorAction Silently
 Assert-True ($null -ne (Get-Command Publish-ReleaseDirectory -ErrorAction SilentlyContinue)) 'Atomic release-directory publisher is missing.'
 Assert-True ($null -ne (Get-Command Open-VerifiedReleaseDirectory -ErrorAction SilentlyContinue)) 'Verified release-directory opener is missing.'
 Assert-True ($null -ne (Get-Command Publish-VerifiedReleaseSnapshot -ErrorAction SilentlyContinue)) 'Verified content-addressed release publisher is missing.'
+Assert-True ($null -ne (Get-Command Resolve-VerifiedReleaseSnapshot -ErrorAction SilentlyContinue)) 'Verified release consumer resolver is missing.'
+Assert-True ($null -ne (Get-Command Resolve-VerifiedReleaseDescriptor -ErrorAction SilentlyContinue)) 'Descriptor-backed release resolver is missing.'
+Assert-True (Test-Path -LiteralPath $releaseResolver -PathType Leaf) 'Verified release resolver command is missing.'
 
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ("MicrosoftWidgetsReleaseSecurity-" + [Guid]::NewGuid().ToString('N'))
 $stage = Join-Path $testRoot 'stage'
@@ -225,9 +229,34 @@ try {
             Assert-True ($lease.SnapshotName -match '^release-[0-9a-f]{64}$') 'Published snapshots must use a content-addressed name.'
             Assert-True ((Get-Content -Raw -LiteralPath $currentPointer) -eq $lease.SnapshotName) 'The current pointer does not identify the exact verified snapshot.'
             Assert-True ($lease.Snapshot.Stage -eq (Join-Path $snapshotRoot $lease.SnapshotName)) 'The returned release path is not the activated content-addressed snapshot.'
+
+            $resolved = Resolve-VerifiedReleaseSnapshot -SnapshotRoot $snapshotRoot -CurrentPointer $currentPointer -TrustedParent $publishRoot -Manifest $releaseManifest
+            try {
+                Assert-True ($resolved.Snapshot.Stage -eq $lease.Snapshot.Stage) 'Resolver did not return the activated verified snapshot.'
+            } finally { Close-VerifiedReleaseSnapshot $resolved }
+
+            Assert-Fails { Set-Content -LiteralPath (Join-Path $lease.Snapshot.Stage 'INSTALL.md') -Value 'consumer-tamper' } 'The active build lease unexpectedly allowed snapshot tampering.'
+            $activeSnapshotPath = $lease.Snapshot.Stage
         } finally {
             Close-VerifiedReleaseSnapshot $lease
         }
+
+        $originalPointer = Get-Content -Raw -LiteralPath $currentPointer
+        Set-Content -NoNewline -LiteralPath $currentPointer -Value '..\\release-attacker'
+        Assert-Fails {
+            $bad = Resolve-VerifiedReleaseSnapshot -SnapshotRoot $snapshotRoot -CurrentPointer $currentPointer -TrustedParent $publishRoot -Manifest $releaseManifest
+            if ($null -ne $bad) { Close-VerifiedReleaseSnapshot $bad }
+        } 'Resolver must reject a pointer that escapes the snapshot root.'
+        Set-Content -NoNewline -LiteralPath $currentPointer -Value $originalPointer
+
+        $installPath = Join-Path $activeSnapshotPath 'INSTALL.md'
+        $originalInstall = Get-Content -Raw -LiteralPath $installPath
+        Set-Content -NoNewline -LiteralPath $installPath -Value 'consumer-tamper'
+        Assert-Fails {
+            $bad = Resolve-VerifiedReleaseSnapshot -SnapshotRoot $snapshotRoot -CurrentPointer $currentPointer -TrustedParent $publishRoot -Manifest $releaseManifest
+            if ($null -ne $bad) { Close-VerifiedReleaseSnapshot $bad }
+        } 'Resolver must reject a snapshot whose content-addressed identity no longer matches.'
+        Set-Content -NoNewline -LiteralPath $installPath -Value $originalInstall
 
         $previousPointer = Get-Content -Raw -LiteralPath $currentPointer
         $failedCandidate = New-ReleaseWorkspace -Parent $publishRoot -Prefix 'failed-candidate'
@@ -251,6 +280,56 @@ try {
     } finally {
         Close-ReleaseSnapshot $releaseSnapshot
     }
+
+    $consumerRoot = Join-Path $testRoot 'consumer-release'
+    $consumerSnapshots = Join-Path $consumerRoot 'release-snapshots'
+    New-Item -ItemType Directory -Path $consumerRoot, $consumerSnapshots | Out-Null
+    $consumerArchiveStage = New-ReleaseWorkspace -Parent $workspaceRoot -Prefix 'consumer-archive'
+    Set-Content -NoNewline -LiteralPath (Join-Path $consumerArchiveStage 'payload.txt') -Value 'payload'
+    $consumerArchiveSnapshot = Open-ReleaseSnapshot -Stage $consumerArchiveStage -Manifest @('payload.txt')
+    $consumerCandidate = New-ReleaseWorkspace -Parent $consumerRoot -Prefix 'consumer-candidate'
+    $consumerArchive = Join-Path $consumerCandidate 'package.zip'
+    [IO.Compression.ZipFile]::CreateFromDirectory($consumerArchiveStage, $consumerArchive)
+    Set-Content -NoNewline -LiteralPath (Join-Path $consumerCandidate 'INSTALL.md') -Value 'install'
+    $consumerFiles = @(
+        [ordered]@{
+            name = 'package.zip'
+            length = (Get-Item -LiteralPath $consumerArchive).Length
+            sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $consumerArchive).Hash.ToLowerInvariant()
+            archiveEntries = @($consumerArchiveSnapshot.Entries | ForEach-Object { [ordered]@{ name = $_.Name; length = $_.Length; sha256 = $_.Hash } })
+        },
+        [ordered]@{
+            name = 'INSTALL.md'
+            length = (Get-Item -LiteralPath (Join-Path $consumerCandidate 'INSTALL.md')).Length
+            sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $consumerCandidate 'INSTALL.md')).Hash.ToLowerInvariant()
+        }
+    )
+    [ordered]@{ schemaVersion = 1; files = $consumerFiles } | ConvertTo-Json -Depth 6 |
+        Set-Content -LiteralPath (Join-Path $consumerCandidate 'RELEASE-MANIFEST.json') -Encoding utf8
+    $consumerChecksumTargets = @('package.zip', 'INSTALL.md', 'RELEASE-MANIFEST.json')
+    @($consumerChecksumTargets | ForEach-Object {
+        "$(Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $consumerCandidate $_) | Select-Object -ExpandProperty Hash)  $_".ToLowerInvariant()
+    }) | Set-Content -LiteralPath (Join-Path $consumerCandidate 'SHA256SUMS.txt') -Encoding ascii
+    $consumerManifest = @($consumerChecksumTargets) + 'SHA256SUMS.txt'
+    $consumerCandidateSnapshot = Open-ReleaseSnapshot -Stage $consumerCandidate -Manifest $consumerManifest -AllowDeleteShare
+    $consumerLease = Publish-VerifiedReleaseSnapshot -Source $consumerCandidate -SnapshotRoot $consumerSnapshots -CurrentPointer (Join-Path $consumerRoot 'release-current.txt') -TrustedParent $consumerRoot -Snapshot $consumerCandidateSnapshot
+    $consumerSnapshotName = $consumerLease.SnapshotName
+    Close-VerifiedReleaseSnapshot $consumerLease
+    Close-ReleaseSnapshot $consumerCandidateSnapshot
+    Close-ReleaseSnapshot $consumerArchiveSnapshot
+
+    $resolvedPath = & $releaseResolver -ReleaseRoot $consumerRoot
+    Assert-True ($resolvedPath -eq (Join-Path $consumerSnapshots $consumerSnapshotName)) 'Standalone resolver did not return the verified active snapshot.'
+    $unexpectedDirectory = Join-Path $resolvedPath 'unexpected-empty-directory'
+    New-Item -ItemType Directory -Path $unexpectedDirectory | Out-Null
+    Assert-Fails { & $releaseResolver -ReleaseRoot $consumerRoot } 'Standalone resolver must reject unexpected empty directories.'
+    Remove-Item -LiteralPath $unexpectedDirectory -Force
+    Set-Content -NoNewline -LiteralPath (Join-Path $consumerRoot 'release-current.txt') -Value '..\\escape'
+    Assert-Fails { & $releaseResolver -ReleaseRoot $consumerRoot } 'Standalone resolver must reject pointer tampering.'
+    Set-Content -NoNewline -LiteralPath (Join-Path $consumerRoot 'release-current.txt') -Value $consumerSnapshotName
+    $consumerInstall = Join-Path $consumerSnapshots "$consumerSnapshotName\INSTALL.md"
+    Set-Content -NoNewline -LiteralPath $consumerInstall -Value 'tampered'
+    Assert-Fails { & $releaseResolver -ReleaseRoot $consumerRoot } 'Standalone resolver must reject snapshot tampering.'
 } finally {
     if (Test-Path -LiteralPath $testRoot) {
         $resolvedTemp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
@@ -280,6 +359,8 @@ foreach ($releaseScriptPath in $releaseScriptPaths) {
 }
 $buildReleaseSource = Get-Content -Raw -LiteralPath (Join-Path $repositoryRoot 'scripts\build-release.ps1')
 Assert-True ($buildReleaseSource -match 'npm\s+ci\s+--ignore-scripts') 'Release builds must verify locked npm dependencies with npm ci.'
+Assert-True ($buildReleaseSource -match 'Resolve-VerifiedReleaseDescriptor') 'Release output must be consumed through the verified descriptor resolver after activation.'
+Assert-True ($buildReleaseSource -match 'RELEASE-MANIFEST\.json') 'Release builds must publish an archive-content descriptor.'
 Assert-True ($installerSource -match 'PrivilegesRequired=lowest') 'Installer must remain per-user.'
 Assert-True ($installerSource -match 'function\s+InitializeSetup') 'Installer must reject elevated setup before installation.'
 Assert-True ($installerSource -match 'function\s+InitializeUninstall') 'Installer must reject elevated uninstall.'
@@ -288,6 +369,7 @@ Assert-True ($installerSource -match 'Run as administrator') 'Elevation error mu
 Assert-True ($stopScriptSource -match 'Knack25\.MicrosoftWidgetsHelper\.Control\.v1') 'Installer must stop the helper through the same-user control pipe.'
 Assert-True ($stopScriptSource -match 'Local\\Knack25\.MicrosoftWidgetsHelper') 'Installer must check the helper instance mutex before accepting a connection timeout.'
 Assert-True ($stopScriptSource -notmatch '(ReadTimeout|WriteTimeout)\s*=') 'NamedPipeClientStream timeout properties cannot provide a real bounded shutdown.'
+Assert-True ($stopScriptSource -notmatch '\$PSCommandPath') 'Encoded installer shutdown must not depend on a script pathname.'
 Assert-True ($installerSource -match '\{#StopScriptEncodedCommand\}') 'Installer must execute the reviewed shutdown logic from immutable encoded bytes.'
 Assert-True ($installerSource -match '-EncodedCommand') 'Installer must not reopen shutdown logic from a script pathname.'
 Assert-True ($installerSource -notmatch '\{app\}\\Stop-MicrosoftWidgetsHelper\.ps1|InstalledScript|TrustedSource') 'Installer must have no installed-script fallback.'
