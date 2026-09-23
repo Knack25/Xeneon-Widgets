@@ -154,7 +154,7 @@ function Open-VerifiedReleaseDirectory([string]$Path, $Snapshot, [scriptblock]$V
         if (-not $found.Add($relative)) { throw "Duplicate published release file: $relative" }
     }
     if ($found.Count -ne $expected.Count) { throw 'Published release inventory is incomplete.' }
-    $lease = Open-ReleaseSnapshot -Stage $Path -Manifest $manifest -AllowDeleteShare
+    $lease = Open-ReleaseSnapshot -Stage $Path -Manifest $manifest
     try {
         Assert-ReleaseSnapshotsMatch -Expected $Snapshot -Actual $lease
         if ($null -ne $Verifier) { & $Verifier $lease.Stage $lease }
@@ -422,4 +422,136 @@ function Publish-ReleaseDirectory(
     } finally {
         if ($null -ne $handoffLease) { Close-ReleaseSnapshot $handoffLease }
     }
+}
+
+function Get-ReleaseSnapshotName($Snapshot) {
+    $builder = [Text.StringBuilder]::new()
+    foreach ($entry in @($Snapshot.Entries | Sort-Object -Property Name)) {
+        [void]$builder.Append($entry.Name).Append("`0").Append($entry.Length).Append("`0").Append($entry.Hash).Append("`n")
+    }
+    $digest = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($builder.ToString()))).ToLowerInvariant()
+    return "release-$digest"
+}
+
+function Assert-CurrentReleasePointer([IO.Stream]$Stream, [string]$ExpectedName) {
+    if ($null -eq $Stream -or -not $Stream.CanRead -or -not $Stream.CanSeek) { throw 'Current release pointer must be readable and seekable.' }
+    $Stream.Position = 0
+    $reader = [IO.StreamReader]::new($Stream, [Text.Encoding]::ASCII, $false, 1024, $true)
+    try { $actual = $reader.ReadToEnd() } finally { $reader.Dispose(); $Stream.Position = 0 }
+    if ($actual -ne $ExpectedName) { throw 'Current release pointer does not identify the verified snapshot.' }
+}
+
+function Publish-VerifiedReleaseSnapshot(
+    [string]$Source,
+    [string]$SnapshotRoot,
+    [string]$CurrentPointer,
+    [string]$TrustedParent,
+    $Snapshot,
+    [scriptblock]$Verifier,
+    [scriptblock]$AfterSnapshotValidationProbe,
+    [scriptblock]$AfterActivationProbe,
+    [scriptblock]$AfterFinalValidationProbe
+) {
+    $sourcePath = [IO.Path]::GetFullPath($Source).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $parentPath = [IO.Path]::GetFullPath($TrustedParent).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $snapshotRootPath = [IO.Path]::GetFullPath($SnapshotRoot).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $pointerPath = [IO.Path]::GetFullPath($CurrentPointer)
+    if ((Split-Path -Parent $snapshotRootPath) -ne $parentPath) { throw 'Release snapshot root must be a direct child of its trusted parent.' }
+    if ((Split-Path -Parent $pointerPath) -ne $parentPath) { throw 'Current release pointer must be a direct child of its trusted parent.' }
+    if (-not (Test-ReleasePathWithin $sourcePath $parentPath)) { throw 'Release candidate must stay inside its trusted parent.' }
+    Assert-NotReparsePoint $parentPath
+    if (-not (Test-Path -LiteralPath $snapshotRootPath)) { [void][IO.Directory]::CreateDirectory($snapshotRootPath) }
+    Assert-NotReparsePoint $snapshotRootPath
+
+    Assert-ReleaseSnapshotUnchanged $Snapshot
+    $expectedSnapshot = [pscustomobject]@{
+        Stage = $Snapshot.Stage
+        Entries = @($Snapshot.Entries | ForEach-Object { [pscustomobject]@{ Name = $_.Name; Length = $_.Length; Hash = $_.Hash } })
+        Handles = @()
+    }
+    $snapshotName = Get-ReleaseSnapshotName $expectedSnapshot
+    $snapshotPath = Join-Path $snapshotRootPath $snapshotName
+    Close-ReleaseSnapshot $Snapshot
+
+    $publishedSnapshot = $null
+    $pointerStream = $null
+    $movablePointer = $null
+    $pointerTemp = $null
+    $createdSnapshot = $false
+    $activated = $false
+    $previousPointer = $null
+    if (Test-Path -LiteralPath $pointerPath -PathType Leaf) {
+        Assert-NotReparsePoint $pointerPath
+        $previousPointer = Get-Content -Raw -LiteralPath $pointerPath
+    }
+    try {
+        if (-not (Test-Path -LiteralPath $snapshotPath)) {
+            [IO.Directory]::Move($sourcePath, $snapshotPath)
+            $createdSnapshot = $true
+        }
+        $publishedSnapshot = Open-VerifiedReleaseDirectory -Path $snapshotPath -Snapshot $expectedSnapshot -Verifier $Verifier
+        if ($null -ne $AfterSnapshotValidationProbe) { & $AfterSnapshotValidationProbe $snapshotPath $pointerPath }
+
+        do {
+            $random = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(16)).ToLowerInvariant()
+            $pointerTemp = Join-Path $parentPath "release-current-$random.tmp"
+        } while (Test-Path -LiteralPath $pointerTemp)
+        $pointerBytes = [Text.Encoding]::ASCII.GetBytes($snapshotName)
+        $pointerWriter = [IO.File]::Open($pointerTemp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try {
+            $pointerWriter.Write($pointerBytes, 0, $pointerBytes.Length)
+            $pointerWriter.Flush($true)
+        } finally { $pointerWriter.Dispose() }
+        $movablePointer = [IO.File]::Open($pointerTemp, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::Read -bor [IO.FileShare]::Delete))
+        Assert-CurrentReleasePointer -Stream $movablePointer -ExpectedName $snapshotName
+        [IO.File]::Move($pointerTemp, $pointerPath, $true)
+        $activated = $true
+        $pointerTemp = $null
+        $pointerStream = [IO.File]::Open($pointerPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        Assert-CurrentReleasePointer -Stream $pointerStream -ExpectedName $snapshotName
+        $movablePointer.Dispose()
+        $movablePointer = $null
+
+        if ($null -ne $AfterActivationProbe) { & $AfterActivationProbe $snapshotPath $pointerPath }
+        Assert-ReleaseSnapshotUnchanged $publishedSnapshot
+        if ($null -ne $Verifier) { & $Verifier $publishedSnapshot.Stage $publishedSnapshot }
+        Assert-CurrentReleasePointer -Stream $pointerStream -ExpectedName $snapshotName
+        if ($null -ne $AfterFinalValidationProbe) { & $AfterFinalValidationProbe $snapshotPath $pointerPath }
+        Assert-ReleaseSnapshotUnchanged $publishedSnapshot
+        Assert-CurrentReleasePointer -Stream $pointerStream -ExpectedName $snapshotName
+
+        return [pscustomobject]@{ SnapshotName = $snapshotName; Snapshot = $publishedSnapshot; PointerStream = $pointerStream; PointerPath = $pointerPath }
+    } catch {
+        $failure = $_
+        if ($null -ne $pointerStream) { $pointerStream.Dispose() }
+        if ($null -ne $movablePointer) { $movablePointer.Dispose() }
+        if ($null -ne $publishedSnapshot) { Close-ReleaseSnapshot $publishedSnapshot }
+        if ($null -ne $pointerTemp -and (Test-Path -LiteralPath $pointerTemp)) { Remove-Item -LiteralPath $pointerTemp -Force }
+        if ($activated) {
+            if ($null -ne $previousPointer) {
+                do {
+                    $random = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(16)).ToLowerInvariant()
+                    $restoreTemp = Join-Path $parentPath "release-restore-$random.tmp"
+                } while (Test-Path -LiteralPath $restoreTemp)
+                [IO.File]::WriteAllText($restoreTemp, $previousPointer, [Text.Encoding]::ASCII)
+                [IO.File]::Move($restoreTemp, $pointerPath, $true)
+            } elseif ((Test-Path -LiteralPath $pointerPath -PathType Leaf) -and ((Get-Content -Raw -LiteralPath $pointerPath) -eq $snapshotName)) {
+                Remove-Item -LiteralPath $pointerPath -Force
+            }
+        }
+        if ($createdSnapshot -and (Test-Path -LiteralPath $snapshotPath -PathType Container)) {
+            do {
+                $random = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(16)).ToLowerInvariant()
+                $quarantine = Join-Path $snapshotRootPath "release-quarantine-$random"
+            } while (Test-Path -LiteralPath $quarantine)
+            [IO.Directory]::Move($snapshotPath, $quarantine)
+        }
+        throw $failure
+    }
+}
+
+function Close-VerifiedReleaseSnapshot($Lease) {
+    if ($null -eq $Lease) { return }
+    if ($null -ne $Lease.PointerStream) { $Lease.PointerStream.Dispose() }
+    if ($null -ne $Lease.Snapshot) { Close-ReleaseSnapshot $Lease.Snapshot }
 }

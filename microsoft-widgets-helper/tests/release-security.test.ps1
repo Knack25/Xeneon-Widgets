@@ -30,6 +30,7 @@ Assert-True ($null -ne (Get-Command New-InnoFileManifest -ErrorAction SilentlyCo
 Assert-True ($null -ne (Get-Command Close-InnoFileManifest -ErrorAction SilentlyContinue)) 'Exact Inno file manifest lease cleanup is missing.'
 Assert-True ($null -ne (Get-Command Publish-ReleaseDirectory -ErrorAction SilentlyContinue)) 'Atomic release-directory publisher is missing.'
 Assert-True ($null -ne (Get-Command Open-VerifiedReleaseDirectory -ErrorAction SilentlyContinue)) 'Verified release-directory opener is missing.'
+Assert-True ($null -ne (Get-Command Publish-VerifiedReleaseSnapshot -ErrorAction SilentlyContinue)) 'Verified content-addressed release publisher is missing.'
 
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ("MicrosoftWidgetsReleaseSecurity-" + [Guid]::NewGuid().ToString('N'))
 $stage = Join-Path $testRoot 'stage'
@@ -178,9 +179,10 @@ try {
     Assert-True ($quarantines.Count -eq 1) 'Prior release directory was not preserved in a unique quarantine.'
     Assert-True (Test-Path -LiteralPath (Join-Path $quarantines[0].FullName 'old.txt')) 'Prior release content was recursively deleted instead of quarantined.'
 
-    $stableRelease = Join-Path $publishRoot 'verified-release'
-    New-Item -ItemType Directory -Path $stableRelease | Out-Null
-    Set-Content -NoNewline -LiteralPath (Join-Path $stableRelease 'previous.txt') -Value 'previous-release'
+    $snapshotRoot = Join-Path $publishRoot 'release-snapshots'
+    New-Item -ItemType Directory -Path $snapshotRoot | Out-Null
+    $currentPointer = Join-Path $publishRoot 'release-current.txt'
+    Set-Content -NoNewline -LiteralPath $currentPointer -Value 'release-previous'
     $releaseCandidate = New-ReleaseWorkspace -Parent $publishRoot -Prefix 'verified-candidate'
     $releaseManifest = @(
         'MicrosoftWidgetsSetup-test.exe',
@@ -196,17 +198,56 @@ try {
     }
     $releaseSnapshot = Open-ReleaseSnapshot -Stage $releaseCandidate -Manifest $releaseManifest -AllowDeleteShare
     try {
-        Assert-Fails {
-            $lease = Publish-ReleaseDirectory -Source $releaseCandidate -Destination $stableRelease -TrustedParent $publishRoot -Snapshot $releaseSnapshot -AfterHandoffMoveProbe {
-                param($handoff)
-                $target = Join-Path $handoff 'INSTALL.md'
-                Remove-Item -LiteralPath $target -Force
-                Set-Content -NoNewline -LiteralPath $target -Value 'handoff-tamper'
+        $preActivationDenied = $false
+        $postActivationDenied = $false
+        $postValidationDenied = $false
+        $lease = Publish-VerifiedReleaseSnapshot -Source $releaseCandidate -SnapshotRoot $snapshotRoot -CurrentPointer $currentPointer -TrustedParent $publishRoot -Snapshot $releaseSnapshot `
+            -AfterSnapshotValidationProbe {
+                param($snapshotPath, $pointerPath)
+                try { Set-Content -LiteralPath (Join-Path $snapshotPath 'INSTALL.md') -Value 'pre-activation-tamper' }
+                catch { $script:preActivationDenied = $true }
+                Assert-True ((Get-Content -Raw -LiteralPath $pointerPath) -eq 'release-previous') 'An unverified snapshot became current before activation.'
+            } `
+            -AfterActivationProbe {
+                param($snapshotPath, $pointerPath)
+                try { Set-Content -LiteralPath $pointerPath -Value 'release-attacker' }
+                catch { $script:postActivationDenied = $true }
+            } `
+            -AfterFinalValidationProbe {
+                param($snapshotPath, $pointerPath)
+                try { Remove-Item -LiteralPath (Join-Path $snapshotPath 'INSTALL.md') -Force }
+                catch { $script:postValidationDenied = $true }
             }
-            if ($null -ne $lease) { Close-ReleaseSnapshot $lease }
-        } 'A release changed during handoff must fail closed.'
-        Assert-True (Test-Path -LiteralPath (Join-Path $stableRelease 'previous.txt')) 'A failed handoff must not replace the current release.'
-        Assert-True (-not (Test-Path -LiteralPath (Join-Path $stableRelease 'INSTALL.md'))) 'A tampered handoff was exposed as the current release.'
+        try {
+            Assert-True $preActivationDenied 'A validated snapshot must deny tampering before activation.'
+            Assert-True $postActivationDenied 'The activated pointer must deny tampering before final validation.'
+            Assert-True $postValidationDenied 'The published snapshot must remain locked after final validation while the build runs.'
+            Assert-True ($lease.SnapshotName -match '^release-[0-9a-f]{64}$') 'Published snapshots must use a content-addressed name.'
+            Assert-True ((Get-Content -Raw -LiteralPath $currentPointer) -eq $lease.SnapshotName) 'The current pointer does not identify the exact verified snapshot.'
+            Assert-True ($lease.Snapshot.Stage -eq (Join-Path $snapshotRoot $lease.SnapshotName)) 'The returned release path is not the activated content-addressed snapshot.'
+        } finally {
+            Close-VerifiedReleaseSnapshot $lease
+        }
+
+        $previousPointer = Get-Content -Raw -LiteralPath $currentPointer
+        $failedCandidate = New-ReleaseWorkspace -Parent $publishRoot -Prefix 'failed-candidate'
+        foreach ($name in $releaseManifest) {
+            Set-Content -NoNewline -LiteralPath (Join-Path $failedCandidate $name) -Value "replacement:$name"
+        }
+        $failedSnapshot = Open-ReleaseSnapshot -Stage $failedCandidate -Manifest $releaseManifest -AllowDeleteShare
+        try {
+            Assert-Fails {
+                $failedLease = Publish-VerifiedReleaseSnapshot -Source $failedCandidate -SnapshotRoot $snapshotRoot -CurrentPointer $currentPointer -TrustedParent $publishRoot -Snapshot $failedSnapshot -AfterActivationProbe {
+                    throw 'simulated final-validation race'
+                }
+                if ($null -ne $failedLease) { Close-VerifiedReleaseSnapshot $failedLease }
+            } 'A failure after activation must fail the release build.'
+            Assert-True ((Get-Content -Raw -LiteralPath $currentPointer) -eq $previousPointer) 'A failed activation did not restore the prior verified pointer.'
+            $failedQuarantines = @(Get-ChildItem -LiteralPath $snapshotRoot -Directory -Filter 'release-quarantine-*')
+            Assert-True ($failedQuarantines.Count -eq 1) 'A snapshot that failed after activation was not quarantined.'
+        } finally {
+            Close-ReleaseSnapshot $failedSnapshot
+        }
     } finally {
         Close-ReleaseSnapshot $releaseSnapshot
     }
@@ -247,19 +288,18 @@ Assert-True ($installerSource -match 'Run as administrator') 'Elevation error mu
 Assert-True ($stopScriptSource -match 'Knack25\.MicrosoftWidgetsHelper\.Control\.v1') 'Installer must stop the helper through the same-user control pipe.'
 Assert-True ($stopScriptSource -match 'Local\\Knack25\.MicrosoftWidgetsHelper') 'Installer must check the helper instance mutex before accepting a connection timeout.'
 Assert-True ($stopScriptSource -notmatch '(ReadTimeout|WriteTimeout)\s*=') 'NamedPipeClientStream timeout properties cannot provide a real bounded shutdown.'
-Assert-True ($installerSource -match 'Stop-MicrosoftWidgetsHelper\.ps1') 'Installer must use the tested bounded helper-stop script.'
-Assert-True ($installerSource -notmatch "StopScript\s*:=\s*ExpandConstant\('\{app\}\\Stop-MicrosoftWidgetsHelper\.ps1'\)") 'Installer must never execute the mutable installed stop script.'
-Assert-True ($installerSource -match 'ExtractTemporaryFile\(''Stop-MicrosoftWidgetsHelper\.ps1''\)') 'Installer must extract the trusted embedded stop script for every stop attempt.'
-Assert-True ($installerSource -match '\{tmp\}\\\{#StopScriptTempName\}\.ps1') 'Installer must copy the embedded stop script to a private unpredictable temporary path.'
-Assert-True ($buildReleaseSource -match 'RandomNumberGenerator[^\r\n]*StopScriptTempName|stopScriptTempName\s*=\s*\[Convert\]::ToHexString\(\[Security\.Cryptography\.RandomNumberGenerator\]') 'Release build must generate an unpredictable stop-script name.'
+Assert-True ($installerSource -match '\{#StopScriptEncodedCommand\}') 'Installer must execute the reviewed shutdown logic from immutable encoded bytes.'
+Assert-True ($installerSource -match '-EncodedCommand') 'Installer must not reopen shutdown logic from a script pathname.'
+Assert-True ($installerSource -notmatch '\{app\}\\Stop-MicrosoftWidgetsHelper\.ps1|InstalledScript|TrustedSource') 'Installer must have no installed-script fallback.'
+Assert-True ($installerSource -notmatch 'ExtractTemporaryFile|CopyFile\(|GetSHA256OfFile|StopScriptTempName|-File\s') 'Installer shutdown must not use a mutable extracted or copied script file.'
+Assert-True ($buildReleaseSource -match 'StopScriptEncodedCommand') 'Release build must compile the reviewed shutdown logic into an encoded command.'
 $tamperedInstalledScript = Join-Path $testRoot 'installed\Stop-MicrosoftWidgetsHelper.ps1'
 New-Item -ItemType Directory -Path (Split-Path -Parent $tamperedInstalledScript) -Force | Out-Null
 Set-Content -NoNewline -LiteralPath $tamperedInstalledScript -Value 'exit 0 # malicious installed bypass'
 $trustedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $stopScript).Hash
 $tamperedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $tamperedInstalledScript).Hash
 Assert-True ($trustedHash -ne $tamperedHash) 'Tampered installed stop-script fixture unexpectedly matches the trusted script.'
-Assert-True ($installerSource -match "GetSHA256OfFile\(InstalledScript\)[^\r\n]*'\{#StopScriptHash\}'") 'Installed shutdown tooling must be rejected unless it matches the embedded compile-time digest.'
-Assert-True ($installerSource -match 'CopyFile\(TrustedSource, StopScript') 'Only a verified source may be copied to the random executable path.'
+Assert-True ($installerSource -notmatch [regex]::Escape($tamperedInstalledScript)) 'Installer source unexpectedly references the tampered installed-script fixture.'
 Remove-Item -LiteralPath $testRoot -Recurse -Force
 Assert-True ($installerSource -match '#include\s+HelperManifest') 'Installer must consume an exact generated file manifest.'
 Assert-True ($installerSource -notmatch 'Source:\s*"\{#HelperSource\}\\\*"') 'Installer must not recursively enumerate the helper stage.'

@@ -24,7 +24,13 @@ public sealed class HelperPackageTests
         Assert.Contains("function InitializeUninstall", source, StringComparison.Ordinal);
         Assert.Contains("IsAdmin", source, StringComparison.Ordinal);
         Assert.Contains("Run as administrator", source, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("Stop-MicrosoftWidgetsHelper.ps1", source, StringComparison.Ordinal);
+        Assert.Contains("StopScriptEncodedCommand", source, StringComparison.Ordinal);
+        Assert.Contains("-EncodedCommand", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("InstalledScript", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("ExtractTemporaryFile", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("CopyFile(", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("GetSHA256OfFile", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("-File ", source, StringComparison.Ordinal);
         Assert.Contains("Knack25.MicrosoftWidgetsHelper.Control.v1", stopScript, StringComparison.Ordinal);
         Assert.Contains("Local\\Knack25.MicrosoftWidgetsHelper", stopScript, StringComparison.Ordinal);
         Assert.DoesNotContain("ReadTimeout", stopScript, StringComparison.Ordinal);

@@ -58,8 +58,8 @@ Copy-Item -LiteralPath (Join-Path $helperRoot 'installer\Stop-MicrosoftWidgetsHe
 $installerStageManifest = @($HelperPublishManifest) + @('widgets/PlannerEdgeWidget.icuewidget', 'widgets/OutlookEdgeWidget.icuewidget', 'INSTALL.md', 'OUTLOOK.md', 'Stop-MicrosoftWidgetsHelper.ps1')
 & $inventoryVerifier -Stage $stage -Manifest (ConvertTo-Json -InputObject $installerStageManifest -Compress)
 $stageSnapshot = Open-ReleaseSnapshot -Stage $stage -Manifest $installerStageManifest
-$stopScriptHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $stage 'Stop-MicrosoftWidgetsHelper.ps1')).Hash.ToLowerInvariant()
-$stopScriptTempName = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(16)).ToLowerInvariant()
+$stopScriptText = Get-Content -Raw -LiteralPath (Join-Path $stage 'Stop-MicrosoftWidgetsHelper.ps1')
+$stopScriptEncodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($stopScriptText))
 $innoFileManifest = Join-Path $helperWorkspace 'helper-files.iss'
 $lockedReleaseAssets = [Collections.Generic.List[IDisposable]]::new()
 $plannerSnapshot = $null
@@ -67,9 +67,9 @@ $outlookSnapshot = $null
 $candidateSnapshot = $null
 $publishedSnapshot = $null
 try {
-    $innoManifestLease = New-InnoFileManifest -Snapshot $stageSnapshot -Output $innoFileManifest -TemporaryEntries @('Stop-MicrosoftWidgetsHelper.ps1')
+    $innoManifestLease = New-InnoFileManifest -Snapshot $stageSnapshot -Output $innoFileManifest
     try {
-        & $InnoCompiler "/DReleaseVersion=$releaseVersion" "/DHelperManifest=$($innoManifestLease.Path)" "/DStopScriptHash=$stopScriptHash" "/DStopScriptTempName=$stopScriptTempName" "/DReleaseOutput=$releaseCandidate" (Join-Path $helperRoot 'installer\MicrosoftWidgets.iss')
+        & $InnoCompiler "/DReleaseVersion=$releaseVersion" "/DHelperManifest=$($innoManifestLease.Path)" "/DStopScriptEncodedCommand=$stopScriptEncodedCommand" "/DReleaseOutput=$releaseCandidate" (Join-Path $helperRoot 'installer\MicrosoftWidgets.iss')
         if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed.' }
     } finally {
         Close-InnoFileManifest $innoManifestLease
@@ -128,11 +128,12 @@ try {
         }
     }
 
-    $publishedSnapshot = Publish-ReleaseDirectory -Source $releaseCandidate -Destination (Join-Path $distRoot 'release') -TrustedParent $distRoot -Snapshot $candidateSnapshot -Verifier $verifyFinalRelease
-    Write-Host "Release files: $($publishedSnapshot.Stage)"
+    $publishedSnapshot = Publish-VerifiedReleaseSnapshot -Source $releaseCandidate -SnapshotRoot (Join-Path $distRoot 'release-snapshots') -CurrentPointer (Join-Path $distRoot 'release-current.txt') -TrustedParent $distRoot -Snapshot $candidateSnapshot -Verifier $verifyFinalRelease
+    Write-Host "Release snapshot: $($publishedSnapshot.Snapshot.Stage)"
+    Write-Host "Current release pointer: $($publishedSnapshot.PointerPath) -> $($publishedSnapshot.SnapshotName)"
 } finally {
     foreach ($lockedAsset in $lockedReleaseAssets) { $lockedAsset.Dispose() }
-    if ($null -ne $publishedSnapshot) { Close-ReleaseSnapshot $publishedSnapshot }
+    if ($null -ne $publishedSnapshot) { Close-VerifiedReleaseSnapshot $publishedSnapshot }
     if ($null -ne $candidateSnapshot) { Close-ReleaseSnapshot $candidateSnapshot }
     if ($null -ne $outlookSnapshot) { Close-ReleaseSnapshot $outlookSnapshot }
     if ($null -ne $plannerSnapshot) { Close-ReleaseSnapshot $plannerSnapshot }
