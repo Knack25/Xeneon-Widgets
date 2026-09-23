@@ -156,4 +156,3 @@ Run the complete helper, Planner widget, Outlook widget, setup-page, installer, 
 6. Run a focused re-audit, update the audit report with remediation status, and prepare but do not publish a release until explicitly requested.
 
 Use Conventional Commits for each independently verified slice. No security control is considered complete until its negative tests and the full relevant regression suite pass.
-
