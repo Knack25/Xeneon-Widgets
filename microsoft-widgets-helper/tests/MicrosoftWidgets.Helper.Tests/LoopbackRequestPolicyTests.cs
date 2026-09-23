@@ -10,6 +10,7 @@ public sealed class LoopbackRequestPolicyTests
     [InlineData("localhost:8787", true)]
     [InlineData("LOCALHOST:8787", true)]
     [InlineData("127.0.0.1:8787", true)]
+    [InlineData("127.0.0.2:8787", false)]
     [InlineData("[::1]:8787", true)]
     [InlineData("attacker.invalid:8787", false)]
     [InlineData("localhost:9999", false)]

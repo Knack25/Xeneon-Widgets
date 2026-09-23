@@ -10,6 +10,22 @@ namespace PlannerEdge.Helper.Tests;
 
 public sealed class UpdateTests
 {
+    [Fact]
+    public void Configured_helper_port_drives_setup_tray_and_update_recovery_addresses()
+    {
+        var address = new HelperAddress(9123);
+        var setupUrl = HelperHost.CreateSetupUrl(new LocalAccessService(TimeProvider.System), address);
+        var updateArguments = new[]
+        {
+            "--apply-update", "installer.exe", "helper.exe", "sha256", "0.4.0", "9123"
+        };
+
+        Assert.StartsWith("http://localhost:9123/#access=", setupUrl, StringComparison.Ordinal);
+        Assert.Contains("http://localhost:9123", address.RecoveryMessage, StringComparison.Ordinal);
+        Assert.Equal(new Uri("http://localhost:9123/health"),
+            UpdateInstaller.GetRecoveryHealthUri(updateArguments));
+    }
+
     private static string Release(string tag = "v0.4.0", bool prerelease = false, string? digest = null) => JsonSerializer.Serialize(new
     {
         tag_name = tag, draft = false, prerelease, body = "Changes",
@@ -179,7 +195,7 @@ public sealed class UpdateTests
         try
         {
             await UpdateInstaller.ApplyAsync(
-                ["--apply-update", Path.Combine(folder, "missing-installer.exe"), target, "unused-hash", "0.4.0"],
+                ["--apply-update", Path.Combine(folder, "missing-installer.exe"), target, "unused-hash", "0.4.0", "8787"],
                 resultPath,
                 "Local\\MicrosoftWidgetsTest-" + Guid.NewGuid(),
                 pipeName);

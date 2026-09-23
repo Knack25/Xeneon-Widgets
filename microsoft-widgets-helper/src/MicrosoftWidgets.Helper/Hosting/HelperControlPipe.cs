@@ -29,6 +29,14 @@ public sealed class HelperControlPipe : BackgroundService
     {
     }
 
+    [ActivatorUtilitiesConstructor]
+    public HelperControlPipe(LocalAccessService access, ILogger<HelperControlPipe> logger,
+        IHostApplicationLifetime lifetime, HelperAddress address)
+        : this(access, logger, ControlPipeName, owner => HelperHost.OpenSetup(owner, address),
+            lifetime.StopApplication)
+    {
+    }
+
     internal HelperControlPipe(LocalAccessService access, ILogger<HelperControlPipe> logger, string pipeName,
         Action<LocalAccessService> openSetup)
         : this(access, logger, pipeName, openSetup, () => { })

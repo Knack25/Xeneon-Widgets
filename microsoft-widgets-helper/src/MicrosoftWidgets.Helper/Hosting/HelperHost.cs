@@ -14,15 +14,22 @@ public static class HelperHost
     public static string PlannerPackagePath => Path.Combine(AppContext.BaseDirectory, "widgets", "PlannerEdgeWidget.icuewidget");
     public static string OutlookPackagePath => Path.Combine(AppContext.BaseDirectory, "widgets", "OutlookEdgeWidget.icuewidget");
 
-    public static void OpenSetup(LocalAccessService access) => Open(CreateSetupUrl(access));
-    public static void OpenUpdates(LocalAccessService access) => Open(CreateSetupUrl(access, "updates"));
+    public static void OpenSetup(LocalAccessService access) =>
+        OpenSetup(access, new HelperAddress(HelperAddress.DefaultPort));
+    public static void OpenSetup(LocalAccessService access, HelperAddress address) =>
+        Open(CreateSetupUrl(access, address));
+    public static void OpenUpdates(LocalAccessService access, HelperAddress address) =>
+        Open(CreateSetupUrl(access, address, "updates"));
 
     public static string CreateSetupUrl(LocalAccessService access, string? section = null)
+        => CreateSetupUrl(access, new HelperAddress(HelperAddress.DefaultPort), section);
+
+    public static string CreateSetupUrl(LocalAccessService access, HelperAddress address, string? section = null)
     {
         var bootstrap = access.CreateBootstrap();
         var fragment = $"access={Uri.EscapeDataString(bootstrap.Token)}";
         if (!string.IsNullOrWhiteSpace(section)) fragment += $"&section={Uri.EscapeDataString(section)}";
-        return "http://localhost:8787/#" + fragment;
+        return address.BaseUri + "#" + fragment;
     }
 
     public static void MapHelperHostManagement(this IEndpointRouteBuilder routes)

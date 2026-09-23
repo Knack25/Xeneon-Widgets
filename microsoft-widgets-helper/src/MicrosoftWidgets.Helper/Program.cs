@@ -39,8 +39,10 @@ var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 });
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
-var helperPort = builder.Configuration.GetValue<int>("HelperPort", 8787);
+var helperPort = builder.Configuration.GetValue<int>("HelperPort", HelperAddress.DefaultPort);
+var helperAddress = new HelperAddress(helperPort);
 builder.WebHost.UseUrls($"http://localhost:{helperPort}");
+builder.Services.AddSingleton(helperAddress);
 builder.Services.Configure<AzureAdOptions>(builder.Configuration.GetSection("AzureAd"));
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<LocalAccessService>();
@@ -145,7 +147,7 @@ app.MapOutlookIntegration();
 await app.StartAsync();
 if (OperatingSystem.IsWindows() && !args.Contains("--no-browser"))
 {
-    try { HelperHost.OpenSetup(app.Services.GetRequiredService<LocalAccessService>()); }
+    try { HelperHost.OpenSetup(app.Services.GetRequiredService<LocalAccessService>(), helperAddress); }
     catch (Exception error) { app.Logger.LogWarning(error, "Could not open setup page automatically."); }
 }
 await app.WaitForShutdownAsync();

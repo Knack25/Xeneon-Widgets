@@ -6,8 +6,10 @@ using PlannerEdge.Helper.Updates;
 
 namespace PlannerEdge.Helper.Hosting;
 
-public sealed class TrayService(UpdateService updates, LocalAccessService access, IHostApplicationLifetime lifetime, ILogger<TrayService> logger) : IHostedService
+public sealed class TrayService(UpdateService updates, LocalAccessService access, IHostApplicationLifetime lifetime,
+    ILogger<TrayService> logger, HelperAddress? configuredAddress = null) : IHostedService
 {
+    private readonly HelperAddress address = configuredAddress ?? new HelperAddress(HelperAddress.DefaultPort);
     private readonly TaskCompletionSource ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource stopped = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private Control? dispatcher;
@@ -54,12 +56,14 @@ public sealed class TrayService(UpdateService updates, LocalAccessService access
                 ContextMenuStrip = menu,
                 Visible = true
             };
-            var commands = new TrayCommands(() => HelperHost.OpenSetup(access), () => HelperHost.OpenUpdates(access), updates.CheckAsync, lifetime.StopApplication);
+            var commands = new TrayCommands(() => HelperHost.OpenSetup(access, address),
+                () => HelperHost.OpenUpdates(access, address), updates.CheckAsync, lifetime.StopApplication);
             void Report(Exception error)
             {
                 logger.LogWarning(error, "Tray action failed");
                 if (!lifetime.ApplicationStopping.IsCancellationRequested)
-                    tray.ShowBalloonTip(5000, "Microsoft Widgets Helper", "Unable to complete the action. Open http://localhost:8787 in your browser.", ToolTipIcon.Warning);
+                    tray.ShowBalloonTip(5000, "Microsoft Widgets Helper", address.RecoveryMessage,
+                        ToolTipIcon.Warning);
             }
             void OpenSetup()
             {

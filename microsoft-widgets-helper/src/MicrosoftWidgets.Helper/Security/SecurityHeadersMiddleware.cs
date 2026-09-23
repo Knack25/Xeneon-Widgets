@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
+using PlannerEdge.Helper.Hosting;
 
 namespace PlannerEdge.Helper.Security;
 
@@ -57,7 +58,7 @@ public static class HelperSecurityBoundaryExtensions
 {
     public static void UseHelperSecurityBoundary(this WebApplication app)
     {
-        var expectedPort = app.Configuration.GetValue<int>("HelperPort", 8787);
+        var expectedPort = app.Configuration.GetValue<int>("HelperPort", HelperAddress.DefaultPort);
         app.UseMiddleware<SecurityHeadersMiddleware>(expectedPort);
     }
 }
