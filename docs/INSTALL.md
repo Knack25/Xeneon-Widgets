@@ -8,7 +8,7 @@
 4. Leave **Open Microsoft Widgets setup** selected on the final page.
 5. Connect your work account and select a Planner board. Existing saved sign-in and board settings are preserved when upgrading on the same Windows account.
 6. In setup, click **Download Planner widget**. In iCUE, choose **XENEON EDGE > Widgets > +**, import that `.icuewidget` file, and add Planner Edge to your display. Allow `localhost:8787` if requested.
-7. After upgrading from an earlier release, pair each installed Planner and Outlook widget once. The widget displays a short code; open setup from the helper icon, confirm the requesting widget, and approve the matching code. This one-time step replaces older anonymous or username-bound local access.
+7. After upgrading from an earlier release, pair each installed Planner and Outlook widget once. The widget displays a short code; open setup from the helper icon, go to the matching Planner or Outlook tab, and approve the matching code. This one-time step replaces older anonymous or username-bound local access.
 
 The installer includes the .NET runtime. You do not need PowerShell, Node.js, or a separate .NET installation.
 

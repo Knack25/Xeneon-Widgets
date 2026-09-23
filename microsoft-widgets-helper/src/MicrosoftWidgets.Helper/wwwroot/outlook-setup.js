@@ -23,7 +23,7 @@
     return result;
   }
 
-  function row(text, action, label) {
+  function row(text, action, label, feedback = message) {
     const item = document.createElement('li');
     const name = document.createElement('span');
     name.textContent = text;
@@ -34,7 +34,7 @@
       button.textContent = label;
       button.addEventListener('click', async () => {
         button.disabled = true;
-        try { await action(); } catch (error) { message.textContent = error.message; }
+        try { await action(); } catch (error) { feedback.textContent = error.message; }
         finally { button.disabled = false; }
       });
       item.append(button);
@@ -47,18 +47,22 @@
 
   async function loadPairings() {
     const [requests, paired] = await Promise.all([pairingRequest(), pairingRequest('/paired')]);
-    $('#outlook-pairings').replaceChildren(...requests.map(pair => row(
-      `${scopeLabel(pair)} - ${pair.code} - ${pair.instanceId}`, async () => {
-        if (!confirm(`Approve ${scopeLabel(pair)} widget ${pair.instanceId}? Confirm code ${pair.code} matches the code on your display.`)) return;
-        await pairingRequest(`/${encodeURIComponent(pair.id)}/approve`, 'POST', {});
+    for (const scope of ['planner', 'outlook']) {
+      const feedback = scope === 'planner' ? $('#message') : message;
+      const pending = requests.filter(pair => pair.scope === scope);
+      $(`#${scope}-pairings`).replaceChildren(...pending.map(pair => row(
+        `${scopeLabel(pair)} - ${pair.code} - ${pair.instanceId}`, async () => {
+          if (!confirm(`Approve ${scopeLabel(pair)} widget ${pair.instanceId}? Confirm code ${pair.code} matches the code on your display.`)) return;
+          await pairingRequest(`/${encodeURIComponent(pair.id)}/approve`, 'POST', {});
+          await loadPairings();
+        }, 'Approve', feedback)));
+      $(`#${scope}-pairing-empty`).hidden = pending.length > 0;
+      $(`#${scope}-paired`).replaceChildren(...paired.filter(pair => pair.scope === scope).map(pair => row(`${scopeLabel(pair)} - ${pair.instanceId}`, async () => {
+        if (!confirm(`Disconnect ${scopeLabel(pair)} widget ${pair.instanceId}?`)) return;
+        await pairingRequest('/revoke', 'POST', { credentialId: pair.credentialId });
         await loadPairings();
-      }, 'Approve')));
-    $('#outlook-pairing-empty').hidden = requests.length > 0;
-    $('#outlook-paired').replaceChildren(...paired.map(pair => row(`${scopeLabel(pair)} - ${pair.instanceId}`, async () => {
-      if (!confirm(`Disconnect ${scopeLabel(pair)} widget ${pair.instanceId}?`)) return;
-      await pairingRequest('/revoke', 'POST', { credentialId: pair.credentialId });
-      await loadPairings();
-    }, 'Disconnect')));
+      }, 'Disconnect', feedback)));
+    }
   }
 
   async function loadCalendars() {

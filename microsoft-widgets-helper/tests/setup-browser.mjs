@@ -138,6 +138,9 @@ try {
   await page.goto(`http://127.0.0.1:${server.address().port}/#updates`);
   assert.equal(await page.locator('#updates').isVisible(), true,'Tray update link opens Settings');
   await page.getByRole('link', {name:'Planner',exact:true}).click();
+  await page.locator('#planner-pairings').getByText('123456').waitFor();
+  assert.equal(await page.locator('#planner-pairings').getByText('654321').count(), 0);
+  await page.screenshot({ path: path.join(output, 'planner-1280.png'), fullPage: true });
   await page.getByRole('button', { name: 'Assignee names enabled', exact: true }).waitFor();
   assert.equal(await page.locator('#enable-names').isDisabled(), true);
   assert.equal(await page.locator('#enable-members').isDisabled(), true);
@@ -152,6 +155,8 @@ try {
   assert.equal(calls.some(c => c.pathname === '/downloads/planner' && c.headers['x-microsoft-widgets-owner'] === ownerSession), true);
   assert.deepEqual(await page.evaluate(() => window.__objectUrls), { created: 1, revoked: 1 });
   await page.getByRole('link', {name:'Outlook',exact:true}).click();
+  await page.locator('#outlook-pairings').getByText('654321').waitFor();
+  assert.equal(await page.locator('#outlook-pairings').getByText('123456').count(), 0);
   await page.getByRole('button', { name: 'Connect Outlook', exact: true }).click();
   await page.locator('#outlook-status').filter({hasText:'Outlook is connected.'}).waitFor();
   assert.equal(await page.locator('#outlook-connect').isDisabled(), true);
@@ -167,6 +172,12 @@ try {
   assert.deepEqual(await page.evaluate(() => window.__objectUrls), { created: 2, revoked: 2 });
   for (const [width, height] of [[1280, 900], [390, 844]]) {
     await page.setViewportSize({ width, height });
+    if (width === 390) {
+      await page.getByRole('link', {name:'Planner',exact:true}).click();
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+      await page.screenshot({ path: path.join(output, 'planner-390.png'), fullPage: true });
+      await page.getByRole('link', {name:'Outlook',exact:true}).click();
+    }
     await page.locator('#outlook').scrollIntoViewIfNeeded();
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
     await page.screenshot({ path: path.join(output, `${width}.png`), fullPage: true });
@@ -178,7 +189,8 @@ try {
     assert.equal(await page.locator('#client-id').isVisible(), true);
     await page.getByText('Application configuration', {exact:true}).click();
     await page.getByRole('link', {name:'Overview',exact:true}).click();
-    assert.match(await page.locator('#overview-approvals').textContent(), /awaiting approval/);
+    assert.match(await page.locator('#overview-planner-approvals').textContent(), /1 widget connection awaiting approval/);
+    assert.match(await page.locator('#overview-outlook-approvals').textContent(), /1 widget connection awaiting approval/);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
     await page.screenshot({ path: path.join(output, `overview-${width}.png`), fullPage: true });
     await page.getByRole('link', {name:'Outlook',exact:true}).click();
