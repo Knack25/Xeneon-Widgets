@@ -28,12 +28,30 @@ Baseline audit: [2026-09-21-audit.md](2026-09-21-audit.md), audited at `46770b1`
 | Setup framing, response caching, and sensitive response policy | Remediated | security-boundary header tests across setup, API, and widget preview responses | `4fa44dd` |
 | Routine security and dependency automation absent | Remediated | root verification contract, Windows security workflow, Dependabot, NuGet/npm audit, tracked-history scanner | `9a93bf7`, `54dbe38` |
 
+## Final whole-branch fixes
+
+The final review remained open until the following regressions and the complete verification gate passed on 2026-09-23. These statuses describe repository behavior only; they do not replace the pending external checks below.
+
+| Review item | Source status | Permanent regression evidence | Implementation commit |
+| --- | --- | --- | --- |
+| I-1 production board-selection/account lock inversion | Remediated | `PlannerOperationLockTests.Production_settings_store_and_member_publication_use_account_lifecycle_selection_order` for capture and change | `89971df` |
+| I-2 inherited nested account work escaped the outer gate | Remediated | `PlannerOperationLockTests.Child_that_enters_before_parent_completion_cannot_outlive_the_account_gate` | `89971df` |
+| I-3 response backpressure held account/lifecycle gates | Remediated | `AccountBoundResultTests` blocked-client Planner and Outlook tests plus the 4 MiB cap; owning suites 101/101 | `7c1a09e` |
+| I-4 hostile bootstrap input reached identity work without bounded throttling | Remediated | `OwnerBootstrapEndpointTests.Invalid_bootstrap_flood_is_throttled_without_identity_work_or_starving_a_valid_exchange`; owning suites 70/70 | `4e15f5f` |
+| M-1 Host policy accepted IPv4 loopback aliases | Remediated | `LoopbackRequestPolicyTests` accepts only `localhost`, `127.0.0.1`, and `::1` forms and rejects `127.0.0.2` | `0d220db` |
+| M-2 recovery paths ignored configured helper port | Remediated | `UpdateTests.Configured_helper_port_drives_setup_tray_and_update_recovery_addresses` at port 9123; owning suites 43/43 | `0d220db` |
+| M-3 final remediation evidence preceded final fixes | Remediated in this appendix | final statuses were recorded only after the focused, full, audit, secret-scan, and clean-release gates passed | this documentation commit |
+| M-4 authoritative-range whitespace failure | Remediated | `git diff --check 46770b1..HEAD` passes | `38e85b9` |
+
 ## Operational status
 
-- Automated verification covers the helper .NET suite; Planner and Outlook widget suites; setup-browser, Outlook setup, helper API, and update UI tests; release-security checks; fail-closed dependency audits; and tracked-history secret-pattern scanning. Both npm roots fail on every low-or-higher advisory (`audit-level=low`), while NuGet restore promotes NU1901-NU1904 advisory warnings to errors and queries direct and transitive packages.
+- `scripts/verify.ps1` passed on 2026-09-23: helper .NET 1525/1525, helper JavaScript 16/16, Planner 100/100, and Outlook 29/29 (1670 enumerated tests), plus desktop/mobile setup-browser and release-security checks. Both npm audits reported zero vulnerabilities; NuGet direct and transitive package queries reported no vulnerable packages. Both npm roots fail on every low-or-higher advisory (`audit-level=low`), while NuGet restore promotes NU1901-NU1904 advisory warnings to errors.
+- `scripts/scan-secrets.ps1` passed the working-tree scan and all 136 tracked revisions. This is a pattern scan, not a claim that external providers or repository hosting found no secrets.
+- `scripts/build-release.ps1` completed from randomized clean staging without publishing or installing. It verified Planner and Outlook archives (9 and 8 entries), both 83-entry helper archives, and an exact eight-file release snapshot at `release-85ec79bd4b14956f7d0f8645291514b20e6ad1783a3b739143faff8bc250bdf6`.
 - The release consumer accepts exactly eight top-level files: one versioned installer, Planner widget, Outlook widget, portable helper archive, `INSTALL.md`, `OUTLOOK.md`, `RELEASE-MANIFEST.json`, and `SHA256SUMS.txt`. Only the three expected archives may describe internal contents.
-- Manual installed-app verification is pending. This worktree does not safely prove tray-opened setup, native Planner and Outlook pairing in iCUE, elevated setup/uninstall refusal, or post-upgrade re-pairing without interacting with installed applications or a real Microsoft account.
-- Hosted GitHub controls, maintainer MFA, tenant policy, and published binary provenance remain outside this repository re-audit.
+- Manual installed-app verification is pending. This worktree does not safely prove tray-opened setup, native Planner and Outlook pairing in iCUE, elevated setup/uninstall refusal, named-pipe ACL behavior in the installed environment, post-upgrade re-pairing, or real iCUE behavior without changing installed applications.
+- Real Microsoft tenant, account-transition, and Graph behavior remain pending because verification deliberately used test doubles and did not access a real account or tenant.
+- Hosted CI has not run for these commits. Hosted GitHub controls, maintainer MFA, tenant policy, and published binary provenance remain outside this repository re-audit.
 
 ## Deferred residual risk
 
