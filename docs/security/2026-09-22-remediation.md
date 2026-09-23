@@ -26,11 +26,11 @@ Baseline audit: [2026-09-21-audit.md](2026-09-21-audit.md), audited at `46770b1`
 | Details and completion bypassed selected-board scope | Remediated | `TaskDetailsServiceTests.GetAsync_RejectsTaskOutsideSelectedPlanBeforeReadingDetails`, `TaskCompletionServiceTests.CompleteAsync_RejectsTaskOutsideSelectedPlanBeforeMutation` | `422dd1f`, `d47bc59` |
 | Planner pagination trusted unsafe continuation links | Remediated | hostile host/path, loop, page-limit, record-limit, and redirect tests in `GraphClientTests` | `422dd1f` |
 | Setup framing, response caching, and sensitive response policy | Remediated | security-boundary header tests across setup, API, and widget preview responses | `4fa44dd` |
-| Routine security and dependency automation absent | Remediated | root verification contract, Windows security workflow, Dependabot, NuGet/npm audit, tracked-history scanner | `9a93bf7` |
+| Routine security and dependency automation absent | Remediated | root verification contract, Windows security workflow, Dependabot, NuGet/npm audit, tracked-history scanner | `9a93bf7`, `54dbe38` |
 
 ## Operational status
 
-- Automated verification covers the helper .NET suite; Planner and Outlook widget suites; setup-browser, Outlook setup, helper API, and update UI tests; release-security checks; fail-closed dependency audits; and tracked-history secret-pattern scanning. Both npm roots fail on any known advisory (`audit-level=low`), while NuGet restore promotes NU1901-NU1904 advisory warnings to errors and queries direct and transitive packages.
+- Automated verification covers the helper .NET suite; Planner and Outlook widget suites; setup-browser, Outlook setup, helper API, and update UI tests; release-security checks; fail-closed dependency audits; and tracked-history secret-pattern scanning. Both npm roots fail on every low-or-higher advisory (`audit-level=low`), while NuGet restore promotes NU1901-NU1904 advisory warnings to errors and queries direct and transitive packages.
 - The release consumer accepts exactly eight top-level files: one versioned installer, Planner widget, Outlook widget, portable helper archive, `INSTALL.md`, `OUTLOOK.md`, `RELEASE-MANIFEST.json`, and `SHA256SUMS.txt`. Only the three expected archives may describe internal contents.
 - Manual installed-app verification is pending. This worktree does not safely prove tray-opened setup, native Planner and Outlook pairing in iCUE, elevated setup/uninstall refusal, or post-upgrade re-pairing without interacting with installed applications or a real Microsoft account.
 - Hosted GitHub controls, maintainer MFA, tenant policy, and published binary provenance remain outside this repository re-audit.

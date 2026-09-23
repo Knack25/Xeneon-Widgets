@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 
-# Policy: fail on every npm advisory, including low severity.
+# Policy: fail on every low-or-higher npm advisory.
 Push-Location (Join-Path $repositoryRoot 'planner-edge-widget\widget')
 try {
     npm audit --audit-level=low
