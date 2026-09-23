@@ -26,7 +26,7 @@ Baseline audit: [2026-09-21-audit.md](2026-09-21-audit.md), audited at `46770b1`
 | Details and completion bypassed selected-board scope | Remediated | `TaskDetailsServiceTests.GetAsync_RejectsTaskOutsideSelectedPlanBeforeReadingDetails`, `TaskCompletionServiceTests.CompleteAsync_RejectsTaskOutsideSelectedPlanBeforeMutation` | `422dd1f`, `d47bc59` |
 | Planner pagination trusted unsafe continuation links | Remediated | hostile host/path, loop, page-limit, record-limit, and redirect tests in `GraphClientTests` | `422dd1f` |
 | Setup framing, response caching, and sensitive response policy | Remediated | security-boundary header tests across setup, API, and widget preview responses | `4fa44dd` |
-| Routine security and dependency automation absent | Remediated | root verification contract, Windows security workflow, Dependabot, NuGet/npm audit, tracked-history scanner | Task 11 automation commit |
+| Routine security and dependency automation absent | Remediated | root verification contract, Windows security workflow, Dependabot, NuGet/npm audit, tracked-history scanner | `9a93bf7` |
 
 ## Operational status
 
