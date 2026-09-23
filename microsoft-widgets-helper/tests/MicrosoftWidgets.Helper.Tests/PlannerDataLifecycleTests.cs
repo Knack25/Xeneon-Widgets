@@ -127,6 +127,48 @@ public sealed class PlannerDataLifecycleTests
     }
 
     [Fact]
+    public async Task New_purge_after_cleanup_cannot_be_cleared_by_older_generation()
+    {
+        var json = new FaultingPlannerJsonStore();
+        var account = new MicrosoftAccountState(new MutableIdentity(), json);
+        await account.GetAsync(default);
+        var settings = new PlannerSettingsStore(json, account,
+            new FakeTimeProvider(DateTimeOffset.Parse("2026-09-22T12:00:00Z")));
+        await settings.ClearPurgeRequiredAsync(default);
+        var finalizationReached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFinalization = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finalizationCalls = 0;
+        var lifecycle = new PlannerDataLifecycle(account, settings,
+            new MemoryCache(new MemoryCacheOptions()), new PlannerDataAccessGate(), async cancellationToken =>
+            {
+                if (Interlocked.Increment(ref finalizationCalls) != 1) return;
+                finalizationReached.TrySetResult();
+                await releaseFinalization.Task.WaitAsync(cancellationToken);
+            });
+        await lifecycle.StartAsync(default);
+        await settings.SaveSettingsAsync(new SettingsDto("first-plan", "First", true), default);
+
+        await account.InvalidateAsync(default);
+        await finalizationReached.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await settings.SaveSettingsAsync(new SettingsDto("second-plan", "Second", true), default);
+        json.DeleteFailuresRemaining = 1;
+
+        await account.InvalidateAsync(default);
+
+        Assert.True(lifecycle.PurgeRequired);
+        Assert.True(await settings.IsPurgeRequiredAsync(default));
+        Assert.True(json.Contains("settings"));
+
+        releaseFinalization.TrySetResult();
+        await WaitUntilAsync(() => !lifecycle.PurgeRequired && !json.Contains("settings"));
+
+        Assert.True(json.DeleteAttempts >= 5);
+        Assert.True(await settings.IsPurgeRequiredAsync(default));
+        await lifecycle.StopAsync(default);
+        Assert.False(await settings.IsPurgeRequiredAsync(default));
+    }
+
+    [Fact]
     public async Task Board_load_started_before_purge_cannot_publish_after_purge()
     {
         await using var fixture = await Fixture.CreateAsync();

@@ -14,8 +14,10 @@ public sealed class PlannerDataLifecycle : IHostedService
     private readonly ConcurrentDictionary<string, byte> memoryKeys = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim purgeGate = new(1, 1);
     private readonly PlannerPurgeRetryWorker purgeWorker;
+    private readonly Func<CancellationToken, Task>? beforePurgeFinalization;
+    private readonly object purgeStateSync = new();
     private long purgeVersion;
-    private int purgeRequired;
+    private bool purgeRequired;
     private int started;
 
     [ActivatorUtilitiesConstructor]
@@ -32,6 +34,14 @@ public sealed class PlannerDataLifecycle : IHostedService
 
     internal PlannerDataLifecycle(MicrosoftAccountState accountState, IPlannerSettingsStore settingsStore,
         IMemoryCache cache) : this(accountState, settingsStore, cache, new PlannerDataAccessGate()) { }
+
+    internal PlannerDataLifecycle(MicrosoftAccountState accountState, IPlannerSettingsStore settingsStore,
+        IMemoryCache cache, PlannerDataAccessGate accessGate,
+        Func<CancellationToken, Task> beforePurgeFinalization)
+        : this(accountState, settingsStore, cache, accessGate)
+    {
+        this.beforePurgeFinalization = beforePurgeFinalization;
+    }
 
     internal PlannerDataLifecycle(IMemoryCache cache) : this(cache, new PlannerDataAccessGate()) { }
 
@@ -147,7 +157,13 @@ public sealed class PlannerDataLifecycle : IHostedService
         await RetryPendingPurgeAsync(cancellationToken);
     }
 
-    public bool PurgeRequired => Volatile.Read(ref purgeRequired) != 0;
+    public bool PurgeRequired
+    {
+        get
+        {
+            lock (purgeStateSync) return purgeRequired;
+        }
+    }
     public bool ReadyForWork => !PurgeRequired;
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -188,7 +204,7 @@ public sealed class PlannerDataLifecycle : IHostedService
     {
         if (settingsStore is null)
         {
-            Volatile.Write(ref purgeRequired, 0);
+            lock (purgeStateSync) purgeRequired = false;
             return;
         }
 
@@ -197,11 +213,16 @@ public sealed class PlannerDataLifecycle : IHostedService
         {
             while (PurgeRequired)
             {
-                var version = Interlocked.Read(ref purgeVersion);
+                long version;
+                lock (purgeStateSync) version = purgeVersion;
                 await settingsStore.PurgeWorkDataAsync(cancellationToken);
-                if (version != Interlocked.Read(ref purgeVersion)) continue;
-                if (version == Interlocked.Read(ref purgeVersion))
-                    Volatile.Write(ref purgeRequired, 0);
+                if (beforePurgeFinalization is not null)
+                    await beforePurgeFinalization(cancellationToken);
+                lock (purgeStateSync)
+                {
+                    if (version != purgeVersion) continue;
+                    purgeRequired = false;
+                }
             }
         }
         finally { purgeGate.Release(); }
@@ -216,8 +237,11 @@ public sealed class PlannerDataLifecycle : IHostedService
     private Task BeginPurgeAsync(CancellationToken cancellationToken) => accessGate.AdvanceAsync(() =>
     {
         PurgeMemory();
-        Interlocked.Increment(ref purgeVersion);
-        Volatile.Write(ref purgeRequired, 1);
+        lock (purgeStateSync)
+        {
+            purgeVersion++;
+            purgeRequired = true;
+        }
     }, cancellationToken);
 
     private void StartPurgeWorker() => purgeWorker.Request();
