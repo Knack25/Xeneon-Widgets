@@ -95,6 +95,38 @@ public sealed class PlannerDataLifecycleTests
     }
 
     [Fact]
+    public async Task Purge_worker_retains_new_demand_while_previous_attempt_exits()
+    {
+        var firstCleanupCleared = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstCleanup = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var recovered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var attempts = 0;
+        await using var worker = new PlannerPurgeRetryWorker(async cancellationToken =>
+        {
+            var attempt = Interlocked.Increment(ref attempts);
+            if (attempt == 1)
+            {
+                firstCleanupCleared.TrySetResult();
+                await releaseFirstCleanup.Task.WaitAsync(cancellationToken);
+                return;
+            }
+
+            if (attempt == 2) throw new IOException("disk unavailable");
+            recovered.TrySetResult();
+        });
+
+        worker.Request();
+        await firstCleanupCleared.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        worker.Request();
+        Assert.Equal(1, Volatile.Read(ref attempts));
+        releaseFirstCleanup.TrySetResult();
+
+        await recovered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(3, Volatile.Read(ref attempts));
+    }
+
+    [Fact]
     public async Task Board_load_started_before_purge_cannot_publish_after_purge()
     {
         await using var fixture = await Fixture.CreateAsync();

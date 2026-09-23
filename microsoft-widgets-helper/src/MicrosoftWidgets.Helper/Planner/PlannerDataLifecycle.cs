@@ -13,11 +13,9 @@ public sealed class PlannerDataLifecycle : IHostedService
     private readonly PlannerDataAccessGate accessGate;
     private readonly ConcurrentDictionary<string, byte> memoryKeys = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim purgeGate = new(1, 1);
+    private readonly PlannerPurgeRetryWorker purgeWorker;
     private long purgeVersion;
     private int purgeRequired;
-    private readonly object workerSync = new();
-    private readonly CancellationTokenSource workerShutdown = new();
-    private Task? purgeWorker;
     private int started;
 
     [ActivatorUtilitiesConstructor]
@@ -28,6 +26,7 @@ public sealed class PlannerDataLifecycle : IHostedService
         this.settingsStore = settingsStore;
         this.cache = cache;
         this.accessGate = accessGate;
+        purgeWorker = new PlannerPurgeRetryWorker(RetryPendingPurgeAsync);
         accountState.Invalidated += OnInvalidated;
     }
 
@@ -40,6 +39,7 @@ public sealed class PlannerDataLifecycle : IHostedService
     {
         this.cache = cache;
         this.accessGate = accessGate;
+        purgeWorker = new PlannerPurgeRetryWorker(RetryPendingPurgeAsync);
     }
 
     public PlannerDataTicket CaptureTicket() => accessGate.CaptureTicket();
@@ -181,14 +181,7 @@ public sealed class PlannerDataLifecycle : IHostedService
         }
 
         await settingsStore.ClearPurgeRequiredAsync(cancellationToken);
-        workerShutdown.Cancel();
-        Task? worker;
-        lock (workerSync) worker = purgeWorker;
-        if (worker is not null)
-        {
-            try { await worker.WaitAsync(cancellationToken); }
-            catch (OperationCanceledException) when (workerShutdown.IsCancellationRequested) { }
-        }
+        await purgeWorker.StopAsync(cancellationToken);
     }
 
     public async Task RetryPendingPurgeAsync(CancellationToken cancellationToken)
@@ -227,32 +220,7 @@ public sealed class PlannerDataLifecycle : IHostedService
         Volatile.Write(ref purgeRequired, 1);
     }, cancellationToken);
 
-    private void StartPurgeWorker()
-    {
-        lock (workerSync)
-        {
-            if (purgeWorker is { IsCompleted: false }) return;
-            purgeWorker = Task.Run(async () =>
-            {
-                var attempt = 0;
-                while (PurgeRequired && !workerShutdown.IsCancellationRequested)
-                {
-                    try
-                    {
-                        await RetryPendingPurgeAsync(workerShutdown.Token);
-                        return;
-                    }
-                    catch (OperationCanceledException) when (workerShutdown.IsCancellationRequested) { return; }
-                    catch (Exception error)
-                    {
-                        System.Diagnostics.Trace.TraceError("Planner purge attempt failed: {0}", error);
-                        attempt++;
-                        await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(500, 50 * attempt)), workerShutdown.Token);
-                    }
-                }
-            });
-        }
-    }
+    private void StartPurgeWorker() => purgeWorker.Request();
 
     private void PurgeMemory()
     {
@@ -272,4 +240,81 @@ public sealed class PlannerDataLifecycle : IHostedService
     };
 
     private sealed record AccountBoundValue<T>(AccountLease Lease, T Value);
+}
+
+internal sealed class PlannerPurgeRetryWorker : IAsyncDisposable
+{
+    private readonly Func<CancellationToken, Task> cleanup;
+    private readonly object sync = new();
+    private readonly CancellationTokenSource shutdown = new();
+    private Task? worker;
+    private long requestedVersion;
+
+    public PlannerPurgeRetryWorker(Func<CancellationToken, Task> cleanup) => this.cleanup = cleanup;
+
+    public void Request()
+    {
+        lock (sync)
+        {
+            ObjectDisposedException.ThrowIf(shutdown.IsCancellationRequested, this);
+            requestedVersion++;
+            if (worker is { IsCompleted: false }) return;
+            worker = Task.Run(RunAsync);
+        }
+    }
+
+    public async Task StopAsync(CancellationToken cancellationToken)
+    {
+        Task? active;
+        lock (sync)
+        {
+            shutdown.Cancel();
+            active = worker;
+        }
+
+        if (active is null) return;
+        try { await active.WaitAsync(cancellationToken); }
+        catch (OperationCanceledException) when (shutdown.IsCancellationRequested && !cancellationToken.IsCancellationRequested) { }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await StopAsync(CancellationToken.None);
+        shutdown.Dispose();
+    }
+
+    private async Task RunAsync()
+    {
+        var attempt = 0;
+        while (!shutdown.IsCancellationRequested)
+        {
+            long observedVersion;
+            lock (sync) observedVersion = requestedVersion;
+
+            try
+            {
+                await cleanup(shutdown.Token);
+                attempt = 0;
+            }
+            catch (OperationCanceledException) when (shutdown.IsCancellationRequested) { return; }
+            catch (Exception error)
+            {
+                System.Diagnostics.Trace.TraceError("Planner purge attempt failed: {0}", error);
+                attempt++;
+                try
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(500, 50 * attempt)), shutdown.Token);
+                }
+                catch (OperationCanceledException) when (shutdown.IsCancellationRequested) { return; }
+                continue;
+            }
+
+            lock (sync)
+            {
+                if (requestedVersion != observedVersion) continue;
+                worker = null;
+                return;
+            }
+        }
+    }
 }
