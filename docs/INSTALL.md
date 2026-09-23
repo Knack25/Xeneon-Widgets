@@ -2,7 +2,7 @@
 
 ## Recommended: Windows installer
 
-1. Download the latest **MicrosoftWidgetsSetup** installer from the GitHub release. Version 0.3.2 contains Microsoft Widgets Helper 0.1.3 and Planner Edge Widget 0.3.0.
+1. Download the latest **MicrosoftWidgetsSetup** installer from the GitHub release. Version 0.3.4 contains Microsoft Widgets Helper 0.1.5, Planner Edge Widget 0.3.1, and Outlook Edge Widget 0.2.1.
 2. Close any older portable Planner Edge or Microsoft Widgets helper before installing. For the installed helper, upgrades close it automatically.
 3. Run the installer normally, without **Run as administrator**. It installs for your Windows account and refuses elevated setup or uninstall. Optionally select **Start the helper when I sign in to Windows**.
 4. Leave **Open Microsoft Widgets setup** selected on the final page.
@@ -14,7 +14,7 @@ The installer includes the .NET runtime. You do not need PowerShell, Node.js, or
 
 ## Microsoft account setup
 
-Outlook-enabled development builds additionally include **Outlook Edge Widget**. Its setup, complete administrator permission bundle, and native-widget pairing steps are in [OUTLOOK.md](OUTLOOK.md). It has not been published as part of the existing release yet. Connecting Outlook does not require enabling Planner.
+The installer also includes **Outlook Edge Widget**. Its setup, complete administrator permission bundle, and native-widget pairing steps are in [OUTLOOK.md](OUTLOOK.md). Connecting Outlook does not require enabling Planner.
 
 Your organization supplies the Application (client) ID for a Microsoft Entra public-client app. The setup page explains where to find it. Initial Planner access requires delegated `User.Read` and `Tasks.ReadWrite`; showing names uses `User.ReadBasic.All`, and editing assignees uses `GroupMember.ReadBasic.All`. The desktop redirect URI is `http://localhost`.
 
@@ -35,9 +35,9 @@ Work-account permissions may require administrator approval. Once approved, retu
 
 ## Downloads explained
 
-- **MicrosoftWidgetsSetup-0.3.2.exe**: recommended; installs the helper and includes the widget.
-- **PlannerEdgeWidget-0.3.0.icuewidget**: widget only, for an existing helper installation.
-- **MicrosoftWidgetsHelper-0.1.3-portable-win-x64.zip**: optional portable helper and widget package. Extract the entire archive before opening `MicrosoftWidgets.Helper.exe`.
+- **MicrosoftWidgetsSetup-0.3.4.exe**: recommended; installs the helper and includes both widgets.
+- **PlannerEdgeWidget-0.3.1.icuewidget** and **OutlookEdgeWidget-0.2.1.icuewidget**: widget packages for an existing helper installation. Re-import them in iCUE after upgrading.
+- **MicrosoftWidgetsHelper-0.1.5-portable-win-x64.zip**: optional portable helper and widget package. Extract the entire archive before opening `MicrosoftWidgets.Helper.exe`.
 - **SHA256SUMS.txt**: checksums for the release downloads.
 
 Requires 64-bit Windows 10 22H2 or later and a compatible iCUE installation with XENEON EDGE. The installer and replacement artifacts are currently unsigned, so Windows may identify the publisher as unknown. SHA-256 verification detects changed downloads but does not provide publisher identity; signing remains explicitly deferred. Follow your organization's software-installation policy.

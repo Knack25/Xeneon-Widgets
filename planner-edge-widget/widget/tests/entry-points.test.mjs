@@ -13,7 +13,7 @@ test("native and hosted entries both run the task app directly", () => {
 
 test("next widget package has its own version", () => {
   const manifest = JSON.parse(readFileSync(new URL("../manifest.json", import.meta.url), "utf8"));
-  assert.equal(manifest.version, "0.3.0");
+  assert.equal(manifest.version, "0.3.1");
 });
 
 test("native and helper-hosted entries load pure widget modules before the app", () => {
