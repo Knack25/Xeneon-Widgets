@@ -9,6 +9,133 @@ namespace PlannerEdge.Helper.Tests;
 public sealed class MicrosoftAuthAcquisitionTests
 {
     [Fact]
+    public async Task Tenant_changes_require_fresh_authenticated_identity_even_for_same_home_and_client()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "MicrosoftWidgetsTests", Guid.NewGuid().ToString("N"));
+        var clientId = Guid.NewGuid().ToString();
+        var tenantA = Guid.NewGuid().ToString();
+        var tenantB = Guid.NewGuid().ToString();
+        var acquisitions = new List<string>();
+        try
+        {
+            var service = new MicrosoftAuthService(
+                Options.Create(new AzureAdOptions { ClientId = clientId, Tenant = tenantA }),
+                new LocalJsonStore(root),
+                acquireConfiguredToken: null,
+                acquireConfiguredIdentity: (configuration, _) =>
+                {
+                    acquisitions.Add(configuration.Tenant);
+                    return Task.FromResult(new MicrosoftAccountIdentity(
+                        "same-home", configuration.Tenant, configuration.ClientId, "same@example.com"));
+                },
+                cacheDirectory: root);
+
+            Assert.Equal(tenantA, (await service.GetAccountIdentityAsync(default)).TenantId);
+            await service.SaveConfigurationAsync(new AzureAdOptions { ClientId = clientId, Tenant = tenantB }, default);
+            Assert.Equal(tenantB, (await service.GetAccountIdentityAsync(default)).TenantId);
+            await service.SaveConfigurationAsync(new AzureAdOptions { ClientId = clientId, Tenant = tenantA }, default);
+            Assert.Equal(tenantA, (await service.GetAccountIdentityAsync(default)).TenantId);
+
+            Assert.Equal([tenantA, tenantB, tenantA], acquisitions);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Token_result_is_rejected_when_configuration_changes_during_acquisition()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "MicrosoftWidgetsTests", Guid.NewGuid().ToString("N"));
+        var clientId = Guid.NewGuid().ToString();
+        var tenantA = Guid.NewGuid().ToString();
+        var tenantB = Guid.NewGuid().ToString();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            var store = new LocalJsonStore(root);
+            var service = new MicrosoftAuthService(
+                Options.Create(new AzureAdOptions { ClientId = clientId, Tenant = tenantA }), store,
+                acquireConfiguredToken: async (configuration, _, cancellationToken) =>
+                {
+                    started.TrySetResult();
+                    await release.Task.WaitAsync(cancellationToken);
+                    return new MicrosoftTokenAcquisition("old-token", "same-home", configuration.Tenant, "same@example.com");
+                },
+                acquireConfiguredIdentity: null,
+                cacheDirectory: root);
+
+            var token = service.GetAccessTokenAsync(default);
+            await started.Task;
+            await service.SaveConfigurationAsync(new AzureAdOptions { ClientId = clientId, Tenant = tenantB }, default);
+            release.TrySetResult();
+
+            var error = await Assert.ThrowsAsync<Outlook.OutlookException>(() => token);
+            Assert.Equal("account_changed", error.Code);
+            Assert.Null(await store.ReadAsync<StoredMicrosoftAccountIdentity>("microsoft-account-identity", default));
+        }
+        finally
+        {
+            release.TrySetResult();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Token_result_is_rejected_when_sign_out_completes_during_acquisition()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "MicrosoftWidgetsTests", Guid.NewGuid().ToString("N"));
+        var clientId = Guid.NewGuid().ToString();
+        var tenant = Guid.NewGuid().ToString();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            var store = new LocalJsonStore(root);
+            var service = new MicrosoftAuthService(
+                Options.Create(new AzureAdOptions { ClientId = clientId, Tenant = tenant }), store,
+                acquireConfiguredToken: async (configuration, _, cancellationToken) =>
+                {
+                    started.TrySetResult();
+                    await release.Task.WaitAsync(cancellationToken);
+                    return new MicrosoftTokenAcquisition("stale-token", "same-home", configuration.Tenant,
+                        "same@example.com");
+                },
+                acquireConfiguredIdentity: null,
+                cacheDirectory: root);
+
+            var token = service.GetAccessTokenAsync(default);
+            await started.Task;
+            await service.SignOutAsync(default);
+            release.TrySetResult();
+
+            var error = await Assert.ThrowsAsync<Outlook.OutlookException>(() => token);
+            Assert.Equal("account_changed", error.Code);
+            Assert.Null(await store.ReadAsync<StoredMicrosoftAccountIdentity>("microsoft-account-identity", default));
+        }
+        finally
+        {
+            release.TrySetResult();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void IdentityUsesSelectedHomeAccountAndAuthenticatedTenant()
+    {
+        var account = new FakeAccount("home-account", "mutable@example.com", "configured-tenant");
+
+        var identity = MicrosoftAuthService.CreateIdentity(account, "authenticated-tenant", "client-id");
+
+        Assert.Equal("home-account", identity.HomeAccountId);
+        Assert.Equal("authenticated-tenant", identity.TenantId);
+        Assert.Equal("client-id", identity.ClientId);
+        Assert.Equal("mutable@example.com", identity.Username);
+    }
+
+    [Fact]
     public void PlannerAndConversationScopesRemainSeparated()
     {
         Assert.Equal(new[] { "User.Read", "Tasks.ReadWrite" }, MicrosoftAuthService.PlannerScopes);
@@ -161,5 +288,12 @@ public sealed class MicrosoftAuthAcquisitionTests
             ConnectionRequests.Add((values, requireExistingAccount));
             return Connect(values, requireExistingAccount, cancellationToken);
         }
+    }
+
+    private sealed class FakeAccount(string homeAccountId, string username, string tenantId) : IAccount
+    {
+        public string Username { get; } = username;
+        public string Environment => "login.microsoftonline.com";
+        public AccountId HomeAccountId { get; } = new(homeAccountId, Guid.NewGuid().ToString(), tenantId);
     }
 }

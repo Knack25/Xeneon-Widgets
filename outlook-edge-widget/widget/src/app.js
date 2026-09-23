@@ -16,6 +16,7 @@ export async function start(root,environment={}) {
   try {identity=await waitForIdentity({protocol:location.protocol,search:location.search,readId:()=>environment.uniqueId??(typeof uniqueId==='undefined'?undefined:uniqueId)});}
   catch(error){root.replaceChildren(el('section',{class:'startup'},el('h1',{},'Outlook'),el('p',{},error.message)));return;}
   const store=settingsStore(localStorage,identity.id);let settings=store.load();
+  if(!identity.native)settings.credential='';
   const themeMedia=matchMedia('(prefers-color-scheme: dark)');
   const applyTheme=()=>{document.documentElement.dataset.theme=settings.theme==='system'?(themeMedia.matches?'dark':'light'):settings.theme;};
   themeMedia.addEventListener('change',applyTheme);applyTheme();
@@ -45,7 +46,14 @@ export async function start(root,environment={}) {
   const footer=el('footer',{},sync,zone,el('label',{},weekends,'Show weekends'));
   shell.append(toolbar,subbar,status,board,footer);root.replaceChildren(shell);
   const dialogs=new Dialogs(root,pickerButton);
-  api.onUnauthorized=()=>{state.clear();dialogs.unavailable();showEvents();if(identity.native){settings.credential='';api.credential='';save();ready=false;notice('Pairing expired or revoked.');status.append(' ',button('Pair again',pair));}};
+  const isAuthorizationError=error=>[401,403].includes(error?.status) || ['sign_in_required','consent_required','account_changed','unauthorized'].includes(error?.code);
+  function authorizationLost(message='Access changed. Reconnect Outlook in helper setup.') {
+    state.clearAuthorization();ready=false;controller=undefined;dialogs.authorizationLost();refreshButton.disabled=false;
+    if(identity.native){settings.credential='';api.credential='';save();notice(message);status.append(' ',button('Pair again',pair));}
+    else {notice(message);status.append(' ',button('Reconnect',initialize));}
+    sync.textContent='Unavailable';showEvents();
+  }
+  api.onUnauthorized=()=>authorizationLost('Pairing expired or revoked.');
   const pickerClose=()=>{picker.hidden=true;pickerButton.setAttribute('aria-expanded','false');};
   document.addEventListener('pointerdown',e=>{if(!pickerWrap.contains(e.target))pickerClose();});
   pickerWrap.addEventListener('keydown',e=>{if(e.key==='Escape'){pickerClose();pickerButton.focus();}});
@@ -66,7 +74,7 @@ export async function start(root,environment={}) {
   function navigate(n){anchor=moveDate(anchor,n,settings);reconfigure();refresh();}
   function reconfigure(){adapter?.configure(settings,anchor,preferences);controls();}
   function showEvents(){adapter?.update(state.events,catalog);const noSelection=!selectedKeys(settings,catalog).length;empty.hidden=!noSelection && (!state.offline || state.events.length>0);empty.textContent=noSelection?'No calendars selected':'Calendar unavailable for this range';}
-  function openEvent(event,origin){pickerClose();dialogs.details(event,catalog.find(c=>c.key===event.calendarKey),api,zoneFor(settings),()=>ready && !state.offline,origin);}
+  function openEvent(event,origin){pickerClose();dialogs.details(event,catalog.find(c=>c.key===event.calendarKey),api,zoneFor(settings),()=>ready && state.authorized && !state.offline,origin);}
   function makeCalendar(){adapter=new CalendarAdapter(calendarRoot,{settings,anchor,preferences,onTitle:title=>rangeTitle.textContent=title,onEvent:openEvent,onMore:(events,origin)=>{
     const unique=[...new Map(events.map(e=>[eventId(e),e])).values()];dialogs.list('Events',unique,catalog,openEvent,origin);
   }});}
@@ -81,16 +89,15 @@ export async function start(root,environment={}) {
   }
   async function refresh(forceMetadata=false) {
     if(!ready)return;
-    controller?.abort();controller=new AbortController();const signal=controller.signal;
+    controller?.abort();const refreshController=state.track(new AbortController());controller=refreshController;const signal=refreshController.signal;
     const range=rangeFor(anchor,settings), keys=selectedKeys(settings,catalog);
     const ticket=state.begin(JSON.stringify([range.start,range.end,[...keys].sort()]));showEvents();
-    if(!keys.length){state.accept(ticket,{events:[],sources:[]});showEvents();notice('');sync.textContent=identity.demo?'Demo':'Ready';return;}
+    if(!keys.length){state.release(refreshController);state.accept(ticket,{events:[],sources:[]});showEvents();notice('');sync.textContent=identity.demo?'Demo':'Ready';return;}
     refreshButton.disabled=true;
     try {
       // Revalidate helper authorization before replacing a retained offline snapshot.
       if(state.offline || recovering) {
-        const status=await api.get('status',signal);
-        if(!status.ready){const e=new Error('Reconnect Outlook in helper setup.');e.status=401;throw e;}
+        await metadata(signal);
         recovering=false;
       }
       if(forceMetadata || Date.now()-metadataAt>=900000) {
@@ -108,7 +115,7 @@ export async function start(root,environment={}) {
           sync.textContent='Unavailable';
         } else sync.textContent='Updating...';
         showEvents();
-      }).catch(()=>{});
+      }).catch(error=>{if(isAuthorizationError(error))authorizationLost(error.message);});
       const result=await live;
       if(!state.accept(ticket,result))return;
       const issues=state.sources.filter(s=>s.stale || s.error);
@@ -118,14 +125,14 @@ export async function start(root,environment={}) {
       if(issues.some(s=>/access|denied|not_found|forbidden|unauthorized/i.test(s.error?.code||'')))dialogs.unavailable();
       showEvents();
     }catch(error){
+      if(isAuthorizationError(error)){authorizationLost(error.message);return;}
       if(signal.aborted || !state.current(ticket))return;
       state.fail(ticket,error);dialogs.unavailable();recovering=true;
       const cached=state.cache.get(state.key);
       notice([401,403].includes(error.status)?'Access changed. Reconnect Outlook in helper setup.':`Offline | ${cached && state.events.length?`Last updated ${new Date(cached.at).toLocaleString()}`:'No saved events for this range'}`);
-      if(error.status===401 && identity.native){settings.credential='';api.credential='';save();ready=false;const reconnect=button('Pair again',pair);status.append(' ',reconnect);}
-      if(error.status===401 && !identity.native){ready=false;status.append(' ',button('Reconnect',initialize));}
+      if(identity.native && !error.status)status.append(' ',button('Pair again',pair));
       sync.textContent='Unavailable';showEvents();
-    }finally{if(state.current(ticket))refreshButton.disabled=false;}
+    }finally{state.release(refreshController);if(state.current(ticket))refreshButton.disabled=false;}
   }
   function openSettings() {
     pickerClose();dialogs.open('Calendar settings');
@@ -164,21 +171,20 @@ export async function start(root,environment={}) {
       const request=await api.pair(identity.id,secret);if(generation!==dialogs.generation)return;text.textContent='Approve this code in Microsoft Widgets Helper setup.';dialogs.panel.append(el('strong',{class:'pair-code'},request.code));
       const poll=async()=>{
         if(generation!==dialogs.generation)return;
-        if(Date.now()>=Date.parse(request.expiresAt)){text.textContent='Pairing expired.';dialogs.panel.append(button('New code',pair));return;}
+        if(!Number.isFinite(Date.parse(request.expiresAt)) || Date.now()>=Date.parse(request.expiresAt)){text.textContent='Pairing expired.';dialogs.panel.append(button('New code',pair));return;}
         try{const result=await api.poll(request.id,secret);if(generation!==dialogs.generation)return;if(result.status==='approved' && result.credential){settings.credential=result.credential;api.credential=result.credential;save();dialogs.close();await initialize();return;}pairTimer=setTimeout(poll,2000);}
-        catch(error){text.textContent=error.message;dialogs.panel.append(button('Retry pairing',pair));}
+        catch{if(generation!==dialogs.generation)return;text.textContent='Pairing unavailable. Try again.';dialogs.panel.append(button('Retry pairing',pair));}
       };pairTimer=setTimeout(poll,1500);
-    }catch(error){text.textContent=error.message;dialogs.panel.append(button('Retry pairing',pair));}
+    }catch{if(generation!==dialogs.generation)return;text.textContent='Pairing unavailable. Try again.';dialogs.panel.append(button('Retry pairing',pair));}
   }
   async function initialize() {
     try {
       if(identity.native && !settings.credential){notice('Pair this widget with Microsoft Widgets Helper.');status.append(' ',button('Pair widget',pair));sync.textContent='Not paired';return;}
-      await api.initialize();const result=await api.get('status');
-      if(!result.ready){state.clear();dialogs.unavailable();showEvents();notice(result.error?.message||'Connect Outlook in Microsoft Widgets Helper setup.');sync.textContent='Not connected';status.append(' ',button('Retry',initialize));return;}
-      await metadata();ready=true;if(!adapter)makeCalendar();await refresh();
-    }catch(error){state.clear();dialogs.unavailable();showEvents();notice(error.message);sync.textContent='Unavailable';
+      await api.initialize();
+      await metadata();state.authorize();ready=true;if(!adapter)makeCalendar();await refresh();
+    }catch(error){state.clearAuthorization();dialogs.unavailable();showEvents();notice(error.message);sync.textContent='Unavailable';
       if(error.status===401 && identity.native){settings.credential='';api.credential='';save();ready=false;status.append(' ',button('Pair again',pair));}
-      else status.append(' ',button('Retry',initialize));
+      else {status.append(' ',button('Retry',initialize));if(identity.native)status.append(' ',button('Pair again',pair));}
     }
   }
   controls();await initialize();
@@ -189,7 +195,7 @@ export async function start(root,environment={}) {
   },60000);
   document.addEventListener('visibilitychange',()=>{if(!document.hidden){reconfigure();refresh();}});
   window.addEventListener('online',()=>refresh(true));
-  window.addEventListener('pagehide',()=>{clearInterval(tick);clearTimeout(pairTimer);controller?.abort();dialogs.close();state.clear();},{once:true});
+  window.addEventListener('pagehide',()=>{clearInterval(tick);clearTimeout(pairTimer);dialogs.close();state.clearAuthorization();},{once:true});
   // Fixture controls are available only behind the explicit demo query flag.
   if(identity.demo)window.outlookDemo={refresh,api,state,settings:()=>({...settings}),navigate,change,dialogs};
   return {refresh};

@@ -1,0 +1,18 @@
+version: 2
+updates:
+  - package-ecosystem: 'npm'
+    directory: '/planner-edge-widget/widget'
+    schedule:
+      interval: 'weekly'
+  - package-ecosystem: 'npm'
+    directory: '/outlook-edge-widget'
+    schedule:
+      interval: 'weekly'
+  - package-ecosystem: 'nuget'
+    directory: '/microsoft-widgets-helper'
+    schedule:
+      interval: 'weekly'
+  - package-ecosystem: 'github-actions'
+    directory: '/'
+    schedule:
+      interval: 'weekly'

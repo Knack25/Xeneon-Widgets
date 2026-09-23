@@ -3,7 +3,8 @@ using PlannerEdge.Helper.Graph;
 
 namespace PlannerEdge.Helper.Planner;
 
-public sealed class TaskNotesService(IPlannerGraphClient graphClient, TaskDetailsService taskDetails)
+public sealed class TaskNotesService(IPlannerGraphClient graphClient, SelectedPlanTaskService selectedPlanTasks,
+    TaskDetailsService taskDetails)
 {
     public async Task UpdateAsync(string taskId, string? description, CancellationToken cancellationToken)
     {
@@ -12,10 +13,13 @@ public sealed class TaskNotesService(IPlannerGraphClient graphClient, TaskDetail
         if (description.Length > 4000)
             throw new ArgumentException("Task notes cannot exceed 4000 characters.", nameof(description));
 
-        var details = await graphClient.GetTaskDetailsAsync(taskId, cancellationToken);
+        var selected = await selectedPlanTasks.GetBoundAsync(taskId, cancellationToken);
+        var details = await selectedPlanTasks.RunAsync(selected,
+            ct => graphClient.GetTaskDetailsAsync(taskId, ct), cancellationToken);
         try
         {
-            await graphClient.UpdateTaskDescriptionAsync(taskId, description, details.ETag, cancellationToken);
+            await selectedPlanTasks.RunAsync(selected,
+                ct => graphClient.UpdateTaskDescriptionAsync(taskId, description, details.ETag, ct), cancellationToken);
         }
         catch (GraphApiException error) when (error.StatusCode is HttpStatusCode.PreconditionFailed or HttpStatusCode.Conflict)
         {

@@ -119,6 +119,9 @@ internal sealed class CapabilityAuth : IMicrosoftAuthService
     public Task<string> GetTokenForScopesAsync(IEnumerable<string> scopes, CancellationToken ct) { ct.ThrowIfCancellationRequested(); var values = scopes.ToArray(); Requests.Add(values); return Acquire(values); }
     public Task<AzureAdOptions> GetConfigurationAsync(CancellationToken ct) => Task.FromResult(new AzureAdOptions { ClientId = Configured ? "configured-client" : "" });
     public Task<AuthStatusResponse> GetStatusAsync(CancellationToken ct) => Task.FromResult(new AuthStatusResponse(SignedIn, "User", SignedIn ? "user@example.com" : null));
+    public Task<MicrosoftAccountIdentity> GetAccountIdentityAsync(CancellationToken ct) => SignedIn
+        ? Task.FromResult(new MicrosoftAccountIdentity("capability-home", "capability-tenant", "configured-client", "user@example.com"))
+        : throw new MsalUiRequiredException("no_account", "No account");
     public Task<string> GetAccessTokenAsync(CancellationToken ct) => throw new NotSupportedException();
     public Task<AzureAdOptions> SaveConfigurationAsync(AzureAdOptions configuration, CancellationToken ct) => throw new NotSupportedException();
     public Task<AuthStatusResponse> SignInAsync(CancellationToken ct) => throw new NotSupportedException("Capability checks must never interact.");

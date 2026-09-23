@@ -1,12 +1,31 @@
 using System.Net;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging.Abstractions;
+using PlannerEdge.Helper.Hosting;
+using PlannerEdge.Helper.Security;
 using PlannerEdge.Helper.Updates;
 
 namespace PlannerEdge.Helper.Tests;
 
 public sealed class UpdateTests
 {
+    [Fact]
+    public void Configured_helper_port_drives_setup_tray_and_update_recovery_addresses()
+    {
+        var address = new HelperAddress(9123);
+        var setupUrl = HelperHost.CreateSetupUrl(new LocalAccessService(TimeProvider.System), address);
+        var updateArguments = new[]
+        {
+            "--apply-update", "installer.exe", "helper.exe", "sha256", "0.4.0", "9123"
+        };
+
+        Assert.StartsWith("http://localhost:9123/#access=", setupUrl, StringComparison.Ordinal);
+        Assert.Contains("http://localhost:9123", address.RecoveryMessage, StringComparison.Ordinal);
+        Assert.Equal(new Uri("http://localhost:9123/health"),
+            UpdateInstaller.GetRecoveryHealthUri(updateArguments));
+    }
+
     private static string Release(string tag = "v0.4.0", bool prerelease = false, string? digest = null) => JsonSerializer.Serialize(new
     {
         tag_name = tag, draft = false, prerelease, body = "Changes",
@@ -54,20 +73,6 @@ public sealed class UpdateTests
             else { await Assert.ThrowsAsync<InvalidDataException>(() => client.DownloadAsync(ReleaseClient.Parse(Release(), "0.3.1")!, path, default)); Assert.False(File.Exists(path)); }
         }
         finally { Directory.Delete(folder, true); }
-    }
-
-    [Theory]
-    [InlineData("http://localhost:8787", true)]
-    [InlineData("http://localhost:9999", false)]
-    [InlineData("null", false)]
-    [InlineData("https://evil.example", false)]
-    public void InstallEndpoint_OnlyAcceptsSetupOrigin(string origin, bool allowed)
-    {
-        var context = new DefaultHttpContext();
-        context.Request.Host = new HostString("localhost", 8787);
-        context.Request.Headers.Origin = origin;
-        context.Request.Headers["X-Microsoft-Widgets-Update"] = "1";
-        Assert.Equal(allowed, UpdateEndpoints.IsSetupRequest(context.Request));
     }
 
     private sealed class Handler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
@@ -170,6 +175,38 @@ public sealed class UpdateTests
         instance.Dispose();
         await waiting;
         Assert.True(waiting.IsCompletedSuccessfully);
+    }
+
+    [Fact]
+    public async Task Update_recovery_stops_the_existing_helper_through_the_same_user_pipe()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), "MicrosoftWidgets.Helper.Tests." + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        var target = Path.Combine(folder, "not-an-executable.txt");
+        var resultPath = Path.Combine(folder, "update-result.json");
+        await File.WriteAllTextAsync(target, "fixture");
+        var pipeName = "MicrosoftWidgets.Helper.Tests." + Guid.NewGuid().ToString("N");
+        var stopped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var pipe = new HelperControlPipe(new LocalAccessService(TimeProvider.System), NullLogger<HelperControlPipe>.Instance,
+            pipeName, _ => { }, () => stopped.TrySetResult());
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        await pipe.StartAsync(timeout.Token);
+        try
+        {
+            await UpdateInstaller.ApplyAsync(
+                ["--apply-update", Path.Combine(folder, "missing-installer.exe"), target, "unused-hash", "0.4.0", "8787"],
+                resultPath,
+                "Local\\MicrosoftWidgetsTest-" + Guid.NewGuid(),
+                pipeName);
+
+            await stopped.Task.WaitAsync(timeout.Token);
+        }
+        finally
+        {
+            await pipe.StopAsync(CancellationToken.None);
+            Directory.Delete(folder, true);
+        }
     }
 
     [Fact]

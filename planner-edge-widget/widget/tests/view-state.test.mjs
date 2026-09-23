@@ -7,7 +7,10 @@ function loadModule(initial = {}) {
   const values = new Map(Object.entries(initial));
   const localStorage = {
     getItem(key) { return values.has(key) ? values.get(key) : null; },
-    setItem(key, value) { values.set(key, value); }
+    setItem(key, value) { values.set(key, value); },
+    removeItem(key) { values.delete(key); },
+    key(index) { return [...values.keys()][index] ?? null; },
+    get length() { return values.size; }
   };
   const context = { localStorage };
   runInNewContext(readFileSync(new URL("../src/view-state.js", import.meta.url), "utf8"), context);
@@ -59,4 +62,14 @@ test("scroll state is isolated by plan", () => {
   assert.deepEqual(JSON.parse(JSON.stringify(viewState.load("plan-b"))), {
     boardScrollLeft: 30, bucketScrollTops: { two: 40 }
   });
+});
+
+test("authorization reset removes every Planner scroll key and preserves unrelated storage", () => {
+  const { viewState, values } = loadModule({ unrelated: "keep" });
+  viewState.save("plan-a", { boardScrollLeft: 10, bucketScrollTops: { one: 20 } });
+  viewState.save("plan-b", { boardScrollLeft: 30, bucketScrollTops: { two: 40 } });
+
+  viewState.clear();
+
+  assert.deepEqual([...values.entries()], [["unrelated", "keep"]]);
 });

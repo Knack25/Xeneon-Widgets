@@ -1,7 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { runInNewContext } from "node:vm";
+import { runInNewContext as runScripts } from "node:vm";
+
+function runInNewContext(source, context) {
+  context.location ??= { protocol: 'http:', hostname: 'localhost', port: '8787' };
+  context.helperApi ??= { ready: Promise.resolve(true), fetch: context.fetch };
+  return runScripts(source, context);
+}
 
 const settle = (milliseconds = 15) => new Promise(resolve => setTimeout(resolve, milliseconds));
 
@@ -24,7 +30,7 @@ function createDetailFixture(fetch, appOverrides = {}, contextOverrides = {}) {
   const change = (attribute, value) => handlers.change({ target: {
     matches: selector => selector === `[${attribute}]`, value
   } });
-  return { app, handlers, tap, input, change };
+  return { app, handlers, tap, input, change, context };
 }
 
 test("task card has separate tap targets and previews only three checklist items", async () => {
@@ -273,7 +279,7 @@ test("My tasks filters assignments on the selected board", async () => {
   ] };
   const context = { document: { getElementById: () => app }, setInterval() {}, Intl, Date,
     fetch: async path => ({ ok: true, status: 200, json: async () => path.endsWith("/display") ? board :
-      path.endsWith("/auth/me") ? { userId: "me" } : { checklist: [] } }) };
+      path.endsWith("/api/planner/me") ? { userId: "me" } : { checklist: [] } }) };
   for (const file of ["state.js", "api.js", "app.js"])
     runInNewContext(readFileSync(new URL(`../src/${file}`, import.meta.url), "utf8"), context);
   await new Promise(resolve => setTimeout(resolve, 15));
@@ -411,6 +417,31 @@ test("notes save explicitly, support clearing, disable while pending, and report
   releaseUpdate();
   await clearing;
   assert.match(app.innerHTML, /Notes saved/);
+});
+
+test("saving unchanged notes repeatedly preserves the normalized description", async () => {
+  const board = { planId: "plan", planTitle: "Work", syncedAt: "2026-09-21T12:00:00Z", buckets: [
+    { bucketId: "b", name: "Doing", tasks: [{ taskId: "task", title: "Build" }] }
+  ] };
+  const detail = { taskId: "task", title: "Build", bucketId: "b", checklist: [], assignees: [], description: "Original" };
+  const updates = [];
+  const { app, tap, input } = createDetailFixture(async (path, options = {}) => {
+    if (path.endsWith("/display")) return { ok: true, status: 200, json: async () => board };
+    if (path.endsWith("/details")) return { ok: true, status: 200, json: async () => detail };
+    if (path.includes("/chat")) return { ok: true, status: 200, json: async () => ({ state: "available", messages: [] }) };
+    updates.push(JSON.parse(options.body).description);
+    return { ok: true, status: 204, json: async () => null };
+  });
+  await settle();
+  await tap("data-open-task", { openTask: "task" });
+  await settle();
+
+  input("data-notes-draft", "Line one\r\nLine two");
+  await tap("data-save-notes");
+  assert.doesNotMatch(app.innerHTML, /Save current changes/);
+  await tap("data-save-notes");
+
+  assert.deepEqual(updates, ["Line one\nLine two", "Line one\nLine two"]);
 });
 
 test("notes edits made while saving remain unsaved and do not replace the submitted cache value", async () => {
@@ -803,7 +834,7 @@ test("My tasks and filters persist per board while search does not", async () =>
       writes.push(JSON.parse(options.body)); return response(JSON.parse(options.body));
     }
     if (path.endsWith("/view-preferences/plan")) return response(preferences);
-    if (path.endsWith("/auth/me")) return response({ userId: "me" });
+    if (path.endsWith("/api/planner/me")) return response({ userId: "me" });
     return response({ checklist: [], assignees: [] });
   });
   await settle();
@@ -1442,7 +1473,7 @@ test("live refresh preserves open dialog drafts filters search and scroll", asyn
     }
     if (path.includes("view-preferences")) return response({ myTasks: true, filters: { assigneeIds: [], labelIds: [],
       priorities: [1], bucketIds: [], progressValues: [], dueDateRange: null } });
-    if (path.endsWith("/auth/me")) return response({ userId: "me" });
+    if (path.endsWith("/api/planner/me")) return response({ userId: "me" });
     if (path.endsWith("/details")) return response(detail);
     if (path.endsWith("/chat")) return response({ state: "available", messages: [] });
     throw new Error(`Unexpected request: ${path}`);
@@ -1564,7 +1595,7 @@ test("rapid preference writes are serialized and the newest failed snapshot stay
   const writes = [];
   const { app, tap } = createDetailFixture(async (path, options = {}) => {
     if (path.endsWith("/display")) return response(organizationBoard());
-    if (path.endsWith("/auth/me")) return response({ userId: "me" });
+    if (path.endsWith("/api/planner/me")) return response({ userId: "me" });
     if (path.includes("view-preferences") && options.method === "PUT")
       return new Promise(resolve => writes.push({ body: JSON.parse(options.body), resolve }));
     if (path.includes("view-preferences")) return response(defaultPreferences());
@@ -1589,6 +1620,32 @@ test("rapid preference writes are serialized and the newest failed snapshot stay
 
   assert.match(app.innerHTML, /aria-label="My tasks" aria-pressed="false"/);
   assert.match(app.innerHTML, /Preferences were not saved/);
+});
+
+test("queued preference writes do not start after authorization is cleared", async () => {
+  const writes = [];
+  const { tap, context } = createDetailFixture(async (path, options = {}) => {
+    if (path.endsWith("/display")) return response(organizationBoard());
+    if (path.endsWith("/api/planner/me")) return response({ userId: "me" });
+    if (path.includes("view-preferences") && options.method === "PUT")
+      return new Promise(resolve => writes.push({ resolve }));
+    if (path.includes("view-preferences")) return response(defaultPreferences());
+    throw new Error(`Unexpected request: ${path}`);
+  });
+  await settle();
+
+  const first = tap("data-toggle-my-tasks");
+  await settle();
+  const second = tap("data-toggle-my-tasks");
+  await settle();
+  assert.equal(writes.length, 1);
+
+  context.PlannerApi.onUnauthorized();
+  writes[0].resolve(response(null, 204));
+  await Promise.allSettled([first, second]);
+  await settle();
+
+  assert.equal(writes.length, 1);
 });
 
 test("checklist completion refreshes server detail without discarding distinct drafts", async () => {

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Collections.Concurrent;
 
 namespace PlannerEdge.Helper.Storage;
 
@@ -6,10 +7,14 @@ public interface ILocalJsonStore
 {
     Task<T?> ReadAsync<T>(string name, CancellationToken cancellationToken);
     Task WriteAsync<T>(string name, T value, CancellationToken cancellationToken);
+    Task DeleteAsync(string name, CancellationToken cancellationToken) =>
+        WriteAsync<object?>(name, null, cancellationToken);
 }
 
 public sealed class LocalJsonStore(string rootDirectory) : ILocalJsonStore
 {
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> WriteGates =
+        new(StringComparer.OrdinalIgnoreCase);
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
         WriteIndented = true
@@ -20,7 +25,9 @@ public sealed class LocalJsonStore(string rootDirectory) : ILocalJsonStore
         var path = GetPath(name);
         if (!File.Exists(path)) return default;
 
-        await using var stream = File.OpenRead(path);
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
+            FileShare.Read | FileShare.Delete, 4096,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
         return await JsonSerializer.DeserializeAsync<T>(stream, JsonOptions, cancellationToken);
     }
 
@@ -28,14 +35,36 @@ public sealed class LocalJsonStore(string rootDirectory) : ILocalJsonStore
     {
         Directory.CreateDirectory(rootDirectory);
         var path = GetPath(name);
-        var tempPath = path + ".tmp";
-
-        await using (var stream = File.Create(tempPath))
+        var writeGate = WriteGates.GetOrAdd(Path.GetFullPath(path), _ => new SemaphoreSlim(1, 1));
+        await writeGate.WaitAsync(cancellationToken);
+        var tempPath = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
         {
-            await JsonSerializer.SerializeAsync(stream, value, JsonOptions, cancellationToken);
-        }
+            await using (var stream = File.Create(tempPath))
+            {
+                await JsonSerializer.SerializeAsync(stream, value, JsonOptions, cancellationToken);
+            }
 
-        File.Move(tempPath, path, overwrite: true);
+            if (File.Exists(path)) File.Replace(tempPath, path, null);
+            else File.Move(tempPath, path);
+        }
+        finally
+        {
+            if (File.Exists(tempPath)) File.Delete(tempPath);
+            writeGate.Release();
+        }
+    }
+
+    public async Task DeleteAsync(string name, CancellationToken cancellationToken)
+    {
+        var path = GetPath(name);
+        var writeGate = WriteGates.GetOrAdd(Path.GetFullPath(path), _ => new SemaphoreSlim(1, 1));
+        await writeGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+        finally { writeGate.Release(); }
     }
 
     private string GetPath(string name) => Path.Combine(rootDirectory, name + ".json");

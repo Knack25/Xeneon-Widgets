@@ -1,3 +1,4 @@
+using PlannerEdge.Helper.Auth;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -6,7 +7,7 @@ namespace PlannerEdge.Helper.Outlook;
 public sealed class CalendarCatalogService
 {
     private readonly OutlookGraphClient graph;
-    private readonly OutlookAccountState state;
+    private readonly MicrosoftAccountState state;
     private readonly OutlookSettingsStore settings;
     private readonly TimeProvider clock;
     private readonly SemaphoreSlim gate = new(1, 1);
@@ -16,7 +17,7 @@ public sealed class CalendarCatalogService
     private IReadOnlyList<OutlookError> discoveryErrors = [];
     public IReadOnlyList<OutlookError> DiscoveryErrors { get { lock (sync) return discoveryErrors; } }
 
-    public CalendarCatalogService(OutlookGraphClient graph, OutlookAccountState state, OutlookSettingsStore settings, TimeProvider clock)
+    public CalendarCatalogService(OutlookGraphClient graph, MicrosoftAccountState state, OutlookSettingsStore settings, TimeProvider clock)
     {
         this.graph = graph; this.state = state; this.settings = settings; this.clock = clock;
         state.Invalidated += () => { lock (sync) { sources = []; fetchedAt = default; discoveryErrors = []; } };
@@ -126,17 +127,18 @@ public sealed class CalendarCatalogService
         await gate.WaitAsync(ct);
         try
         {
-            var route = "users/" + Uri.EscapeDataString(owner) + "/calendar";
-            var item = await graph.GetAsync(route, ct);
-            state.RequireCurrent(lease);
-            await settings.SetOwnerAsync(lease.Key, owner, true, ct);
-            lock (sync)
+            return await state.ExecuteAuthorizedAsync(lease, async () =>
             {
-                state.RequireCurrent(lease);
-                var source = Add(sources, lease, item, route, "shared", owner);
-                fetchedAt = default;
-                return source.Descriptor;
-            }
+                var route = "users/" + Uri.EscapeDataString(owner) + "/calendar";
+                var item = await graph.GetAsync(route, ct);
+                await settings.SetOwnerAsync(lease.Key, owner, true, ct);
+                lock (sync)
+                {
+                    var source = Add(sources, lease, item, route, "shared", owner);
+                    fetchedAt = default;
+                    return source.Descriptor;
+                }
+            }, ct);
         }
         finally { gate.Release(); }
     }
@@ -147,18 +149,20 @@ public sealed class CalendarCatalogService
         await gate.WaitAsync(ct);
         try
         {
-            state.RequireCurrent(lease);
-            var owner = (await settings.GetOwnersAsync(lease.Key, ct)).FirstOrDefault(value =>
-                OutlookTokenProvider.Hash(lease.Key + "\nusers/" + Uri.EscapeDataString(value) + "/calendar") == key);
-            if (owner is null) throw new OutlookException("source_not_found", "This local calendar reference does not exist.", 404);
-            await settings.SetOwnerAsync(lease.Key, owner, false, ct);
-            lock (sync) { state.RequireCurrent(lease); sources.Remove(key); fetchedAt = default; }
-            state.PurgeSource(key);
+            await state.ExecuteAuthorizedAsync(lease, async () =>
+            {
+                var owner = (await settings.GetOwnersAsync(lease.Key, ct)).FirstOrDefault(value =>
+                    OutlookTokenProvider.Hash(lease.Key + "\nusers/" + Uri.EscapeDataString(value) + "/calendar") == key);
+                if (owner is null) throw new OutlookException("source_not_found", "This local calendar reference does not exist.", 404);
+                await settings.SetOwnerAsync(lease.Key, owner, false, ct);
+                lock (sync) { sources.Remove(key); fetchedAt = default; }
+                state.PurgeSource(key);
+            }, ct);
         }
         finally { gate.Release(); }
     }
 
-    private static CalendarSource Add(Dictionary<string, CalendarSource> target, OutlookAccountLease lease, JsonElement item, string route, string kind, string? owner, string? groupName = null)
+    private static CalendarSource Add(Dictionary<string, CalendarSource> target, AccountLease lease, JsonElement item, string route, string kind, string? owner, string? groupName = null)
     {
         RequireId(item);
         var key = OutlookTokenProvider.Hash(lease.Key + "\n" + route);

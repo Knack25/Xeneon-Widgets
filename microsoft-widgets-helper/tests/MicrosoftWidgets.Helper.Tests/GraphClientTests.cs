@@ -1,7 +1,12 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using PlannerEdge.Helper.Auth;
 using PlannerEdge.Helper.Graph;
+using PlannerEdge.Helper.Outlook;
+using PlannerEdge.Helper.Planner;
+using Microsoft.Extensions.Caching.Memory;
+using MicrosoftWidgets.Helper.Tests;
 
 namespace PlannerEdge.Helper.Tests;
 
@@ -175,8 +180,8 @@ public sealed class GraphClientTests
     {
         var handler = new StubHandler(request => request.RequestUri!.AbsolutePath.EndsWith("/bucketTaskBoardFormat")
             ? """{"orderHint":"a"}"""
-            : request.RequestUri.AbsolutePath.EndsWith("/tasks")
-            ? """{"value":[{"id":"one","title":"First","planId":"plan","percentComplete":0,"@odata.etag":"W/\"v1\"","conversationThreadId":"thread-1"}],"@odata.nextLink":"https://graph.microsoft.com/v1.0/next"}"""
+            : request.RequestUri.AbsolutePath.EndsWith("/tasks") && string.IsNullOrEmpty(request.RequestUri.Query)
+            ? """{"value":[{"id":"one","title":"First","planId":"plan","percentComplete":0,"@odata.etag":"W/\"v1\"","conversationThreadId":"thread-1"}],"@odata.nextLink":"https://graph.microsoft.com/v1.0/planner/plans/plan/tasks?$skiptoken=next"}"""
             : """{"value":[{"id":"two","title":"Second","planId":"plan","percentComplete":0,"@odata.etag":"W/\"v2\""}]}""");
         var client = CreateClient(handler);
 
@@ -188,6 +193,95 @@ public sealed class GraphClientTests
         Assert.Equal("a", tasks[0].BucketOrderHint);
         Assert.Equal("thread-1", tasks[0].ConversationThreadId);
         Assert.Null(tasks[1].ConversationThreadId);
+    }
+
+    [Theory]
+    [InlineData("http://graph.microsoft.com/v1.0/planner/plans/plan/tasks?$skiptoken=x")]
+    [InlineData("https://example.com/v1.0/planner/plans/plan/tasks?$skiptoken=x")]
+    [InlineData("https://graph.microsoft.com/beta/planner/plans/plan/tasks?$skiptoken=x")]
+    [InlineData("https://graph.microsoft.com/v1.0/users?$skiptoken=x")]
+    [InlineData("https://user:password@graph.microsoft.com/v1.0/planner/plans/plan/tasks?$skiptoken=x")]
+    [InlineData("https://graph.microsoft.com/v1.0/planner/plans/plan/tasks?$skiptoken=x#fragment")]
+    public void GraphNextLinkPolicy_RejectsHostileOrForeignLinks(string candidate)
+    {
+        var current = new Uri("https://graph.microsoft.com/v1.0/planner/plans/plan/tasks");
+
+        Assert.Throws<InvalidDataException>(() => GraphNextLinkPolicy.RequireAllowed(
+            current, candidate, new HashSet<string>(StringComparer.Ordinal)));
+    }
+
+    [Fact]
+    public void GraphNextLinkPolicy_RejectsLoopsPageOverflowAndOperationRecordOverflow()
+    {
+        var current = new Uri("https://graph.microsoft.com/v1.0/planner/plans/plan/tasks");
+        var next = "https://graph.microsoft.com/v1.0/planner/plans/plan/tasks?$skiptoken=one";
+        var visited = new HashSet<string>(StringComparer.Ordinal) { current.AbsoluteUri };
+        var accepted = GraphNextLinkPolicy.RequireAllowed(current, next, visited);
+
+        Assert.Equal(new Uri(next), accepted);
+        Assert.Throws<InvalidDataException>(() => GraphNextLinkPolicy.RequireAllowed(current, next, visited));
+        Assert.Throws<InvalidDataException>(() => GraphNextLinkPolicy.RequirePageCount(101));
+        Assert.Throws<InvalidDataException>(() => GraphNextLinkPolicy.RequireRecordCount(
+            GraphCollectionKind.Tasks, GraphNextLinkPolicy.TaskRecordLimit + 1));
+    }
+
+    [Fact]
+    public async Task GetTasksAsync_RejectsForeignNextLinkBeforeBearerTokenCanLeaveGraph()
+    {
+        var calls = 0;
+        var handler = new StubHandler(_ =>
+        {
+            calls++;
+            return """{"value":[],"@odata.nextLink":"https://attacker.example/steal"}""";
+        });
+
+        await Assert.ThrowsAsync<InvalidDataException>(() =>
+            CreateClient(handler).GetTasksAsync("plan", CancellationToken.None));
+
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public async Task GetMyPlansAsync_StopsBeforeRequestingPage101()
+    {
+        var calls = 0;
+        var handler = new StubHandler(request =>
+        {
+            calls++;
+            var nextPage = calls + 1;
+            return $$"""{"value":[],"@odata.nextLink":"https://graph.microsoft.com/v1.0/me/planner/plans?$skiptoken={{nextPage}}"}""";
+        });
+
+        await Assert.ThrowsAsync<InvalidDataException>(() =>
+            CreateClient(handler).GetMyPlansAsync(CancellationToken.None));
+
+        Assert.Equal(100, calls);
+    }
+
+    [Fact]
+    public async Task GetTasksAsync_RejectsOperationRecordOverflowBeforeTaskFormatRequests()
+    {
+        var values = string.Join(',', Enumerable.Range(0, GraphNextLinkPolicy.TaskRecordLimit + 1)
+            .Select(index => $$"""{"id":"{{index}}","title":"Task","planId":"plan","percentComplete":0}"""));
+        var calls = 0;
+        var handler = new StubHandler(_ =>
+        {
+            calls++;
+            return $$"""{"value":[{{values}}]}""";
+        });
+
+        await Assert.ThrowsAsync<InvalidDataException>(() =>
+            CreateClient(handler).GetTasksAsync("plan", CancellationToken.None));
+
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public void PlannerGraphTransport_DisablesAutomaticRedirects()
+    {
+        using var handler = PlannerGraphHttpHandlerFactory.Create();
+
+        Assert.False(handler.AllowAutoRedirect);
     }
 
     [Fact]
@@ -232,6 +326,36 @@ public sealed class GraphClientTests
     }
 
     [Fact]
+    public async Task Planner_mutation_does_not_reach_graph_after_account_is_invalidated()
+    {
+        var identities = new MicrosoftAccountStateTests.IdentityProvider(new MicrosoftAccountIdentity(
+            "home", "tenant", "client", "user@example.com"));
+        var state = new MicrosoftAccountState(identities, new OutlookMemoryStore());
+        var lease = await state.GetAsync(default);
+        var tokens = new BlockingTokenProvider();
+        var sends = 0;
+        var handler = new StubHandler(_ =>
+        {
+            Interlocked.Increment(ref sends);
+            return "{}";
+        });
+        var client = new PlannerGraphClient(
+            new HttpClient(handler) { BaseAddress = new Uri("https://graph.microsoft.com/v1.0/") },
+            tokens,
+            state);
+        using var binding = state.BindRequest(lease);
+
+        var mutation = client.CompleteTaskAsync("task-1", "W/\"latest\"", default);
+        await tokens.Started;
+        await state.InvalidateAsync(default);
+        tokens.Release();
+
+        var error = await Assert.ThrowsAsync<OutlookException>(() => mutation);
+        Assert.Equal("account_changed", error.Code);
+        Assert.Equal(0, Volatile.Read(ref sends));
+    }
+
+    [Fact]
     public async Task MoveTaskAsync_PatchesOnlyBucketWithLatestEtag()
     {
         var handler = new StubHandler(request =>
@@ -259,6 +383,121 @@ public sealed class GraphClientTests
         await client.GetTasksAsync("plan", CancellationToken.None);
 
         Assert.Equal(1, formatReads);
+    }
+
+    [Fact]
+    public async Task AccountInvalidationClearsCachedBucketOrderHints()
+    {
+        var identities = new MicrosoftAccountStateTests.IdentityProvider(new MicrosoftAccountIdentity(
+            "home", "tenant", "client", "user@example.com"));
+        var state = new MicrosoftAccountState(identities, new OutlookMemoryStore());
+        var formatReads = 0;
+        var handler = new StubHandler(request => request.RequestUri!.AbsolutePath.EndsWith("/bucketTaskBoardFormat")
+            ? ReadFormat() : """{"value":[{"id":"one","title":"First","planId":"plan","percentComplete":0}]}""");
+        string ReadFormat() { formatReads++; return """{"orderHint":"a"}"""; }
+        var client = new PlannerGraphClient(
+            new HttpClient(handler) { BaseAddress = new Uri("https://graph.microsoft.com/v1.0/") },
+            new StaticTokenProvider(), state);
+        var firstLease = await state.GetAsync(default);
+        using (state.BindRequest(firstLease))
+        {
+            await client.GetTasksAsync("plan", default);
+            await client.GetTasksAsync("plan", default);
+        }
+
+        await state.InvalidateAsync(default);
+        var secondLease = await state.GetAsync(default);
+        using (state.BindRequest(secondLease))
+            await client.GetTasksAsync("plan", default);
+
+        Assert.Equal(2, formatReads);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Late_bucket_format_result_is_not_published_after_account_switch(bool successfulFormat)
+    {
+        var identities = new MicrosoftAccountStateTests.IdentityProvider(new MicrosoftAccountIdentity(
+            "home-one", "tenant", "client", "one@example.com"));
+        var state = new MicrosoftAccountState(identities, new OutlookMemoryStore());
+        var handler = new DelayedFormatHandler(successfulFormat);
+        var client = new PlannerGraphClient(
+            new HttpClient(handler) { BaseAddress = new Uri("https://graph.microsoft.com/v1.0/") },
+            new StaticTokenProvider(), state);
+        var firstLease = await state.GetAsync(default);
+        Task<IReadOnlyList<GraphTask>> stale;
+        using (state.BindRequest(firstLease))
+            stale = client.GetTasksAsync("plan", default);
+        await handler.FirstFormatStarted.WaitAsync(TimeSpan.FromSeconds(5));
+
+        identities.Identity = identities.Identity with { HomeAccountId = "home-two" };
+        await state.InvalidateAsync(default);
+        handler.ReleaseFirstFormat();
+        await Assert.ThrowsAsync<OutlookException>(() => stale);
+
+        var secondLease = await state.GetAsync(default);
+        IReadOnlyList<GraphTask> current;
+        using (state.BindRequest(secondLease))
+            current = await client.GetTasksAsync("plan", default);
+
+        Assert.Equal(2, handler.FormatReads);
+        Assert.Equal("new-account-hint", Assert.Single(current).BucketOrderHint);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Late_bucket_format_result_is_not_published_after_planner_purge(bool successfulFormat)
+    {
+        var identities = new MicrosoftAccountStateTests.IdentityProvider(new MicrosoftAccountIdentity(
+            "home", "tenant", "client", "user@example.com"));
+        var state = new MicrosoftAccountState(identities, new OutlookMemoryStore());
+        var access = new PlannerDataAccessGate();
+        var lifecycle = new PlannerDataLifecycle(new MemoryCache(new MemoryCacheOptions()), access);
+        var handler = new DelayedFormatHandler(successfulFormat);
+        var client = new PlannerGraphClient(
+            new HttpClient(handler) { BaseAddress = new Uri("https://graph.microsoft.com/v1.0/") },
+            new StaticTokenProvider(), state, access);
+        var lease = await state.GetAsync(default);
+        Task<IReadOnlyList<GraphTask>> stale;
+        using (state.BindRequest(lease))
+        using (lifecycle.BindOperation())
+            stale = client.GetTasksAsync("plan", default);
+        await handler.FirstFormatStarted.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await lifecycle.PurgeAsync(default);
+        handler.ReleaseFirstFormat();
+        var error = await Assert.ThrowsAsync<OutlookException>(() => stale);
+        Assert.Equal("planner_data_changed", error.Code);
+
+        IReadOnlyList<GraphTask> current;
+        using (state.BindRequest(lease))
+        using (lifecycle.BindOperation())
+            current = await client.GetTasksAsync("plan", default);
+
+        Assert.Equal(2, handler.FormatReads);
+        Assert.Equal("new-account-hint", Assert.Single(current).BucketOrderHint);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    public async Task GetTasksAsync_RethrowsAuthorizationFailureFromBucketFormat(HttpStatusCode status)
+    {
+        var handler = new ResponseHandler(request => request.RequestUri!.AbsolutePath.EndsWith("/bucketTaskBoardFormat")
+            ? new HttpResponseMessage(status) { Content = new StringContent("denied") }
+            : new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    """{"value":[{"id":"one","title":"First","planId":"plan","percentComplete":0}]}""",
+                    Encoding.UTF8, "application/json")
+            });
+
+        var error = await Assert.ThrowsAsync<GraphApiException>(() =>
+            CreateClient(handler).GetTasksAsync("plan", CancellationToken.None));
+
+        Assert.Equal(status, error.StatusCode);
     }
 
     [Fact]
@@ -387,6 +626,34 @@ public sealed class GraphClientTests
     }
 
     [Fact]
+    public async Task GetConversationPostsAsync_RejectsOperationRecordOverflow()
+    {
+        var values = Enumerable.Range(0, GraphNextLinkPolicy.ConversationRecordLimit + 1)
+            .Select(index => new { id = index.ToString(), body = new { contentType = "text", content = "x" } });
+        var payload = JsonSerializer.Serialize(new { value = values });
+        var handler = new StubHandler(_ => payload);
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => CreateClient(handler, new DistinctTokenProvider())
+            .GetConversationPostsAsync("group", "thread", null, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task GetGroupMembersAsync_RejectsForeignNextLinkBeforeDirectoryTokenCanLeaveGraph()
+    {
+        var calls = 0;
+        var handler = new StubHandler(_ =>
+        {
+            calls++;
+            return """{"value":[],"@odata.nextLink":"https://attacker.example/steal"}""";
+        });
+
+        await Assert.ThrowsAsync<InvalidDataException>(() =>
+            CreateClient(handler).GetGroupMembersAsync("group", CancellationToken.None));
+
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
     public async Task GetConversationPostsAsync_UsesValidatedContinuationWithoutAddingTop()
     {
         var continuation = new Uri("https://graph.microsoft.com/v1.0/groups/group/threads/thread/posts?$skiptoken=older");
@@ -405,6 +672,8 @@ public sealed class GraphClientTests
     [InlineData("http://graph.microsoft.com/v1.0/groups/group/threads/thread/posts?$skiptoken=x")]
     [InlineData("https://example.com/v1.0/groups/group/threads/thread/posts?$skiptoken=x")]
     [InlineData("https://graph.microsoft.com/v1.0/groups/group/threads/other/posts?$skiptoken=x")]
+    [InlineData("https://user:password@graph.microsoft.com/v1.0/groups/group/threads/thread/posts?$skiptoken=x")]
+    [InlineData("https://graph.microsoft.com/v1.0/groups/group/threads/thread/posts?$skiptoken=x#fragment")]
     public async Task GetConversationPostsAsync_RejectsUnsafeContinuation(string continuation)
     {
         var handler = new StubHandler(_ => throw new Xunit.Sdk.XunitException("Unsafe continuation reached the network."));
@@ -475,6 +744,38 @@ public sealed class GraphClientTests
         new HttpClient(handler) { BaseAddress = new Uri("https://graph.microsoft.com/v1.0/") },
         tokenProvider ?? new StaticTokenProvider());
 
+    private sealed class DelayedFormatHandler(bool successfulFirstFormat) : HttpMessageHandler
+    {
+        private readonly TaskCompletionSource firstFormatStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource releaseFirstFormat = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int formatReads;
+        public Task FirstFormatStarted => firstFormatStarted.Task;
+        public int FormatReads => Volatile.Read(ref formatReads);
+        public void ReleaseFirstFormat() => releaseFirstFormat.TrySetResult();
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            if (!request.RequestUri!.AbsolutePath.EndsWith("/bucketTaskBoardFormat"))
+                return Json("""{"value":[{"id":"one","title":"First","planId":"plan","percentComplete":0}]}""");
+            var read = Interlocked.Increment(ref formatReads);
+            if (read == 1)
+            {
+                firstFormatStarted.TrySetResult();
+                await releaseFirstFormat.Task.WaitAsync(cancellationToken);
+                return successfulFirstFormat
+                    ? Json("""{"orderHint":"old-account-hint"}""")
+                    : new HttpResponseMessage(HttpStatusCode.InternalServerError) { Content = new StringContent("failed") };
+            }
+            return Json("""{"orderHint":"new-account-hint"}""");
+        }
+
+        private static HttpResponseMessage Json(string body) => new(HttpStatusCode.OK)
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json")
+        };
+    }
+
     private sealed class StaticTokenProvider : IGraphTokenProvider
     {
         public Task<string> GetAccessTokenAsync(CancellationToken cancellationToken) => Task.FromResult("token");
@@ -484,6 +785,20 @@ public sealed class GraphClientTests
     {
         public Task<string> GetAccessTokenAsync(CancellationToken cancellationToken) => Task.FromResult("core-token");
         public Task<string> GetConversationTokenAsync(CancellationToken cancellationToken) => Task.FromResult("conversation-token");
+    }
+
+    private sealed class BlockingTokenProvider : IGraphTokenProvider
+    {
+        private readonly TaskCompletionSource started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public Task Started => started.Task;
+        public void Release() => release.TrySetResult();
+        public async Task<string> GetAccessTokenAsync(CancellationToken cancellationToken)
+        {
+            started.TrySetResult();
+            await release.Task.WaitAsync(cancellationToken);
+            return "stale-token";
+        }
     }
 
     private sealed class StubHandler(Func<HttpRequestMessage, string> responseBody) : HttpMessageHandler

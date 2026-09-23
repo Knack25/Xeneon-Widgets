@@ -1,3 +1,4 @@
+using PlannerEdge.Helper.Auth;
 using System.Net;
 using PlannerEdge.Helper.Outlook;
 using PlannerEdge.Helper.Storage;
@@ -260,7 +261,7 @@ internal sealed class OutlookFixture
     public OutlookTokens Tokens { get; } = new();
     public OutlookClock Clock { get; } = new();
     public OutlookHandler Handler { get; }
-    public OutlookAccountState State { get; }
+    public MicrosoftAccountState State { get; }
     public CalendarCatalogService Catalog { get; }
     public CalendarViewService Views { get; }
     public EventDetailsService Details { get; }

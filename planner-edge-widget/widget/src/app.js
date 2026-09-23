@@ -4,6 +4,8 @@ const flow = globalThis.PlannerState;
 const filterEngine = globalThis.PlannerFilters;
 const viewState = globalThis.PlannerViewState;
 const app = document.getElementById("app");
+const authorization = flow.createAuthorizationLifecycle();
+api.authorizationLifecycle = authorization;
 const details = new Map();
 const failures = new Set();
 const pending = new Set();
@@ -34,8 +36,86 @@ let createNotice = null;
 let scrollSaveScheduled = false;
 const preferenceWriteQueues = new Map();
 let renderedDialog = null;
+let accessReady = false;
+let pairingMessage = "Connecting to Microsoft Widgets Helper...";
+let pairingCode = "";
+let pairingButton = "";
+let pairTimer;
+let pairGeneration = 0;
+
+function showPairing(message, button = "Pair widget", code = "") {
+  accessReady = false;
+  pairingMessage = message; pairingButton = button; pairingCode = code;
+  render();
+}
+
+function clearAuthorization(error = { code: "signed_out", message: "Sign in again." }) {
+  authorization.clearAuthorization();
+  viewState?.clear?.();
+  displayGeneration++; detailGeneration++; dialogGeneration++; preferenceLoadGeneration++;
+  memberRequestGeneration++; pairGeneration++;
+  state = flow.applyError(flow.createInitialState(), error);
+  details.clear(); failures.clear(); pending.clear(); visibleTasks.clear();
+  plans = null; members = null; memberPlanId = null; memberError = null; memberRequest = null;
+  currentUserId = null; filterError = null; createNotice = null;
+  preferences = filterEngine?.createDefaultPreferences() || { myTasks: false, filters: {} };
+  preferencesPlanId = null; activePreferencesPlanId = null; preferenceRequestPlanId = null;
+  preferencesDisplayRevision = -1; acceptedDisplayRevision = 0; searchText = ""; searchOpen = false;
+  preferenceWriteQueues.clear(); renderedDialog = null;
+  if (api.native) {
+    api.credential = "";
+    try { api.setCredential(""); } catch {}
+    showPairing("Pairing expired or revoked.", "Pair again");
+  } else { accessReady = true; render(); }
+}
+
+api.onUnauthorized = () => clearAuthorization();
+
+async function pair() {
+  if (!api.native || !api.instanceId) return;
+  clearTimeout(pairTimer);
+  const generation = ++pairGeneration;
+  showPairing("Requesting pairing code...", "");
+  try {
+    const secret = Array.from(crypto.getRandomValues(new Uint8Array(32)), b => b.toString(16).padStart(2, "0")).join("");
+    const request = await api.pair(api.instanceId, secret);
+    if (generation !== pairGeneration) return;
+    showPairing("Approve this code in Microsoft Widgets Helper setup.", "", request.code);
+    const poll = async () => {
+      if (generation !== pairGeneration) return;
+      if (!Number.isFinite(Date.parse(request.expiresAt)) || Date.now() >= Date.parse(request.expiresAt)) {
+        showPairing("Pairing expired.", "New code"); return;
+      }
+      try {
+        const result = await api.poll(request.id, secret);
+        if (generation !== pairGeneration) return;
+        if (result.status === "approved" && result.credential) {
+          api.setCredential(result.credential);
+          accessReady = true; state = flow.createInitialState();
+          await loadDisplay(); return;
+        }
+        pairTimer = setTimeout(poll, 2000);
+      } catch {
+        if (generation === pairGeneration) showPairing("Pairing unavailable. Try again.", "Retry pairing");
+      }
+    };
+    pairTimer = setTimeout(poll, 1500);
+  } catch {
+    if (generation === pairGeneration) showPairing("Pairing unavailable. Try again.", "Retry pairing");
+  }
+}
+
+async function initialize() {
+  try {
+    accessReady = await api.initialize();
+    if (!accessReady) { showPairing("Pair Planner with Microsoft Widgets Helper."); return; }
+    await loadDisplay();
+  } catch { showPairing(api.native ? "Waiting for iCUE instance identity. Reload this widget to retry." : "Open Microsoft Widgets Setup to preview Planner.", ""); }
+}
+globalThis.addEventListener?.("pagehide", () => { pairGeneration++; clearTimeout(pairTimer); }, { once: true });
 
 async function loadDisplay(force = false) {
+  if (!accessReady) return;
   if (!force && state.completing) return;
   const generation = ++displayGeneration;
   const cachedRequest = state.mode === "loading" && !state.display ? api.getCachedDisplay() : null;
@@ -72,6 +152,10 @@ async function loadDisplay(force = false) {
 }
 
 function applyDisplayError(error) {
+  if (["signed_out", "auth_required", "pairing_required", "permission_denied"].includes(error.code)) {
+    clearAuthorization(error);
+    return;
+  }
   state = flow.applyError(state, error);
   if (state.display) state = { ...state, mode: "error" };
 }
@@ -222,9 +306,18 @@ async function savePreferences() {
 }
 
 function persistPreferences(planId, snapshot) {
+  const authorizationTicket = authorization.beginRequest();
   const previous = preferenceWriteQueues.get(planId) || Promise.resolve();
-  const request = previous.then(() => api.saveViewPreferences(planId, snapshot));
+  const request = previous.then(() => {
+    if (!authorization.isCurrent(authorizationTicket)) {
+      const error = new Error("Authorization changed.");
+      error.name = "AbortError";
+      throw error;
+    }
+    return api.saveViewPreferences(planId, snapshot);
+  });
   const tail = request.catch(() => {}).finally(() => {
+    authorization.finish(authorizationTicket);
     if (preferenceWriteQueues.get(planId) === tail) preferenceWriteQueues.delete(planId);
   });
   preferenceWriteQueues.set(planId, tail);
@@ -232,6 +325,10 @@ function persistPreferences(planId, snapshot) {
 }
 
 function render() {
+  if (!accessReady) {
+    app.innerHTML = `<section class="status"><h1>Planner</h1><p>${escapeHtml(pairingMessage)}</p>${pairingCode ? `<strong class="pair-code">${escapeHtml(pairingCode)}</strong>` : ""}${pairingButton ? `<button data-pair-widget>${escapeHtml(pairingButton)}</button>` : ""}</section>`;
+    return;
+  }
   const currentPanel = app.querySelector?.(".confirm-panel");
   if (renderedDialog?.type === "taskDetails" && currentPanel)
     renderedDialog.detailScrollTop = currentPanel.scrollTop;
@@ -239,11 +336,11 @@ function render() {
   persistScrollSnapshot(previousScroll);
   if (state.mode === "loading") return;
   if (state.mode === "signedOut") {
-    app.innerHTML = '<section class="status"><h1>Sign in to Planner</h1><p>Open the Planner Edge setup page on your computer.</p></section>';
+    app.innerHTML = `<section class="status"><h1>Sign in to Planner</h1><p>${escapeHtml(state.error?.message || "Open Microsoft Widgets Setup on your computer.")}</p></section>`;
     return;
   }
   if (state.mode === "error" && !state.display) {
-    app.innerHTML = `<section class="status"><h1>Planner unavailable</h1><p>${escapeHtml(state.error.message)}</p></section>`;
+    app.innerHTML = `<section class="status"><h1>Planner unavailable</h1><p>${escapeHtml(state.error.message)}</p>${api.native ? '<button data-pair-widget>Pair again</button>' : ''}</section>`;
     return;
   }
   if (!state.display) {
@@ -264,6 +361,7 @@ function render() {
       <button class="board-title" data-open-board-picker title="Choose Planner board">${escapeHtml(board.planTitle)}</button>
       <p>${board.isStale || state.mode === "error" ? "Offline view" : `Synced ${formatTime(board.syncedAt)}`}</p></div>
       <div class="topbar-actions">${state.error || filterError || createNotice ? `<span class="notice">${escapeHtml(state.error?.message || filterError || createNotice)}</span>` : ""}
+      ${state.error && api.native ? '<button data-pair-widget>Pair again</button>' : ''}
       ${searchOpen ? `<input class="task-search" data-search-tasks aria-label="Search task titles" value="${escapeHtml(searchText)}" placeholder="Search tasks">` : ""}
       <button class="icon-action" data-toggle-search aria-label="Search tasks" aria-pressed="${searchOpen}" title="Search tasks">&#128269;</button>
       <button class="icon-action filter-action ${activeFilterCount() ? "active" : ""}" data-open-filters aria-label="Filter tasks" title="Filter tasks">&#9776;${activeFilterCount() ? `<span>${activeFilterCount()}</span>` : ""}</button>
@@ -687,6 +785,8 @@ app.addEventListener("change", async event => {
 
 app.addEventListener("click", async event => {
   const hit = name => event.target.closest(`[${name}]`);
+  if (hit("data-pair-widget")) { await pair(); return; }
+  if (!accessReady) return;
   if (hit("data-new-task") && !state.dialog) {
     state.dialog = { type: "createTask", title: "", bucketId: state.display?.buckets.find(bucket => bucket.bucketId !== "unbucketed")?.bucketId || "",
       startDate: null, dateDraft: null, priority: 5, labelIds: [], selectedAssignees: [], assigneeDraft: [] };
@@ -964,15 +1064,16 @@ app.addEventListener("click", async event => {
   if (hit("data-save-notes") && state.dialog?.type === "taskDetails" && !state.dialog.notesPending) {
     const dialog = state.dialog;
     const { taskId, generation } = dialog;
-    const description = dialog.notesDraft ?? "";
+    const description = (dialog.notesDraft ?? details.get(taskId)?.description ?? "").replace(/\r\n?/g, "\n");
     dialog.notesPending = true; dialog.notesStatus = "Saving notes..."; render();
     try {
       await api.updateNotes(taskId, description);
       if (!isCurrentTaskDialog(taskId, generation)) return;
       const info = details.get(taskId);
       if (info) details.set(taskId, { ...info, description });
-      const hasNewerDraft = dialog.notesDraft !== description;
-      if (!hasNewerDraft) dialog.notesDraft = null;
+      const currentDraft = (dialog.notesDraft ?? "").replace(/\r\n?/g, "\n");
+      const hasNewerDraft = currentDraft !== description;
+      if (!hasNewerDraft) dialog.notesDraft = description;
       dialog.notesPending = false;
       dialog.notesStatus = hasNewerDraft ? "Earlier notes saved. Save current changes." : "Notes saved.";
       render();
@@ -1216,6 +1317,6 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;").replaceAll("'", "&#039;");
 }
 
-loadDisplay();
+initialize();
 setInterval(loadDisplay, 60000);
 })();

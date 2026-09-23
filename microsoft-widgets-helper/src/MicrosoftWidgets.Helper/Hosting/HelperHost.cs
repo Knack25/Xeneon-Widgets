@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Reflection;
+using PlannerEdge.Helper.Auth;
+using PlannerEdge.Helper.Security;
 
 namespace PlannerEdge.Helper.Hosting;
 
@@ -12,31 +14,50 @@ public static class HelperHost
     public static string PlannerPackagePath => Path.Combine(AppContext.BaseDirectory, "widgets", "PlannerEdgeWidget.icuewidget");
     public static string OutlookPackagePath => Path.Combine(AppContext.BaseDirectory, "widgets", "OutlookEdgeWidget.icuewidget");
 
-    public static void OpenSetup() => Process.Start(new ProcessStartInfo("http://localhost:8787") { UseShellExecute = true });
-    public static void OpenUpdates() => Process.Start(new ProcessStartInfo("http://localhost:8787/#updates") { UseShellExecute = true });
+    public static void OpenSetup(LocalAccessService access) =>
+        OpenSetup(access, new HelperAddress(HelperAddress.DefaultPort));
+    public static void OpenSetup(LocalAccessService access, HelperAddress address) =>
+        Open(CreateSetupUrl(access, address));
+    public static void OpenUpdates(LocalAccessService access, HelperAddress address) =>
+        Open(CreateSetupUrl(access, address, "updates"));
 
-    public static void MapHelperHost(this WebApplication app)
+    public static string CreateSetupUrl(LocalAccessService access, string? section = null)
+        => CreateSetupUrl(access, new HelperAddress(HelperAddress.DefaultPort), section);
+
+    public static string CreateSetupUrl(LocalAccessService access, HelperAddress address, string? section = null)
     {
-        app.MapGet("/installation", () => Results.Ok(new
+        var bootstrap = access.CreateBootstrap();
+        var fragment = $"access={Uri.EscapeDataString(bootstrap.Token)}";
+        if (!string.IsNullOrWhiteSpace(section)) fragment += $"&section={Uri.EscapeDataString(section)}";
+        return address.BaseUri + "#" + fragment;
+    }
+
+    public static void MapHelperHostManagement(this IEndpointRouteBuilder routes)
+    {
+        routes.MapGet("/installation", () => Results.Ok(new
         {
             version = Version,
             plannerWidgetAvailable = File.Exists(PlannerPackagePath),
             outlookWidgetAvailable = File.Exists(OutlookPackagePath)
         }));
-        app.MapGet("/downloads/planner", () => File.Exists(PlannerPackagePath)
+        routes.MapGet("/downloads/planner", () => File.Exists(PlannerPackagePath)
             ? Results.File(PlannerPackagePath, "application/octet-stream", "PlannerEdgeWidget.icuewidget")
             : Results.NotFound(new { message = "The widget package is not included in this build. Download it from the release page." }));
-        app.MapGet("/downloads/outlook", () => File.Exists(OutlookPackagePath)
+        routes.MapGet("/downloads/outlook", () => File.Exists(OutlookPackagePath)
             ? Results.File(OutlookPackagePath, "application/octet-stream", "OutlookEdgeWidget.icuewidget")
             : Results.NotFound(new { message = "The Outlook widget package is not included in this build." }));
-        app.MapPost("/host/stop", (HttpContext context, IHostApplicationLifetime lifetime) =>
-        {
-            context.Response.OnCompleted(() =>
+        routes.MapPost("/host/stop", async (HttpContext context, IHostApplicationLifetime lifetime,
+            MicrosoftAccountState state, CancellationToken ct) =>
+            await state.ExecuteOwnerAuthorizedAsync(() =>
             {
-                lifetime.StopApplication();
-                return Task.CompletedTask;
-            });
-            return Results.Accepted();
-        });
+                context.Response.OnCompleted(() =>
+                {
+                    lifetime.StopApplication();
+                    return Task.CompletedTask;
+                });
+                return Task.FromResult(Results.Accepted());
+            }, ct));
     }
+
+    private static void Open(string url) => Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
 }

@@ -1,6 +1,7 @@
+using PlannerEdge.Helper.Auth;
 namespace PlannerEdge.Helper.Outlook;
 
-public sealed class EventDetailsService(OutlookGraphClient graph, CalendarCatalogService catalog, CalendarViewService views, OutlookAccountState state)
+public sealed class EventDetailsService(OutlookGraphClient graph, CalendarCatalogService catalog, CalendarViewService views, MicrosoftAccountState state)
 {
     public async Task<EventDetails> GetAsync(EventRequest request, CancellationToken ct)
     {

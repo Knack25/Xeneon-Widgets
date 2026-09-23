@@ -3,29 +3,21 @@
   const connect = $('#outlook-connect');
   const status = $('#outlook-status');
   const message = $('#outlook-message');
-  let session;
   let pending = false;
   let controller;
   let refreshPending = false;
   let connectMode = 'retry';
   let catalogLoaded = false;
 
-  async function request(path, method = 'GET', body, signal) {
-    if (!session) {
-      const response = await fetch('/api/outlook/session', { cache: 'no-store' });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.message || 'Unable to open Outlook setup.');
-      session = result.token;
-    }
-    const response = await fetch(`/api/outlook${path}`, {
+  async function request(path, method = 'GET', body, signal, base = '/api/outlook') {
+    const response = await window.helperApi.fetch(`${base}${path}`, {
       method, cache: 'no-store', signal,
-      headers: { 'X-Outlook-Session': session, 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body)
     });
     if (response.status === 204) return null;
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
-      if (response.status === 401) session = null;
       throw new Error(result.message || result.error?.message || 'Outlook could not complete the request.');
     }
     return result;
@@ -50,18 +42,21 @@
     return item;
   }
 
+  const pairingRequest = (path = '', method = 'GET', body) => request(path, method, body, undefined, '/api/local-access/pairings');
+  const scopeLabel = pair => pair.scope === 'planner' ? 'Planner' : pair.scope === 'outlook' ? 'Outlook' : 'Unknown scope';
+
   async function loadPairings() {
-    const [requests, paired] = await Promise.all([request('/pairings'), request('/paired')]);
+    const [requests, paired] = await Promise.all([pairingRequest(), pairingRequest('/paired')]);
     $('#outlook-pairings').replaceChildren(...requests.map(pair => row(
-      `${pair.code} - ${pair.instanceId}`, async () => {
-        if (!confirm(`Approve Outlook widget ${pair.instanceId}? Confirm code ${pair.code} matches the code on your display.`)) return;
-        await request(`/pairings/${encodeURIComponent(pair.id)}/approve`, 'POST', {});
+      `${scopeLabel(pair)} - ${pair.code} - ${pair.instanceId}`, async () => {
+        if (!confirm(`Approve ${scopeLabel(pair)} widget ${pair.instanceId}? Confirm code ${pair.code} matches the code on your display.`)) return;
+        await pairingRequest(`/${encodeURIComponent(pair.id)}/approve`, 'POST', {});
         await loadPairings();
       }, 'Approve')));
     $('#outlook-pairing-empty').hidden = requests.length > 0;
-    $('#outlook-paired').replaceChildren(...paired.map(pair => row(pair.instanceId, async () => {
-      if (!confirm(`Disconnect Outlook widget ${pair.instanceId}?`)) return;
-      await request('/pairings/revoke', 'POST', { credentialId: pair.credentialId });
+    $('#outlook-paired').replaceChildren(...paired.map(pair => row(`${scopeLabel(pair)} - ${pair.instanceId}`, async () => {
+      if (!confirm(`Disconnect ${scopeLabel(pair)} widget ${pair.instanceId}?`)) return;
+      await pairingRequest('/revoke', 'POST', { credentialId: pair.credentialId });
       await loadPairings();
     }, 'Disconnect')));
   }
@@ -82,6 +77,7 @@
     if (pending || refreshPending) return;
     refreshPending = true;
     try {
+      await loadPairings();
       const value = await request('/status');
       connectMode = value.ready ? 'available' : !value.signedIn || ['consent_required', 'sign_in_required'].includes(value.error?.code) ? 'connect' : 'retry';
       connect.disabled = !value.configured || value.ready;
@@ -92,11 +88,6 @@
       const warnings = [...new Set((value.discoveryErrors || []).map(error => error.message).filter(Boolean))];
       if (warnings.length) status.textContent += ` Some Outlook data is unavailable: ${warnings.join(' ')}`;
       $('#outlook-add-source').disabled = !value.ready;
-      if (value.signedIn) await loadPairings();
-      else {
-        $('#outlook-pairings').replaceChildren();
-        $('#outlook-paired').replaceChildren();
-      }
       if (value.ready && (loadCatalog || !catalogLoaded)) { await loadCalendars(); catalogLoaded = true; }
       if (!value.ready) { catalogLoaded = false; $('#outlook-calendars').replaceChildren(); }
     } catch (error) { status.textContent = error.message; connectMode = 'retry'; connect.textContent = 'Retry Outlook'; connect.disabled = false; }
@@ -113,7 +104,6 @@
     message.textContent = 'Complete the Outlook permission request in the Microsoft window.';
     try {
       await request('/connect', 'POST', {}, controller.signal);
-      session = null;
       message.textContent = 'Outlook connected.';
       document.dispatchEvent(new CustomEvent('microsoft-account-changed'));
     } catch (error) { message.textContent = error.name === 'AbortError' ? 'Outlook sign-in cancelled.' : error.message; }
@@ -138,9 +128,35 @@
     } catch (error) { message.textContent = error.message; }
     finally { button.disabled = false; }
   });
-  document.addEventListener('microsoft-configuration-changed', () => { session = null; catalogLoaded = false; refresh(true); });
-  document.addEventListener('microsoft-account-changed', () => { session = null; catalogLoaded = false; refresh(true); });
-  fetch('/installation', { cache: 'no-store' }).then(r => r.json()).then(value => {
+  $('#outlook-download').addEventListener('click', async event => {
+    event.preventDefault();
+    const link = event.currentTarget;
+    const packageStatus = $('#outlook-package-status');
+    link.setAttribute('aria-busy', 'true');
+    try {
+      const response = await window.helperApi.fetch(link.href, { cache: 'no-store' });
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({}));
+        throw new Error(result.message || 'Unable to download the Outlook widget package.');
+      }
+      const disposition = response.headers.get('Content-Disposition') || '';
+      const filename = disposition.match(/filename="([^"]+)"/i)?.[1] || disposition.match(/filename=([^;]+)/i)?.[1]?.trim();
+      if (!filename) throw new Error('The Outlook widget package filename is missing.');
+      const objectUrl = URL.createObjectURL(await response.blob());
+      const trigger = document.createElement('a');
+      trigger.href = objectUrl;
+      trigger.download = filename;
+      trigger.hidden = true;
+      document.body.append(trigger);
+      try { trigger.click(); }
+      finally { trigger.remove(); URL.revokeObjectURL(objectUrl); }
+      packageStatus.textContent = 'Outlook widget package downloaded.';
+    } catch (error) { packageStatus.textContent = error.message; }
+    finally { link.removeAttribute('aria-busy'); }
+  });
+  document.addEventListener('microsoft-configuration-changed', () => { catalogLoaded = false; refresh(true); });
+  document.addEventListener('microsoft-account-changed', () => { catalogLoaded = false; refresh(true); });
+  window.helperApi.fetch('/installation', { cache: 'no-store' }).then(r => r.json()).then(value => {
     $('#outlook-download').hidden = !value.outlookWidgetAvailable;
     $('#outlook-package-status').textContent = value.outlookWidgetAvailable ? 'Outlook widget package is ready.' : 'The Outlook widget package is not included in this build.';
   }).catch(() => { $('#outlook-package-status').textContent = 'Unable to check the Outlook package.'; });

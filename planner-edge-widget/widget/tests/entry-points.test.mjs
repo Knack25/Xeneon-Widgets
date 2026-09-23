@@ -33,9 +33,11 @@ test("native and helper-hosted entries load pure widget modules before the app",
 test("widget package includes every script loaded by the native entry", () => {
   const nativePage = readFileSync(new URL("../index.html", import.meta.url), "utf8");
   const packageScript = readFileSync(new URL("../../scripts/package.ps1", import.meta.url), "utf8");
+  const releaseManifest = readFileSync(new URL("../../../scripts/release-manifests.ps1", import.meta.url), "utf8");
   const scripts = [...nativePage.matchAll(/<script src="src\/(.+?\.js)"><\/script>/g)].map(match => match[1]);
 
   assert.deepEqual(scripts, ["state.js", "api.js", "filters.js", "view-state.js", "app.js"]);
+  assert.match(packageScript, /PlannerWidgetManifest/);
   for (const script of scripts)
-    assert.match(packageScript, new RegExp(`widget\\\\src\\\\${script.replace(".", "\\.")}`));
+    assert.match(releaseManifest, new RegExp(`'src/${script.replace(".", "\\.")}'`));
 });

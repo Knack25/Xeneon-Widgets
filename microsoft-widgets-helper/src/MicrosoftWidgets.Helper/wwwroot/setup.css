@@ -1,0 +1,27 @@
+:root{font-family:Segoe UI,system-ui,sans-serif;color:#18212a;background:#f4f6f6}
+[hidden]{display:none!important}
+body{margin:0} main{max-width:660px;margin:38px auto;padding:0 24px}
+h1{font-size:28px;margin:0 0 8px} p{color:#52606b} section{border-top:1px solid #ced7d9;padding:24px 0}
+button,select,input[type=text]{font:inherit;padding:10px 12px;border:1px solid #7b9095;border-radius:4px;background:white;color:#18212a}
+button{cursor:pointer;background:#146b5b;color:white;border-color:#146b5b}
+button:disabled{background:#e1e5e7;color:#647078;border-color:#bec8cc;cursor:default} label{display:block;margin:14px 0 8px;font-weight:600}
+*{box-sizing:border-box} select,input[type=text]{width:100%} .actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:18px;align-items:center}
+.download{display:inline-block;padding:11px 14px;background:#146b5b;color:white;border-radius:4px;text-decoration:none}.secondary{background:white;color:#146b5b}.install-steps{padding-left:22px;line-height:1.6}.install-steps li{margin-bottom:8px}footer{border-top:1px solid #ced7d9;padding:18px 0 28px;display:flex;flex-wrap:wrap;align-items:center;gap:16px}footer small{color:#52606b}
+.toggle{display:flex;gap:10px;align-items:center;font-weight:400}.toggle input{width:18px;height:18px}
+#message{min-height:24px;color:#9a3b2d} #account{font-weight:600;color:#18212a}
+.hint{font-size:14px;line-height:1.4}.step{color:#146b5b;font-size:13px;font-weight:700;text-transform:uppercase}
+details{margin-top:14px;color:#52606b;font-size:14px} summary{cursor:pointer;color:#146b5b}
+.outlook-list{list-style:none;padding:0}.outlook-list li{display:flex;gap:12px;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #ced7d9;overflow-wrap:anywhere}.outlook-list li span{min-width:0}.outlook-list button{flex-shrink:0}#outlook-message{color:#9a3b2d;min-height:24px}#outlook-status{font-weight:600;color:#18212a}main a,main code{overflow-wrap:anywhere}
+.help{line-height:1.45}.help ol{padding-left:20px}.help li{margin:7px 0}.help code{font-family:Consolas,monospace}
+:root{background:#f5f6f8;letter-spacing:0}
+.sidebar{position:fixed;inset:0 auto 0 0;width:220px;background:#fff;border-right:1px solid #dce0e5;padding:28px 16px;display:flex;flex-direction:column;gap:8px}
+.brand{font-weight:700;padding:4px 12px 28px;color:#633ca6;display:flex;align-items:center;gap:10px}.brand img{width:28px;height:28px}
+.sidebar a{padding:12px;text-decoration:none;color:#46515d;border-radius:4px}
+.sidebar a[aria-current=page]{background:#eee8f7;color:#59318f;font-weight:600}
+main{max-width:1000px;margin:0 0 0 220px;padding:32px 40px;min-width:0}
+h1{font-size:18px;color:#647078;margin-bottom:32px;font-weight:500}h2{font-size:26px;margin:0 0 24px}h3{font-size:18px;margin:0 0 12px}
+section{padding:22px 0}.view>section:first-of-type{border-top:0}.overview-row{display:flex;align-items:center;justify-content:space-between;gap:24px}.overview-row p{margin:8px 0}
+a{color:#59318f}button:focus-visible,a:focus-visible,summary:focus-visible{outline:3px solid #9864d2;outline-offset:3px}
+#outlook{padding-top:0;border:0}.view{min-width:0}#overview-approvals:empty{display:none}
+@media(max-width:700px){.sidebar{position:static;width:100%;border-right:0;border-bottom:1px solid #dce0e5;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));padding:12px 8px;gap:2px}.brand{grid-column:1/-1;padding:4px 8px 12px}.sidebar a{font-size:14px;text-align:center;padding:10px 2px}main{margin:0;padding:24px 18px}h1{margin-bottom:24px}.overview-row{align-items:flex-start;flex-direction:column;gap:8px}}
+.update-notes-text{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit}

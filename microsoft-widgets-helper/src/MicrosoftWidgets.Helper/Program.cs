@@ -10,6 +10,7 @@ using PlannerEdge.Helper;
 using PlannerEdge.Helper.Hosting;
 using PlannerEdge.Helper.Updates;
 using PlannerEdge.Helper.Outlook;
+using PlannerEdge.Helper.Security;
 using Microsoft.AspNetCore.Http.Features;
 
 if (args.FirstOrDefault() == "--apply-update")
@@ -20,17 +21,14 @@ if (args.FirstOrDefault() == "--apply-update")
 
 if (args.Contains("--stop"))
 {
-    using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-    try { await client.PostAsync("http://localhost:8787/host/stop", null); }
-    catch (HttpRequestException) { }
-    catch (TaskCanceledException) { }
+    await HelperControlPipe.RequestStopAsync(TimeSpan.FromSeconds(5));
     return;
 }
 
 using var instance = new Mutex(false, HelperHost.InstanceMutexName, out var firstInstance);
 if (!firstInstance)
 {
-    if (!args.Contains("--no-browser")) HelperHost.OpenSetup();
+    if (!args.Contains("--no-browser")) await HelperControlPipe.RequestOpenSetupAsync();
     return;
 }
 
@@ -41,10 +39,18 @@ var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 });
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
-builder.WebHost.UseUrls("http://localhost:8787");
+var helperPort = builder.Configuration.GetValue<int>("HelperPort", HelperAddress.DefaultPort);
+var helperAddress = new HelperAddress(helperPort);
+builder.WebHost.UseUrls($"http://localhost:{helperPort}");
+builder.Services.AddSingleton(helperAddress);
 builder.Services.Configure<AzureAdOptions>(builder.Configuration.GetSection("AzureAd"));
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<LocalAccessService>();
+builder.Services.AddSingleton<HelperControlPipe>();
+builder.Services.AddHostedService(provider => provider.GetRequiredService<HelperControlPipe>());
 builder.Services.AddSingleton<ILocalJsonStore>(_ => new LocalJsonStore(LocalPaths.AppDataRoot()));
 builder.Services.AddSingleton<IMicrosoftAuthService, MicrosoftAuthService>();
+builder.Services.AddSingleton<IMicrosoftAccountIdentityProvider>(provider => provider.GetRequiredService<IMicrosoftAuthService>());
 builder.Services.AddSingleton<MicrosoftAuthCapabilityService>();
 builder.Services.AddSingleton<IGraphTokenProvider>(provider => provider.GetRequiredService<IMicrosoftAuthService>());
 builder.Services.AddMemoryCache();
@@ -63,7 +69,10 @@ builder.Services.AddHostedService<UpdateWorker>();
 builder.Services.AddHostedService<TrayService>();
 
 var app = builder.Build();
+_ = app.Services.GetRequiredService<PlannerDataLifecycle>();
 
+app.UseHelperSecurityBoundary();
+app.UseRouting();
 app.Use(async (context, next) =>
 {
     var origin = context.Request.Headers.Origin.ToString();
@@ -108,11 +117,12 @@ app.Use(async (context, next) =>
         await context.Response.WriteAsJsonAsync(new ApiErrorResponse(code, message));
     }
 });
+app.UsePlannerRequestPolicy();
 
 app.Use(async (context, next) =>
 {
-    // Limit Outlook bodies before minimal-API JSON binding, including chunked requests.
-    if (context.Request.Path.StartsWithSegments("/api/outlook"))
+    // Limit Outlook and pairing bodies before JSON binding, including chunked requests.
+    if (context.Request.Path.StartsWithSegments("/api/outlook") || context.Request.Path.StartsWithSegments("/api/local-access/pairings"))
     {
         if (context.Request.ContentLength > 16384)
         {
@@ -128,53 +138,16 @@ app.Use(async (context, next) =>
 app.UseDefaultFiles();
 app.UseStaticFiles();
 app.MapGet("/health", () => Results.Ok(new { status = "ok", version = HelperHost.Version, service = "Microsoft Widgets Helper", integrations = new[] { "planner", "outlook" } }));
-app.MapHelperHost();
-app.MapUpdates();
-app.MapGet("/configuration", async (IMicrosoftAuthService auth, CancellationToken ct) =>
-    Results.Ok(await auth.GetConfigurationAsync(ct)));
-app.MapPut("/configuration", async (AzureAdOptions configuration, IMicrosoftAuthService auth,
-    IPlannerSettingsStore settings, OutlookAccountState outlookAccount, CancellationToken ct) =>
-{
-    var previous = await auth.GetConfigurationAsync(ct);
-    var saved = await outlookAccount.TransitionAsync(() => auth.SaveConfigurationAsync(configuration, ct), ct);
-    if (previous != saved)
-    {
-        await settings.UpdateSettingsAsync(selection =>
-            selection with { SelectedPlanId = null, SelectedPlanTitle = null }, ct);
-    }
-    return Results.Ok(saved);
-});
-app.MapGet("/auth/status", async (IMicrosoftAuthService auth, CancellationToken ct) =>
-    Results.Ok(await auth.GetStatusAsync(ct)));
-app.MapGet("/auth/capabilities", async (MicrosoftAuthCapabilityService capabilities, HttpResponse response, CancellationToken ct) =>
-{
-    response.Headers.CacheControl = "no-store";
-    return Results.Ok(await capabilities.GetAsync(ct));
-});
-app.MapGet("/auth/me", async (IPlannerGraphClient graph, CancellationToken ct) =>
-    Results.Ok(new { userId = await graph.GetCurrentUserIdAsync(ct) }));
-app.MapGet("/auth/sign-in", async (IMicrosoftAuthService auth, OutlookAccountState outlookAccount, CancellationToken ct) =>
-    Results.Ok(await outlookAccount.TransitionAsync(() => auth.SignInAsync(ct), ct)));
-app.MapPost("/auth/sign-in", async (IMicrosoftAuthService auth, OutlookAccountState outlookAccount, CancellationToken ct) =>
-    Results.Ok(await outlookAccount.TransitionAsync(() => auth.SignInAsync(ct), ct)));
-app.MapPost("/auth/enable-task-chat", async (IMicrosoftAuthService auth, OutlookAccountState outlookAccount, CancellationToken ct) =>
-    Results.Ok(await outlookAccount.TransitionAsync(() => auth.EnableTaskChatAsync(ct), ct)));
-app.MapPost("/auth/enable-assignee-names", async (IMicrosoftAuthService auth, OutlookAccountState outlookAccount, CancellationToken ct) =>
-    Results.Ok(await outlookAccount.TransitionAsync(() => auth.EnableAssigneeNamesAsync(ct), ct)));
-app.MapPost("/auth/enable-board-members", async (IMicrosoftAuthService auth, OutlookAccountState outlookAccount, CancellationToken ct) =>
-    Results.Ok(await outlookAccount.TransitionAsync(() => auth.EnableBoardMembersAsync(ct), ct)));
-app.MapPost("/auth/sign-out", async (IMicrosoftAuthService auth, OutlookAccountState outlookAccount, CancellationToken ct) =>
-{
-    await outlookAccount.TransitionAsync(async () => { await auth.SignOutAsync(ct); return true; }, ct, forceInvalidate: true);
-    return Results.NoContent();
-});
+app.MapLocalAccess();
+app.MapWidgetPairings();
+app.MapManagementEndpoints();
 app.MapPlannerIntegration();
 app.MapOutlookIntegration();
 
 await app.StartAsync();
 if (OperatingSystem.IsWindows() && !args.Contains("--no-browser"))
 {
-    try { HelperHost.OpenSetup(); }
+    try { HelperHost.OpenSetup(app.Services.GetRequiredService<LocalAccessService>(), helperAddress); }
     catch (Exception error) { app.Logger.LogWarning(error, "Could not open setup page automatically."); }
 }
 await app.WaitForShutdownAsync();

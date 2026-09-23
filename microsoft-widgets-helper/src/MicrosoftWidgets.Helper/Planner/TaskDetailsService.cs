@@ -1,28 +1,43 @@
-using Microsoft.Extensions.Caching.Memory;
 using PlannerEdge.Helper.Contracts;
 using PlannerEdge.Helper.Graph;
 
 namespace PlannerEdge.Helper.Planner;
 
-public sealed class TaskDetailsService(IPlannerGraphClient graphClient, IMemoryCache cache)
+public sealed class TaskDetailsService(IPlannerGraphClient graphClient, SelectedPlanTaskService selectedPlanTasks,
+    PlannerDataLifecycle lifecycle)
 {
     public async Task<TaskDetailsResponse> GetAsync(string taskId, CancellationToken cancellationToken)
     {
-        if (cache.TryGetValue<TaskDetailsResponse>(taskId, out var cached) && cached is not null)
-            return cached;
+        using var operation = lifecycle.BindOperation();
+        var selected = await selectedPlanTasks.GetBoundAsync(taskId, cancellationToken);
+        var task = selected.Task;
+        var cached = await lifecycle.TryGetAsync<TaskDetailsResponse>("task-details", taskId, cancellationToken);
+        if (cached.Found && cached.Value is not null)
+        {
+            await selectedPlanTasks.RunAsync(selected, _ => Task.CompletedTask, cancellationToken);
+            return cached.Value;
+        }
 
-        var task = await graphClient.GetTaskAsync(taskId, cancellationToken)
-            ?? throw new InvalidOperationException("Planner task was not found.");
-        var details = await graphClient.GetTaskDetailsAsync(taskId, cancellationToken);
+        var details = await selectedPlanTasks.RunAsync(selected,
+            ct => graphClient.GetTaskDetailsAsync(taskId, ct), cancellationToken);
         var assignees = new List<string>();
         foreach (var userId in task.Assignments.Distinct(StringComparer.Ordinal))
         {
-            if (!cache.TryGetValue<string>($"user:{userId}", out var name))
+            var cachedName = await lifecycle.TryGetAsync<string>("user-name", userId, cancellationToken);
+            var name = cachedName.Value;
+            if (!cachedName.Found)
             {
                 try
                 {
-                    name = await graphClient.GetUserDisplayNameAsync(userId, cancellationToken);
-                    if (!string.IsNullOrWhiteSpace(name)) cache.Set($"user:{userId}", name, TimeSpan.FromHours(1));
+                    name = await selectedPlanTasks.RunAsync(selected,
+                        ct => graphClient.GetUserDisplayNameAsync(userId, ct), cancellationToken);
+                    if (!string.IsNullOrWhiteSpace(name))
+                        await lifecycle.SetAsync("user-name", userId, name, TimeSpan.FromHours(1), cancellationToken);
+                }
+                catch (GraphApiException error) when (error.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
+                {
+                    await lifecycle.PurgeAsync(CancellationToken.None);
+                    throw;
                 }
                 catch (Exception error) when (error is not OperationCanceledException)
                 {
@@ -35,9 +50,10 @@ public sealed class TaskDetailsService(IPlannerGraphClient graphClient, IMemoryC
             details.Checklist.Select(item => new ChecklistItemDisplay(item.Id, item.Title, item.IsChecked)).ToList(),
             details.Description, task.Assignments, task.StartDateTime, task.Priority, task.PercentComplete,
             task.AppliedCategories ?? []);
-        cache.Set(taskId, response, TimeSpan.FromSeconds(45));
+        await lifecycle.SetSelectionBoundAsync("task-details", taskId, response, TimeSpan.FromSeconds(45),
+            publish => selectedPlanTasks.RunPublicationAsync(selected, _ => publish(), cancellationToken), cancellationToken);
         return response;
     }
 
-    public void Invalidate(string taskId) => cache.Remove(taskId);
+    public void Invalidate(string taskId) => lifecycle.RemoveAsync("task-details", taskId).GetAwaiter().GetResult();
 }

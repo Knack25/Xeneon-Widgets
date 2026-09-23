@@ -6,7 +6,22 @@ import { runInNewContext } from "node:vm";
 const context = {};
 runInNewContext(readFileSync(new URL("../src/state.js", import.meta.url), "utf8"), context);
 const { applyDisplayLoaded, applyDisplayRefresh, applyError, beginConfirmComplete, cancelConfirmComplete, createInitialState,
-  openBoardPicker, openTaskDetails, beginConfirmChecklist, closeDialog, openTaskBucketPicker } = context.PlannerState;
+  openBoardPicker, openTaskDetails, beginConfirmChecklist, closeDialog, openTaskBucketPicker,
+  createAuthorizationLifecycle } = context.PlannerState;
+
+test("authorization lifecycle aborts requests and invalidates every prior ticket", () => {
+  const lifecycle = createAuthorizationLifecycle();
+  const board = lifecycle.beginRequest();
+  const details = lifecycle.beginRequest();
+
+  assert.equal(lifecycle.isCurrent(board), true);
+  lifecycle.clearAuthorization();
+
+  assert.equal(board.signal.aborted, true);
+  assert.equal(details.signal.aborted, true);
+  assert.equal(lifecycle.isCurrent(board), false);
+  assert.equal(lifecycle.isCurrent(lifecycle.beginRequest()), true);
+});
 
 test("display load selects board or no-board state", () => {
   const board = applyDisplayLoaded(createInitialState(), { planTitle: "Launch", buckets: [] });

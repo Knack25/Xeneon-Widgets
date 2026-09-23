@@ -1,6 +1,8 @@
 using Microsoft.Extensions.Caching.Memory;
 using PlannerEdge.Helper.Graph;
 using PlannerEdge.Helper.Planner;
+using PlannerEdge.Helper.Storage;
+using PlannerEdge.Helper.Contracts;
 
 namespace PlannerEdge.Helper.Tests;
 
@@ -10,7 +12,7 @@ public sealed class TaskDetailsServiceTests
     public async Task GetAsync_CachesDetailsAndKeepsBoardIndependent()
     {
         var graph = new FakeGraph();
-        var service = new TaskDetailsService(graph, new MemoryCache(new MemoryCacheOptions()));
+        var service = CreateService(graph);
 
         var first = await service.GetAsync("task", CancellationToken.None);
         var second = await service.GetAsync("task", CancellationToken.None);
@@ -28,7 +30,7 @@ public sealed class TaskDetailsServiceTests
     {
         var graph = new FakeGraph { FailNameLookup = true };
 
-        var details = await new TaskDetailsService(graph, new MemoryCache(new MemoryCacheOptions()))
+        var details = await CreateService(graph)
             .GetAsync("task", CancellationToken.None);
 
         Assert.Equal("Assigned person unavailable", Assert.Single(details.Assignees));
@@ -40,7 +42,7 @@ public sealed class TaskDetailsServiceTests
         var start = new DateTimeOffset(2026, 9, 21, 12, 0, 0, TimeSpan.Zero);
         var graph = new FakeGraph { StartDateTime = start };
 
-        var details = await new TaskDetailsService(graph, new MemoryCache(new MemoryCacheOptions()))
+        var details = await CreateService(graph)
             .GetAsync("task", CancellationToken.None);
 
         Assert.Equal(start, details.StartDateTime);
@@ -49,13 +51,41 @@ public sealed class TaskDetailsServiceTests
         Assert.Equal(["category1"], details.LabelIds);
     }
 
+    [Fact]
+    public async Task GetAsync_RejectsTaskOutsideSelectedPlanBeforeReadingDetails()
+    {
+        var graph = new FakeGraph { PlanId = "other-plan" };
+        var selected = new SelectedPlanTaskService(graph, new FakeSettings());
+        var service = new TaskDetailsService(graph, selected, new PlannerDataLifecycle(
+            new MemoryCache(new MemoryCacheOptions())));
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            service.GetAsync("task", CancellationToken.None));
+
+        Assert.Equal(0, graph.DetailReads);
+    }
+
+    private sealed class FakeSettings : IPlannerSettingsStore
+    {
+        public Task<SettingsDto> LoadSettingsAsync(CancellationToken ct) =>
+            Task.FromResult(new SettingsDto("plan", "Board", true));
+        public Task SaveSettingsAsync(SettingsDto settings, CancellationToken ct) => throw new NotSupportedException();
+        public Task<BoardDisplay?> LoadCachedDisplayAsync(CancellationToken ct) => throw new NotSupportedException();
+        public Task SaveCachedDisplayAsync(BoardDisplay display, CancellationToken ct) => throw new NotSupportedException();
+    }
+
+    private static TaskDetailsService CreateService(FakeGraph graph) => new(graph,
+        new SelectedPlanTaskService(graph, new FakeSettings()),
+        new PlannerDataLifecycle(new MemoryCache(new MemoryCacheOptions())));
+
     private sealed class FakeGraph : IPlannerGraphClient
     {
         public int DetailReads { get; private set; }
         public bool FailNameLookup { get; init; }
         public DateTimeOffset? StartDateTime { get; init; }
+        public string PlanId { get; init; } = "plan";
         public Task<GraphTask?> GetTaskAsync(string taskId, CancellationToken ct) =>
-            Task.FromResult<GraphTask?>(new GraphTask(taskId, "Task", "plan", "bucket", null, 3, 50, "etag", ["person"],
+            Task.FromResult<GraphTask?>(new GraphTask(taskId, "Task", PlanId, "bucket", null, 3, 50, "etag", ["person"],
                 StartDateTime: StartDateTime, AppliedCategories: ["category1"]));
         public Task<string?> GetUserDisplayNameAsync(string userId, CancellationToken ct) => FailNameLookup
             ? throw new HttpRequestException("Directory unavailable")

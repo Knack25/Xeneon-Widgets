@@ -9,8 +9,9 @@ namespace PlannerEdge.Helper.Planner;
 
 public sealed class TaskChatService(
     IPlannerGraphClient graphClient,
-    IPlannerSettingsStore settingsStore,
-    TaskDetailsService taskDetails)
+    SelectedPlanTaskService selectedPlanTasks,
+    TaskDetailsService taskDetails,
+    PlannerDataLifecycle lifecycle)
 {
     private const string PermissionMessage = "Enable task chat to read and post Planner comments.";
     private const string AttachmentPendingMessage =
@@ -18,15 +19,20 @@ public sealed class TaskChatService(
 
     public async Task<TaskChatResponse> GetAsync(string taskId, string? cursor, CancellationToken cancellationToken)
     {
+        using var operation = lifecycle.BindOperation();
+        var ticket = lifecycle.CaptureTicket();
         var context = await ResolveAsync(taskId, cancellationToken);
-        if (string.IsNullOrWhiteSpace(context.Task.ConversationThreadId))
+        if (string.IsNullOrWhiteSpace(context.Selected.Task.ConversationThreadId))
         {
             if (!string.IsNullOrWhiteSpace(cursor))
                 throw new ArgumentException("The conversation cursor is no longer valid.", nameof(cursor));
             try
             {
-                await graphClient.EnsureConversationAccessAsync(cancellationToken);
-                return new TaskChatResponse("available", []);
+                await selectedPlanTasks.RunAsync(context.Selected,
+                    ct => graphClient.EnsureConversationAccessAsync(ct), cancellationToken);
+                var response = new TaskChatResponse("available", []);
+                lifecycle.RequireCurrent(ticket);
+                return response;
             }
             catch (MsalUiRequiredException)
             {
@@ -34,10 +40,13 @@ public sealed class TaskChatService(
             }
         }
 
-        var continuation = DecodeCursor(cursor, context.GroupId, context.Task.ConversationThreadId);
+        var continuation = DecodeCursor(cursor, context.GroupId, context.Selected.Task.ConversationThreadId);
         try
         {
-            return await LoadAsync(context.GroupId, context.Task.ConversationThreadId, continuation, cancellationToken);
+            var response = await LoadAsync(context.Selected, context.GroupId,
+                context.Selected.Task.ConversationThreadId, continuation, cancellationToken);
+            lifecycle.RequireCurrent(ticket);
+            return response;
         }
         catch (MsalUiRequiredException)
         {
@@ -53,27 +62,30 @@ public sealed class TaskChatService(
             throw new ArgumentException("Task comments cannot exceed 4000 characters.", nameof(message));
 
         var context = await ResolveAsync(taskId, cancellationToken);
-        var threadId = context.Task.ConversationThreadId;
+        var threadId = context.Selected.Task.ConversationThreadId;
         if (string.IsNullOrWhiteSpace(threadId))
         {
             try
             {
-                threadId = await graphClient.CreateConversationThreadAsync(
-                    context.GroupId, context.Task.Title, message, cancellationToken);
+                threadId = await selectedPlanTasks.RunAsync(context.Selected,
+                    ct => graphClient.CreateConversationThreadAsync(
+                        context.GroupId, context.Selected.Task.Title, message, ct), cancellationToken);
             }
             catch (MsalUiRequiredException)
             {
                 throw ConversationPermissionRequired();
             }
 
-            if (!await AttachCreatedThreadAsync(context.Task, threadId, cancellationToken))
+            if (!await AttachCreatedThreadAsync(context.Selected, threadId, cancellationToken))
                 return new TaskChatResponse("attachment_pending", [], Message: AttachmentPendingMessage);
         }
         else
         {
             try
             {
-                await graphClient.ReplyToConversationAsync(context.GroupId, threadId, message, cancellationToken);
+                await selectedPlanTasks.RunAsync(context.Selected,
+                    ct => graphClient.ReplyToConversationAsync(context.GroupId, threadId, message, ct),
+                    cancellationToken);
             }
             catch (MsalUiRequiredException)
             {
@@ -83,7 +95,7 @@ public sealed class TaskChatService(
 
         try
         {
-            return await LoadAsync(context.GroupId, threadId, null, cancellationToken);
+            return await LoadAsync(context.Selected, context.GroupId, threadId, null, cancellationToken);
         }
         catch (MsalUiRequiredException)
         {
@@ -91,29 +103,25 @@ public sealed class TaskChatService(
         }
     }
 
-    private async Task<(GraphTask Task, string GroupId)> ResolveAsync(string taskId,
+    private async Task<(SelectedPlanTask Selected, string GroupId)> ResolveAsync(string taskId,
         CancellationToken cancellationToken)
     {
-        var settings = await settingsStore.LoadSettingsAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(settings.SelectedPlanId))
-            throw new ArgumentException("Choose a board first.");
+        var selected = await selectedPlanTasks.GetBoundAsync(taskId, cancellationToken);
 
-        var task = await graphClient.GetTaskAsync(taskId, cancellationToken)
-            ?? throw new InvalidOperationException("Planner task was not found.");
-        if (!task.PlanId.Equals(settings.SelectedPlanId, StringComparison.Ordinal))
-            throw new ArgumentException("This task is not on the selected board.", nameof(taskId));
-
-        var plan = (await graphClient.GetMyPlansAsync(cancellationToken))
-            .SingleOrDefault(candidate => candidate.Id == settings.SelectedPlanId);
+        var plan = (await selectedPlanTasks.RunAsync(selected,
+                ct => graphClient.GetMyPlansAsync(ct), cancellationToken))
+            .SingleOrDefault(candidate => candidate.Id == selected.Task.PlanId);
         if (string.IsNullOrWhiteSpace(plan?.GroupId))
             throw new InvalidOperationException("The selected Planner board is unavailable.");
-        return (task, plan.GroupId);
+        return (selected, plan.GroupId);
     }
 
-    private async Task<TaskChatResponse> LoadAsync(string groupId, string threadId, Uri? continuation,
+    private async Task<TaskChatResponse> LoadAsync(SelectedPlanTask selected, string groupId, string threadId,
+        Uri? continuation,
         CancellationToken cancellationToken)
     {
-        var page = await graphClient.GetConversationPostsAsync(groupId, threadId, continuation, cancellationToken);
+        var page = await selectedPlanTasks.RunAsync(selected,
+            ct => graphClient.GetConversationPostsAsync(groupId, threadId, continuation, ct), cancellationToken);
         var messages = page.Posts
             .Select(post => new TaskChatMessage(post.Id, post.Author, post.CreatedAt,
                 post.ContentType.Equals("html", StringComparison.OrdinalIgnoreCase)
@@ -126,53 +134,62 @@ public sealed class TaskChatService(
             page.NextLink is null ? null : EncodeCursor(page.NextLink));
     }
 
-    private async Task<bool> AttachCreatedThreadAsync(GraphTask originalTask, string threadId,
+    private async Task<bool> AttachCreatedThreadAsync(SelectedPlanTask selected, string threadId,
         CancellationToken cancellationToken)
     {
+        var originalTask = selected.Task;
         try
         {
-            await graphClient.SetConversationThreadAsync(originalTask.Id, threadId, originalTask.ETag, cancellationToken);
+            await selectedPlanTasks.RunAsync(selected,
+                ct => graphClient.SetConversationThreadAsync(originalTask.Id, threadId, originalTask.ETag, ct),
+                cancellationToken);
             taskDetails.Invalidate(originalTask.Id);
             return true;
         }
-        catch (Exception error) when (error is not OperationCanceledException)
+        catch (Exception error) when (error is not OperationCanceledException && !IsAuthorizationFailure(error))
         {
-            var refreshed = await TryReloadTaskAsync(originalTask.Id, cancellationToken);
-            if (refreshed?.ConversationThreadId == threadId)
+            var refreshed = await TryReloadTaskAsync(selected, cancellationToken);
+            if (refreshed?.Task.ConversationThreadId == threadId)
             {
                 taskDetails.Invalidate(originalTask.Id);
                 return true;
             }
-            if (refreshed is null || !string.IsNullOrWhiteSpace(refreshed.ConversationThreadId))
+            if (refreshed is null || !string.IsNullOrWhiteSpace(refreshed.Task.ConversationThreadId))
                 return false;
 
             try
             {
-                await graphClient.SetConversationThreadAsync(originalTask.Id, threadId, refreshed.ETag, cancellationToken);
+                await selectedPlanTasks.RunAsync(refreshed,
+                    ct => graphClient.SetConversationThreadAsync(originalTask.Id, threadId, refreshed.Task.ETag, ct),
+                    cancellationToken);
                 taskDetails.Invalidate(originalTask.Id);
                 return true;
             }
-            catch (Exception retryError) when (retryError is not OperationCanceledException)
+            catch (Exception retryError) when (retryError is not OperationCanceledException && !IsAuthorizationFailure(retryError))
             {
-                var afterRetry = await TryReloadTaskAsync(originalTask.Id, cancellationToken);
-                if (afterRetry?.ConversationThreadId != threadId) return false;
+                var afterRetry = await TryReloadTaskAsync(selected, cancellationToken);
+                if (afterRetry?.Task.ConversationThreadId != threadId) return false;
                 taskDetails.Invalidate(originalTask.Id);
                 return true;
             }
         }
     }
 
-    private async Task<GraphTask?> TryReloadTaskAsync(string taskId, CancellationToken cancellationToken)
+    private async Task<SelectedPlanTask?> TryReloadTaskAsync(SelectedPlanTask selected,
+        CancellationToken cancellationToken)
     {
         try
         {
-            return await graphClient.GetTaskAsync(taskId, cancellationToken);
+            return await selectedPlanTasks.RefreshAsync(selected, cancellationToken);
         }
-        catch (Exception error) when (error is not OperationCanceledException)
+        catch (Exception error) when (error is not OperationCanceledException && !IsAuthorizationFailure(error))
         {
             return null;
         }
     }
+
+    private static bool IsAuthorizationFailure(Exception error) => error is GraphApiException
+        { StatusCode: System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden };
 
     private static string EncodeCursor(Uri uri) => Convert.ToBase64String(Encoding.UTF8.GetBytes(uri.AbsoluteUri))
         .TrimEnd('=').Replace('+', '-').Replace('/', '_');

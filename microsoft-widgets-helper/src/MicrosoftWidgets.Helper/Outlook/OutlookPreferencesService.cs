@@ -1,15 +1,16 @@
+using PlannerEdge.Helper.Auth;
 namespace PlannerEdge.Helper.Outlook;
 
 public sealed class OutlookPreferencesService
 {
     private readonly OutlookGraphClient graph;
-    private readonly OutlookAccountState state;
+    private readonly MicrosoftAccountState state;
     private readonly TimeProvider clock;
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly object sync = new();
     private WorkingHours? hours;
     private DateTimeOffset fetchedAt;
-    public OutlookPreferencesService(OutlookGraphClient graph, OutlookAccountState state, TimeProvider clock)
+    public OutlookPreferencesService(OutlookGraphClient graph, MicrosoftAccountState state, TimeProvider clock)
     {
         this.graph = graph; this.state = state; this.clock = clock;
         state.Invalidated += () => { lock (sync) { hours = null; fetchedAt = default; } };

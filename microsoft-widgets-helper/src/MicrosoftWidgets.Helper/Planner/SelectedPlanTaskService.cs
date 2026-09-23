@@ -3,18 +3,52 @@ using PlannerEdge.Helper.Storage;
 
 namespace PlannerEdge.Helper.Planner;
 
-public sealed class SelectedPlanTaskService(
-    IPlannerGraphClient graphClient,
-    IPlannerSettingsStore settingsStore)
+public sealed class SelectedPlanTaskService
 {
-    public async Task<GraphTask> GetAsync(string taskId, CancellationToken cancellationToken)
+    private readonly IPlannerGraphClient graphClient;
+    private readonly IBoardSelectionCoordinator selection;
+
+    public SelectedPlanTaskService(IPlannerGraphClient graphClient, IPlannerSettingsStore settingsStore,
+        IBoardSelectionCoordinator selection)
     {
-        var settings = await settingsStore.LoadSettingsAsync(cancellationToken);
-        var task = await graphClient.GetTaskAsync(taskId, cancellationToken)
+        this.graphClient = graphClient;
+        this.selection = selection;
+    }
+
+    public SelectedPlanTaskService(IPlannerGraphClient graphClient, IPlannerSettingsStore settingsStore)
+        : this(graphClient, settingsStore, new BoardSelectionCoordinator(settingsStore)) { }
+
+    public async Task<GraphTask> GetAsync(string taskId, CancellationToken cancellationToken)
+        => (await GetBoundAsync(taskId, cancellationToken)).Task;
+
+    public async Task<SelectedPlanTask> GetBoundAsync(string taskId, CancellationToken cancellationToken)
+    {
+        var ticket = await selection.CaptureAsync(cancellationToken);
+        var task = await selection.RunOperationAsync(ticket, ct => graphClient.GetTaskAsync(taskId, ct), cancellationToken)
             ?? throw new InvalidOperationException("Planner task was not found.");
-        if (string.IsNullOrWhiteSpace(settings.SelectedPlanId) ||
-            !string.Equals(task.PlanId, settings.SelectedPlanId, StringComparison.Ordinal))
+        if (!string.Equals(task.PlanId, ticket.PlanId, StringComparison.Ordinal))
             throw new ArgumentException("This task is not on the selected board.");
-        return task;
+        return new SelectedPlanTask(task, ticket);
+    }
+
+    public Task RunAsync(SelectedPlanTask task, Func<CancellationToken, Task> operation,
+        CancellationToken cancellationToken) => selection.RunOperationAsync(task.Selection, operation, cancellationToken);
+
+    public Task<T> RunAsync<T>(SelectedPlanTask task, Func<CancellationToken, Task<T>> operation,
+        CancellationToken cancellationToken) => selection.RunOperationAsync(task.Selection, operation, cancellationToken);
+
+    internal Task RunPublicationAsync(SelectedPlanTask task, Func<CancellationToken, Task> publication,
+        CancellationToken cancellationToken) => selection.RunAsync(task.Selection, publication, cancellationToken);
+
+    public async Task<SelectedPlanTask> RefreshAsync(SelectedPlanTask selected, CancellationToken cancellationToken)
+    {
+        var task = await RunAsync(selected,
+            ct => graphClient.GetTaskAsync(selected.Task.Id, ct), cancellationToken)
+            ?? throw new InvalidOperationException("Planner task was not found.");
+        if (!string.Equals(task.PlanId, selected.Selection.PlanId, StringComparison.Ordinal))
+            throw new ArgumentException("This task is not on the selected board.");
+        return selected with { Task = task };
     }
 }
+
+public sealed record SelectedPlanTask(GraphTask Task, BoardSelectionTicket Selection);

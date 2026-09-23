@@ -1,12 +1,149 @@
 using PlannerEdge.Helper.Contracts;
 using PlannerEdge.Helper.Storage;
+using PlannerEdge.Helper.Auth;
 
 namespace PlannerEdge.Helper.Tests;
 
 public sealed class StorageTests
 {
     [Fact]
-    public async Task SettingsStore_LoadsLegacyThreeFieldSettings()
+    public async Task LocalJsonStore_serializes_concurrent_writes_to_the_same_key()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "MicrosoftWidgetsTests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var store = new LocalJsonStore(root);
+            var payloads = Enumerable.Range(0, 32)
+                .Select(index => new ConcurrentPayload(index, new string((char)('A' + index % 26), 256 * 1024)))
+                .ToArray();
+
+            await Task.WhenAll(payloads.Select(payload =>
+                store.WriteAsync("microsoft-account-identity", payload, default)));
+
+            var stored = await store.ReadAsync<ConcurrentPayload>("microsoft-account-identity", default);
+            Assert.NotNull(stored);
+            Assert.Contains(stored, payloads);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task LocalJsonStore_preserves_same_key_write_order()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "MicrosoftWidgetsTests", Guid.NewGuid().ToString("N"));
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            var store = new LocalJsonStore(root);
+            var first = Task.Run(() => store.WriteAsync("ordered", new BlockingPayload(1, started, release), default));
+            await started.Task;
+            var second = store.WriteAsync("ordered", new ConcurrentPayload(2, "second"), default);
+            Assert.False(second.IsCompleted);
+
+            release.TrySetResult();
+            await Task.WhenAll(first, second);
+
+            Assert.Equal(2, (await store.ReadAsync<ConcurrentPayload>("ordered", default))!.Sequence);
+        }
+        finally
+        {
+            release.TrySetResult();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task LocalJsonStore_does_not_block_writes_to_different_keys()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "MicrosoftWidgetsTests", Guid.NewGuid().ToString("N"));
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            var store = new LocalJsonStore(root);
+            var blocked = Task.Run(() => store.WriteAsync("first", new BlockingPayload(1, started, release), default));
+            await started.Task;
+
+            await store.WriteAsync("second", new ConcurrentPayload(2, "available"), default)
+                .WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(2, (await store.ReadAsync<ConcurrentPayload>("second", default))!.Sequence);
+
+            release.TrySetResult();
+            await blocked;
+        }
+        finally
+        {
+            release.TrySetResult();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task LocalJsonStore_reads_complete_value_while_replacement_is_in_progress()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "MicrosoftWidgetsTests", Guid.NewGuid().ToString("N"));
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            var store = new LocalJsonStore(root);
+            await store.WriteAsync("replace", new ConcurrentPayload(1, "original"), default);
+            var replacement = Task.Run(() => store.WriteAsync("replace", new BlockingPayload(2, started, release), default));
+            await started.Task;
+
+            Assert.Equal(1, (await store.ReadAsync<ConcurrentPayload>("replace", default))!.Sequence);
+            release.TrySetResult();
+            await replacement;
+            Assert.Equal(2, (await store.ReadAsync<ConcurrentPayload>("replace", default))!.Sequence);
+        }
+        finally
+        {
+            release.TrySetResult();
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task LocalJsonStore_allows_atomic_replacement_while_a_read_handle_is_open()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "MicrosoftWidgetsTests", Guid.NewGuid().ToString("N"));
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<BlockingReadPayload?>? read = null;
+        try
+        {
+            var store = new LocalJsonStore(root);
+            await store.WriteAsync("replace-open-read", new ConcurrentPayload(1, "original"), default);
+            BlockingReadPayload.Coordinate(started, release);
+            read = Task.Run(() => store.ReadAsync<BlockingReadPayload>("replace-open-read", default));
+            await started.Task;
+
+            var path = Path.Combine(root, "replace-open-read.json");
+            Assert.Throws<IOException>(() =>
+                new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete).Dispose());
+
+            await store.WriteAsync("replace-open-read", new ConcurrentPayload(2, "replacement"), default)
+                .WaitAsync(TimeSpan.FromSeconds(2));
+            release.TrySetResult();
+
+            Assert.Equal(1, (await read)!.Sequence);
+            Assert.Equal(2, (await store.ReadAsync<ConcurrentPayload>("replace-open-read", default))!.Sequence);
+        }
+        finally
+        {
+            release.TrySetResult();
+            BlockingReadPayload.Clear();
+            if (read is not null) await read;
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task SettingsStore_ExpiresLegacyThreeFieldSettings()
     {
         var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -16,9 +153,10 @@ public sealed class StorageTests
 
         var loaded = await store.LoadSettingsAsync(CancellationToken.None);
 
-        Assert.Equal("plan-1", loaded.SelectedPlanId);
-        Assert.False(loaded.HideCompletedTasks);
+        Assert.Null(loaded.SelectedPlanId);
+        Assert.True(loaded.HideCompletedTasks);
         Assert.Null(loaded.PlanViews);
+        Assert.False(File.Exists(Path.Combine(root, "settings.json")));
     }
 
     [Fact]
@@ -118,7 +256,7 @@ public sealed class StorageTests
     }
 
     [Fact]
-    public async Task SettingsStore_LoadsLegacyCachedDisplay()
+    public async Task SettingsStore_ExpiresLegacyCachedDisplay()
     {
         var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -148,10 +286,43 @@ public sealed class StorageTests
 
         var loaded = await store.LoadCachedDisplayAsync(CancellationToken.None);
 
-        Assert.NotNull(loaded);
-        Assert.Equal("Legacy task", Assert.Single(Assert.Single(loaded.Buckets).Tasks).Title);
-        Assert.Null(loaded.Labels);
-        Assert.True(loaded.IsStale);
+        Assert.Null(loaded);
+        Assert.False(File.Exists(Path.Combine(root, "cached-display.json")));
+    }
+
+    [Fact]
+    public async Task SettingsStore_DeletesSettingsOwnedByAnotherAccount()
+    {
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var json = new LocalJsonStore(root);
+        await json.WriteAsync("settings", new PlannerSettingsSnapshot(1, "wrong-account",
+            new SettingsDto("private-plan", "Private", true)), default);
+        var store = new PlannerSettingsStore(json);
+
+        var loaded = await store.LoadSettingsAsync(default);
+
+        Assert.Null(loaded.SelectedPlanId);
+        Assert.False(File.Exists(Path.Combine(root, "settings.json")));
+    }
+
+    [Theory]
+    [InlineData("2026-09-23T12:00:00Z")]
+    [InlineData("2026-09-21T11:59:59Z")]
+    public async Task SettingsStore_DeletesCachedDisplayOutsideAuthorizedLifetime(string savedAt)
+    {
+        var root = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+        var json = new LocalJsonStore(root);
+        var identity = new StorageIdentityProvider();
+        var account = new MicrosoftAccountState(identity, json);
+        var lease = await account.GetAsync(default);
+        await json.WriteAsync("cached-display", new PlannerSnapshot(1, lease.Key,
+            DateTimeOffset.Parse(savedAt), new BoardDisplay("private-plan", "Private",
+                DateTimeOffset.Parse("2026-09-22T12:00:00Z"), false, [])), default);
+        var store = new PlannerSettingsStore(json, account,
+            new StorageTimeProvider(DateTimeOffset.Parse("2026-09-22T12:00:00Z")));
+
+        Assert.Null(await store.LoadCachedDisplayAsync(default));
+        Assert.False(File.Exists(Path.Combine(root, "cached-display.json")));
     }
 
     private sealed class CoordinatedSettingsJsonStore(SettingsDto current) : ILocalJsonStore
@@ -167,20 +338,86 @@ public sealed class StorageTests
 
         public async Task<T?> ReadAsync<T>(string name, CancellationToken cancellationToken)
         {
-            if (typeof(T) != typeof(SettingsDto)) return default;
+            if (typeof(T) == typeof(PlannerSafePreferences))
+                return (T)(object)new PlannerSafePreferences(current.HideCompletedTasks);
+            if (typeof(T) != typeof(PlannerSettingsSnapshot)) return default;
             if (Interlocked.Increment(ref settingsReadCount) == 1)
             {
                 firstReadStarted.TrySetResult();
                 await allowFirstRead.Task.WaitAsync(cancellationToken);
             }
 
-            return (T)(object)current;
+            return (T)(object)new PlannerSettingsSnapshot(1, TestAccountKey, current);
         }
 
         public Task WriteAsync<T>(string name, T value, CancellationToken cancellationToken)
         {
-            current = (SettingsDto)(object)value!;
+            if (value is PlannerSettingsSnapshot snapshot) current = snapshot.Settings;
+            else if (value is PlannerSafePreferences safe) current = current with { HideCompletedTasks = safe.HideCompletedTasks };
             return Task.CompletedTask;
+        }
+
+        private static string TestAccountKey { get; } = MicrosoftAccountState.Key(
+            new MicrosoftAccountIdentity("test-home", "test-tenant", "test-client", "test@example.invalid"));
+    }
+
+    private sealed record ConcurrentPayload(int Sequence, string Content);
+
+    private sealed class StorageIdentityProvider : IMicrosoftAccountIdentityProvider
+    {
+        public Task<MicrosoftAccountIdentity> GetAccountIdentityAsync(CancellationToken cancellationToken) =>
+            Task.FromResult(new MicrosoftAccountIdentity("storage-home", "storage-tenant", "storage-client",
+                "storage@example.invalid"));
+    }
+
+    private sealed class StorageTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => now;
+    }
+
+    private sealed class BlockingReadPayload
+    {
+        private static TaskCompletionSource? started;
+        private static TaskCompletionSource? release;
+        private int sequence;
+
+        public int Sequence
+        {
+            get => sequence;
+            set
+            {
+                started?.TrySetResult();
+                release?.Task.GetAwaiter().GetResult();
+                sequence = value;
+            }
+        }
+
+        public string Content { get; set; } = string.Empty;
+
+        public static void Coordinate(TaskCompletionSource readStarted, TaskCompletionSource allowRead)
+        {
+            started = readStarted;
+            release = allowRead;
+        }
+
+        public static void Clear()
+        {
+            started = null;
+            release = null;
+        }
+    }
+
+    private sealed class BlockingPayload(int sequence, TaskCompletionSource started, TaskCompletionSource release)
+    {
+        public int Sequence { get; } = sequence;
+        public string Content
+        {
+            get
+            {
+                started.TrySetResult();
+                release.Task.GetAwaiter().GetResult();
+                return "blocked";
+            }
         }
     }
 }

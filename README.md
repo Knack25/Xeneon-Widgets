@@ -4,9 +4,9 @@ Microsoft Planner and Outlook on the XENEON EDGE, backed by a shared Windows hel
 
 ## Install
 
-Download the **MicrosoftWidgetsSetup** installer from the [latest release](https://github.com/Knack25/Xeneon-Widgets/releases/latest). The installer includes the helper, Planner and Outlook widgets, Start menu shortcuts, and an optional Windows startup setting. No terminal commands or separate runtime installation are needed.
+Download the **MicrosoftWidgetsSetup** installer from the [latest release](https://github.com/Knack25/Xeneon-Widgets/releases/latest) and run it normally, without **Run as administrator**. The installer includes the helper, Planner and Outlook widgets, Start menu shortcuts, and an optional Windows startup setting. No terminal commands or separate runtime installation are needed.
 
-Follow the setup page to connect your work account, choose a board, and download the widget for import into iCUE. See the [installation guide](docs/INSTALL.md) for upgrades, Microsoft permissions, and portable use.
+Open setup from the helper's notification-area icon or the Start menu, then connect your work account, choose a board, and approve each widget's short pairing code. Direct visits to `http://localhost:8787` intentionally show only instructions to open setup from the tray. After this security upgrade, each existing Planner and Outlook widget must be paired once again. See the [installation guide](docs/INSTALL.md) for upgrades, Microsoft permissions, and portable use.
 
 ## Projects
 
@@ -39,6 +39,6 @@ All previews use fictional demo data. Appearance settings are included in releas
 
 ## Build a release
 
-Install the .NET 10 SDK, Node.js, and Inno Setup 6. Run `npm ci` in `planner-edge-widget/widget`, then run `scripts/build-release.ps1` from the repository root. It runs tests and builds the installer, portable archive, widget package, guide, and checksums in `dist/release`.
+Install PowerShell 7, the .NET 10 SDK, Node.js, and Inno Setup 6. Run `npm ci` in `planner-edge-widget/widget`, then run `scripts/build-release.ps1` from the repository root. It runs tests and builds the installer, portable archive, widget package, guide, and checksums in a verified content-addressed directory under `dist/release-snapshots`. Resolve the current release through `pwsh scripts/resolve-release.ps1`; the command verifies the pointer, snapshot identity, checksums, and archive contents before returning the release path.
 
 Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) for repository changes.

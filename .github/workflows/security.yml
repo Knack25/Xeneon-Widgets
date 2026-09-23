@@ -1,0 +1,54 @@
+name: Security verification
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            planner-edge-widget/widget/package-lock.json
+            outlook-edge-widget/package-lock.json
+
+      - name: Restore locked Planner dependencies
+        working-directory: planner-edge-widget/widget
+        run: npm ci --ignore-scripts
+
+      - name: Restore locked Outlook dependencies
+        working-directory: outlook-edge-widget
+        run: npm ci --ignore-scripts
+
+      - name: Install Chromium for setup checks
+        working-directory: outlook-edge-widget
+        run: npx playwright install chromium
+
+      - name: Audit dependencies and run complete security verification
+        shell: pwsh
+        run: ./scripts/verify.ps1
+
+      - name: Scan tracked history for secret patterns
+        shell: pwsh
+        run: ./scripts/scan-secrets.ps1

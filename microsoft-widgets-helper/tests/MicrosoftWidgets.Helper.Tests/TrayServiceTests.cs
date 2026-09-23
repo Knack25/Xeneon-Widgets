@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using PlannerEdge.Helper.Hosting;
+using PlannerEdge.Helper.Security;
 using PlannerEdge.Helper.Updates;
 
 namespace PlannerEdge.Helper.Tests;
@@ -14,7 +15,7 @@ public sealed class TrayServiceTests
         {
             using var lifetime = new Lifetime();
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-            var service = new TrayService(new UpdateService(new Source(), new Installer(), "0.3.2"), lifetime, NullLogger<TrayService>.Instance);
+            var service = new TrayService(new UpdateService(new Source(), new Installer(), "0.3.2"), new LocalAccessService(TimeProvider.System), lifetime, NullLogger<TrayService>.Instance);
             await service.StartAsync(timeout.Token);
             await service.StopAsync(timeout.Token);
             Assert.True(lifetime.ApplicationStopping.IsCancellationRequested);
@@ -26,7 +27,7 @@ public sealed class TrayServiceTests
     {
         using var lifetime = new Lifetime();
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        var service = new TrayService(new UpdateService(new Source(), new Installer(), "0.3.2"), lifetime, NullLogger<TrayService>.Instance);
+        var service = new TrayService(new UpdateService(new Source(), new Installer(), "0.3.2"), new LocalAccessService(TimeProvider.System), lifetime, NullLogger<TrayService>.Instance);
         var starting = service.StartAsync(timeout.Token);
         lifetime.StopApplication();
         await starting;

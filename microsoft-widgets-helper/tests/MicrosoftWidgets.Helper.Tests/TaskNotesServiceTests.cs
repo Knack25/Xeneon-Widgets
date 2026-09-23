@@ -1,7 +1,9 @@
 using System.Net;
 using Microsoft.Extensions.Caching.Memory;
+using PlannerEdge.Helper.Contracts;
 using PlannerEdge.Helper.Graph;
 using PlannerEdge.Helper.Planner;
+using PlannerEdge.Helper.Storage;
 
 namespace PlannerEdge.Helper.Tests;
 
@@ -12,9 +14,8 @@ public sealed class TaskNotesServiceTests
     {
         var graph = new FakeGraph();
         using var cache = new MemoryCache(new MemoryCacheOptions());
-        var details = new TaskDetailsService(graph, cache);
+        var (details, service) = CreateServices(graph, cache);
         await details.GetAsync("task", CancellationToken.None);
-        var service = new TaskNotesService(graph, details);
 
         await service.UpdateAsync("task", "Line one\nLine two", CancellationToken.None);
         await details.GetAsync("task", CancellationToken.None);
@@ -29,8 +30,7 @@ public sealed class TaskNotesServiceTests
         var graph = new FakeGraph();
         using var cache = new MemoryCache(new MemoryCacheOptions());
 
-        await new TaskNotesService(graph, new TaskDetailsService(graph, cache))
-            .UpdateAsync("task", "", CancellationToken.None);
+        await CreateServices(graph, cache).Notes.UpdateAsync("task", "", CancellationToken.None);
 
         Assert.Equal("", Assert.Single(graph.Updates).Description);
     }
@@ -42,8 +42,7 @@ public sealed class TaskNotesServiceTests
         using var cache = new MemoryCache(new MemoryCacheOptions());
 
         var error = await Assert.ThrowsAsync<ArgumentException>(() =>
-            new TaskNotesService(graph, new TaskDetailsService(graph, cache))
-                .UpdateAsync("task", null!, CancellationToken.None));
+            CreateServices(graph, cache).Notes.UpdateAsync("task", null!, CancellationToken.None));
 
         Assert.Contains("notes", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(0, graph.DetailReads);
@@ -57,7 +56,7 @@ public sealed class TaskNotesServiceTests
     {
         var graph = new FakeGraph();
         using var cache = new MemoryCache(new MemoryCacheOptions());
-        var service = new TaskNotesService(graph, new TaskDetailsService(graph, cache));
+        var service = CreateServices(graph, cache).Notes;
 
         if (shouldReject)
             await Assert.ThrowsAsync<ArgumentException>(() => service.UpdateAsync("task", new string('x', length), CancellationToken.None));
@@ -73,9 +72,8 @@ public sealed class TaskNotesServiceTests
     {
         var graph = new FakeGraph { FailUpdate = true };
         using var cache = new MemoryCache(new MemoryCacheOptions());
-        var details = new TaskDetailsService(graph, cache);
+        var (details, service) = CreateServices(graph, cache);
         var cached = await details.GetAsync("task", CancellationToken.None);
-        var service = new TaskNotesService(graph, details);
 
         await Assert.ThrowsAsync<HttpRequestException>(() =>
             service.UpdateAsync("task", "Updated notes", CancellationToken.None));
@@ -91,9 +89,8 @@ public sealed class TaskNotesServiceTests
     {
         var graph = new FakeGraph { UpdateException = new GraphApiException(HttpStatusCode.PreconditionFailed, "stale") };
         using var cache = new MemoryCache(new MemoryCacheOptions());
-        var details = new TaskDetailsService(graph, cache);
+        var (details, service) = CreateServices(graph, cache);
         await details.GetAsync("task", CancellationToken.None);
-        var service = new TaskNotesService(graph, details);
 
         await Assert.ThrowsAsync<GraphApiException>(() =>
             service.UpdateAsync("task", "Updated notes", CancellationToken.None));
@@ -103,15 +100,46 @@ public sealed class TaskNotesServiceTests
         Assert.Empty(graph.Updates);
     }
 
+    [Fact]
+    public async Task UpdateAsync_RejectsTaskOutsideSelectedPlanBeforeReadingOrWritingDetails()
+    {
+        var graph = new FakeGraph { PlanId = "other-plan" };
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            CreateServices(graph, cache).Notes.UpdateAsync("task", "Notes", CancellationToken.None));
+
+        Assert.Equal(0, graph.DetailReads);
+        Assert.Empty(graph.Updates);
+    }
+
+    private static (TaskDetailsService Details, TaskNotesService Notes) CreateServices(
+        FakeGraph graph, MemoryCache cache)
+    {
+        var selected = new SelectedPlanTaskService(graph, new FakeSettings());
+        var details = new TaskDetailsService(graph, selected, new PlannerDataLifecycle(cache));
+        return (details, new TaskNotesService(graph, selected, details));
+    }
+
+    private sealed class FakeSettings : IPlannerSettingsStore
+    {
+        public Task<SettingsDto> LoadSettingsAsync(CancellationToken ct) =>
+            Task.FromResult(new SettingsDto("plan", "Board", true));
+        public Task SaveSettingsAsync(SettingsDto settings, CancellationToken ct) => throw new NotSupportedException();
+        public Task<BoardDisplay?> LoadCachedDisplayAsync(CancellationToken ct) => throw new NotSupportedException();
+        public Task SaveCachedDisplayAsync(BoardDisplay display, CancellationToken ct) => throw new NotSupportedException();
+    }
+
     private sealed class FakeGraph : IPlannerGraphClient
     {
         public int DetailReads { get; private set; }
         public bool FailUpdate { get; init; }
         public Exception? UpdateException { get; init; }
+        public string PlanId { get; init; } = "plan";
         public List<(string TaskId, string Description, string ETag)> Updates { get; } = [];
 
         public Task<GraphTask?> GetTaskAsync(string taskId, CancellationToken ct) =>
-            Task.FromResult<GraphTask?>(new GraphTask(taskId, "Task", "plan", "bucket", null, null, 0, "etag", []));
+            Task.FromResult<GraphTask?>(new GraphTask(taskId, "Task", PlanId, "bucket", null, null, 0, "etag", []));
 
         public Task<GraphTaskDetails> GetTaskDetailsAsync(string taskId, CancellationToken ct)
         {

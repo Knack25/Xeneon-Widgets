@@ -70,6 +70,7 @@ export class Dialogs {
       }
     } catch(error) {if(generation===this.generation && !signal.aborted) loading.textContent=error.message;}
   }
+  authorizationLost(){if(this.kind==='details' || this.kind==='overflow')this.close();}
   unavailable(){if(this.kind==='overflow'){this.close();return;}if(this.kind==='details'){this.abort?.abort();this.generation++;this.detail=null;const title=this.panel.querySelector('.dialog-head');this.panel.replaceChildren(title,el('p',{role:'status'},'Details unavailable. Reconnect and reopen this event.'));this.panel.querySelector('h2').textContent='Event details';this.panel.querySelector('button').focus();}}
   list(title,events,catalog,openDetails,origin) {
     this.open(title,origin);this.kind='overflow';

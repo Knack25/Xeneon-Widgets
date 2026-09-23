@@ -4,6 +4,15 @@
 #ifndef HelperSource
   #define HelperSource "..\dist\helper"
 #endif
+#ifndef ReleaseOutput
+  #define ReleaseOutput "..\..\dist\release"
+#endif
+#ifndef HelperManifest
+  #error HelperManifest must point to the generated exact installer file list.
+#endif
+#ifndef StopScriptEncodedCommand
+  #error StopScriptEncodedCommand must contain the reviewed shutdown logic.
+#endif
 
 [Setup]
 AppId={{C7DA283D-675F-4467-B340-E24B5572C955}
@@ -19,7 +28,7 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.19045
-OutputDir=..\..\dist\release
+OutputDir={#ReleaseOutput}
 OutputBaseFilename=MicrosoftWidgetsSetup-{#ReleaseVersion}
 Compression=lzma2
 SolidCompression=yes
@@ -35,8 +44,7 @@ Name: "startup"; Description: "Start the helper when I sign in to Windows"; Flag
 Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 
 [Files]
-Source: "{#HelperSource}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "..\..\docs\INSTALL.md"; DestDir: "{app}"; Flags: ignoreversion
+#include HelperManifest
 
 [Icons]
 Name: "{group}\Microsoft Widgets Setup"; Filename: "{app}\MicrosoftWidgets.Helper.exe"; WorkingDir: "{app}"
@@ -50,25 +58,55 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 [Run]
 Filename: "{app}\MicrosoftWidgets.Helper.exe"; Description: "Open Microsoft Widgets setup"; Flags: nowait postinstall skipifsilent; Check: not IsHelperUpdate
 
-[UninstallRun]
-Filename: "{app}\MicrosoftWidgets.Helper.exe"; Parameters: "--stop"; Flags: runhidden waituntilterminated; RunOnceId: "StopHelper"
-
 [Code]
 function IsHelperUpdate: Boolean;
 begin
   Result := ExpandConstant('{param:HELPERUPDATE|0}') <> '0';
 end;
 
-function PrepareToInstall(var NeedsRestart: Boolean): String;
+function RequestHelperStop: Boolean;
+forward;
+
+function InitializeSetup: Boolean;
+begin
+  Result := not IsAdmin;
+  if not Result then
+    MsgBox('Microsoft Widgets is a per-user app. Close this installer and run it normally; do not use "Run as administrator".', mbError, MB_OK);
+end;
+
+function InitializeUninstall: Boolean;
+begin
+  if IsAdmin then
+  begin
+    Result := False;
+    MsgBox('Microsoft Widgets must be removed by the signed-in user. Close this uninstaller and run it normally; do not use "Run as administrator".', mbError, MB_OK);
+    Exit;
+  end;
+
+  Result := RequestHelperStop;
+  if not Result then
+    MsgBox('Microsoft Widgets Helper could not be stopped safely. Close it from the notification area, then try uninstalling again.', mbError, MB_OK)
+  else
+    Sleep(1000);
+end;
+
+function RequestHelperStop: Boolean;
 var
   ResultCode: Integer;
-  HelperPath: String;
+  PowerShellPath: String;
+  Parameters: String;
+begin
+  PowerShellPath := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
+  Parameters := '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand "{#StopScriptEncodedCommand}"';
+  Result := Exec(PowerShellPath, Parameters,
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
-  HelperPath := ExpandConstant('{app}\MicrosoftWidgets.Helper.exe');
-  if FileExists(HelperPath) then
-  begin
-    Exec(HelperPath, '--stop', ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if not RequestHelperStop then
+    Result := 'Microsoft Widgets Helper could not be stopped safely. Close it from the notification area and try again.'
+  else
     Sleep(1000);
-  end;
 end;

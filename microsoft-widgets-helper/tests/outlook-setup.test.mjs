@@ -18,30 +18,39 @@ function setup({ approval = true, error = null, discoveryErrors = [], statusErro
   const timers = [];
   const doc = { querySelector(id) { if (!elements.has(id)) elements.set(id, new Element()); return elements.get(id); },
     createElement() { return new Element(); }, addEventListener() {}, dispatchEvent() {} };
-  vm.runInNewContext(source, {
-    document: doc, AbortController, CustomEvent: class {}, Date, setInterval(callback) { timers.push(callback); },
-    confirm: () => approval,
+  const helperApi = {
     fetch: async (path, options = {}) => {
       calls.push({ path, options });
       if (statusError && path.endsWith('/status')) return { ok: false, status: 401, json: async () => ({ error: { message: statusError } }) };
       if (error && path.endsWith('/connect')) return { ok: false, status: 403, json: async () => ({ message: error }) };
       const value = path.endsWith('/session') ? { token: 'local-session' }
         : path.endsWith('/status') ? { configured: true, signedIn: true, ready, discoveryErrors, error: ready ? null : { code: statusCode, message: 'Not ready' } }
-        : path.endsWith('/pairings') ? [{ id: 'pair-id', code: '123456', instanceId: 'widget-a', expiresAt: new Date().toISOString() }]
-        : path.endsWith('/paired') ? [{ credentialId: 'credential-id', instanceId: 'widget-a' }]
+        : path.endsWith('/pairings') ? ['planner', 'outlook'].map(scope => ({ scope, id: `${scope}-id`, code: '123456', instanceId: 'widget-a', expiresAt: new Date().toISOString() }))
+        : path.endsWith('/paired') ? ['planner', 'outlook'].map(scope => ({ scope, credentialId: `${scope}-credential`, instanceId: 'widget-a' }))
         : path.endsWith('/calendars') ? [{ key: 'calendar', name: '<script>example</script>', owner: 'Example', kind: 'personal' }]
         : path === '/installation' ? { outlookWidgetAvailable: true } : {};
       return { ok: true, status: 200, json: async () => value };
     }
+  };
+  vm.runInNewContext(source, {
+    document: doc, AbortController, CustomEvent: class {}, Date, setInterval(callback) { timers.push(callback); },
+    confirm: () => approval,
+    window: { helperApi },
+    fetch: () => { throw new Error('setup UI must use helperApi.fetch'); }
   });
   return { elements, calls, timers, setReady(value) { ready = value; } };
 }
+test('Outlook setup requests use the owner helper API', async () => {
+  const app = setup(); await settle();
+  assert.ok(app.calls.length > 0);
+});
 test('setup loads status without interactive consent or meeting launch', async () => {
   const app = setup(); await settle();
   assert.equal(app.calls.some(c => c.options.method === 'POST'), false);
   assert.equal(app.calls.some(c => c.path.endsWith('/connect') || c.path.endsWith('/join')), false);
   const status = app.calls.find(c => c.path.endsWith('/status'));
-  assert.equal(status.options.headers['X-Outlook-Session'], 'local-session');
+  assert.equal(status.options.headers['X-Outlook-Session'], undefined);
+  assert.equal(app.calls.some(c => c.path.endsWith('/session')), false);
 });
 test('a failed status check leaves explicit reconnect available without auto consent', async () => {
   const app = setup({ statusError: 'Reconnect Outlook.' }); await settle();
@@ -55,7 +64,21 @@ test('Connect Outlook sends one bundled connection request only after clicking',
   const consent = app.calls.filter(c => c.path.endsWith('/connect'));
   assert.equal(consent.length, 1);
   assert.equal(consent[0].options.method, 'POST');
-  assert.equal(consent[0].options.headers['X-Outlook-Session'], 'local-session');
+  assert.equal(consent[0].options.headers['X-Outlook-Session'], undefined);
+});
+
+test('setup lists scope labels and administers both scopes through shared owner routes', async () => {
+  const app = setup(); await settle();
+  const pending = app.elements.get('#outlook-pairings').children;
+  const paired = app.elements.get('#outlook-paired').children;
+  for (const [index, scope] of ['planner', 'outlook'].entries()) {
+    assert.match(pending[index].children[0].textContent, new RegExp(scope, 'i'));
+    assert.match(paired[index].children[0].textContent, new RegExp(scope, 'i'));
+    await pending[index].children[1].click();
+    await paired[index].children[1].click();
+    assert.ok(app.calls.some(c => c.path === `/api/local-access/pairings/${scope}-id/approve`));
+    assert.ok(app.calls.some(c => c.path === '/api/local-access/pairings/revoke' && JSON.parse(c.options.body).credentialId === `${scope}-credential`));
+  }
 });
 test('admin consent failure remains visible and does not trigger further prompts', async () => {
   const app = setup({ ready: false, error: 'Administrator approval is required.' }); await settle();

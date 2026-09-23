@@ -12,7 +12,9 @@ public sealed class TaskMoveServiceTests
     public async Task MoveAsync_UsesFreshEtagForBucketOnSelectedBoard()
     {
         var graph = new FakeGraph();
-        var service = new TaskMoveService(graph, new FakeSettings(), new MemoryCache(new MemoryCacheOptions()));
+        var settings = new FakeSettings();
+        var service = new TaskMoveService(graph, new SelectedPlanTaskService(graph, settings),
+            new MemoryCache(new MemoryCacheOptions()));
 
         await service.MoveAsync("task", "target", CancellationToken.None);
 
@@ -27,7 +29,8 @@ public sealed class TaskMoveServiceTests
         var graph = new FakeGraph { TaskPlan = taskPlan };
 
         await Assert.ThrowsAsync<ArgumentException>(() =>
-            new TaskMoveService(graph, new FakeSettings(), new MemoryCache(new MemoryCacheOptions()))
+            new TaskMoveService(graph, new SelectedPlanTaskService(graph, new FakeSettings()),
+                new MemoryCache(new MemoryCacheOptions()))
                 .MoveAsync("task", target, CancellationToken.None));
 
         Assert.Null(graph.Move);

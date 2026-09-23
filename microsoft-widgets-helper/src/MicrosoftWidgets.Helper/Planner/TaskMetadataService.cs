@@ -46,8 +46,10 @@ public sealed class TaskMetadataService(
     public async Task SetLabelsAsync(string taskId, IReadOnlyList<string> labelIds,
         CancellationToken cancellationToken)
     {
-        var task = await selectedPlanTasks.GetAsync(taskId, cancellationToken);
-        var labels = await graphClient.GetPlanLabelsAsync(task.PlanId, cancellationToken);
+        var selected = await selectedPlanTasks.GetBoundAsync(taskId, cancellationToken);
+        var task = selected.Task;
+        var labels = await selectedPlanTasks.RunAsync(selected,
+            ct => graphClient.GetPlanLabelsAsync(task.PlanId, ct), cancellationToken);
         var namedIds = labels.Select(label => label.Id).ToHashSet(StringComparer.Ordinal);
         var selectedIds = labelIds.ToHashSet(StringComparer.Ordinal);
         if (selectedIds.Any(labelId => !namedIds.Contains(labelId)))
@@ -57,19 +59,22 @@ public sealed class TaskMetadataService(
         var changes = new Dictionary<string, bool?>();
         foreach (var label in labels)
         {
-            var selected = selectedIds.Contains(label.Id);
-            if (selected != appliedIds.Contains(label.Id)) changes[label.Id] = selected;
+            var isSelected = selectedIds.Contains(label.Id);
+            if (isSelected != appliedIds.Contains(label.Id)) changes[label.Id] = isSelected;
         }
-        await graphClient.UpdateTaskAsync(taskId, new GraphTaskUpdate(AppliedCategories: changes),
-            task.ETag, cancellationToken);
+        await selectedPlanTasks.RunAsync(selected,
+            ct => graphClient.UpdateTaskAsync(taskId, new GraphTaskUpdate(AppliedCategories: changes),
+                task.ETag, ct), cancellationToken);
         cache.Remove(taskId);
     }
 
     private async Task UpdateAsync(string taskId, Func<GraphTask, GraphTaskUpdate> createUpdate,
         CancellationToken cancellationToken)
     {
-        var task = await selectedPlanTasks.GetAsync(taskId, cancellationToken);
-        await graphClient.UpdateTaskAsync(taskId, createUpdate(task), task.ETag, cancellationToken);
+        var selected = await selectedPlanTasks.GetBoundAsync(taskId, cancellationToken);
+        var task = selected.Task;
+        await selectedPlanTasks.RunAsync(selected,
+            ct => graphClient.UpdateTaskAsync(taskId, createUpdate(task), task.ETag, ct), cancellationToken);
         cache.Remove(taskId);
     }
 

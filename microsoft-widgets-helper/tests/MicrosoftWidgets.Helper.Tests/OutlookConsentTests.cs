@@ -1,7 +1,9 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using PlannerEdge.Helper.Auth;
 using PlannerEdge.Helper.Outlook;
+using PlannerEdge.Helper.Security;
 
 namespace MicrosoftWidgets.Helper.Tests;
 
@@ -13,8 +15,7 @@ public sealed class OutlookConsentTests
         await using var host = await OutlookTestHost.StartAsync(true, new ConsentRequiredTokens());
         var client = host.Client;
         client.DefaultRequestHeaders.Add("Origin", client.BaseAddress!.GetLeftPart(UriPartial.Authority));
-        var session = await client.GetFromJsonAsync<JsonElement>("api/outlook/session");
-        client.DefaultRequestHeaders.Add("X-Outlook-Session", session.GetProperty("token").GetString());
+        client.DefaultRequestHeaders.Add(LocalAccessHeaders.Owner, host.OwnerSession);
         var response = await client.GetAsync("api/outlook/status");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var status = await response.Content.ReadFromJsonAsync<JsonElement>();
@@ -27,7 +28,8 @@ public sealed class OutlookConsentTests
 
     private sealed class ConsentRequiredTokens : IOutlookTokenProvider
     {
-        public Task<string> GetAccountKeyAsync(CancellationToken ct) => Task.FromResult("same-account");
+        public Task<MicrosoftAccountIdentity> GetAccountIdentityAsync(CancellationToken ct) =>
+            Task.FromResult(new MicrosoftAccountIdentity("same-account", "test-tenant", "test-client", "user@example.com"));
         public Task<string> GetTokenAsync(CancellationToken ct) => throw new OutlookException("consent_required", "Connect Outlook to request permission.", 401);
     }
 }

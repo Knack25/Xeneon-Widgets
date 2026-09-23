@@ -76,25 +76,25 @@ test('overnight working hours wrap and preserve days', () => {
     {daysOfWeek:[2,3,4,5,6],startTime:'00:00',endTime:'06:00'}
   ]);
 });
-test('preview session token is used on every API call at relative origin', async () => {
+test('preview uses the owner API at relative origin', async () => {
   const requests=[];
-  const api = new OutlookApi({native:false, fetch: async (url,init) => {
+  const api = new OutlookApi({native:false, helperApi: { ready: Promise.resolve(true), fetch: async (url,init) => {
     requests.push({url,init}); return new Response(JSON.stringify(url.endsWith('/session')?{token:'csrf'}:[]));
-  }});
+  }}});
   await api.initialize(); await api.get('calendars'); await api.post('view',{calendarKeys:[],start:'a',end:'b'});
-  assert.equal(requests[0].url,'/api/outlook/session');
-  assert.equal(requests[1].init.headers['X-Outlook-Session'],'csrf');
-  assert.equal(requests[2].init.headers['X-Outlook-Session'],'csrf');
+  assert.equal(requests[0].url,'/api/outlook/calendars');
+  assert.equal(requests[1].url,'/api/outlook/view');
+  assert.equal(requests.length,2);
 });
-test('native bearer and pairing secret follow the wire contract', async () => {
+test('native credential and pairing secret follow the wire contract', async () => {
   const requests=[];
   const api = new OutlookApi({native:true,credential:'paired',fetch:async(url,init)=>{
     requests.push({url,init}); return new Response('{}');
   }});
-  await api.get('status'); await api.pair('instance','unguessable'); await api.poll('id','unguessable');
-  assert.equal(requests[0].url,'http://localhost:8787/api/outlook/status');
-  assert.equal(requests[0].init.headers.Authorization,'Bearer paired');
-  assert.deepEqual(JSON.parse(requests[1].init.body),{instanceId:'instance',requestSecret:'unguessable'});
+  await api.get('calendars'); await api.pair('instance','unguessable'); await api.poll('id','unguessable');
+  assert.equal(requests[0].url,'http://localhost:8787/api/outlook/calendars');
+  assert.equal(requests[0].init.headers['X-Microsoft-Widgets-Credential'],'paired');
+  assert.deepEqual(JSON.parse(requests[1].init.body),{scope:'outlook',instanceId:'instance',requestSecret:'unguessable'});
   assert.deepEqual(JSON.parse(requests[2].init.body),{requestSecret:'unguessable'});
 });
 test('backend snapshot age is not reset by receiving stale data', () => {
@@ -118,17 +118,16 @@ test('working hours convert source-zone dates across DST and midnight', () => {
   assert.equal(monday.start,'2026-03-10T07:30:00+05:30');assert.equal(monday.end,'2026-03-10T15:30:00+05:30');
   assert.equal(initialScrollTime(s,h,'2026-03-09'),'07:30:00');
 });
-test('preview renews session once for safe reads but never replays Join', async () => {
+test('preview does not replay requests after owner authorization expires', async () => {
   for(const path of ['calendars','view','event-details','join']) {
     let sessions=0,calls=0,purges=0;
-    const api=new OutlookApi({fetch:async url=>{
+    const api=new OutlookApi({helperApi:{ready:Promise.resolve(true),fetch:async url=>{
       if(url.endsWith('/session'))return new Response(JSON.stringify({token:`token-${++sessions}`}));
       calls++;return calls===1?new Response('{}',{status:401}):new Response('{}');
-    }});api.onUnauthorized=()=>purges++;
+    }}});api.onUnauthorized=()=>purges++;
     await api.initialize();
-    if(path==='join')await assert.rejects(api.post(path,{reference:'r',calendarKey:'c'}));
-    else if(path==='calendars')await api.get(path);else await api.post(path,{});
-    assert.equal(purges,1);assert.equal(calls,path==='join'?1:2);assert.equal(sessions,path==='join'?1:2);
+    await assert.rejects(path==='calendars'?api.get(path):api.post(path,{reference:'r',calendarKey:'c'}));
+    assert.equal(purges,1);assert.equal(calls,1);assert.equal(sessions,0);
   }
 });
 test('native startup waits for delayed uniqueId without assigning preview storage', async () => {

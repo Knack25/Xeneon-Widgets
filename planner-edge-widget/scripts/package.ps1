@@ -1,32 +1,37 @@
 $ErrorActionPreference = "Stop"
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+$repositoryRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot '..'))
+$inventoryVerifier = Join-Path $repositoryRoot 'scripts\verify-release-inventory.ps1'
+. (Join-Path $repositoryRoot 'scripts\release-safety.ps1')
+. (Join-Path $repositoryRoot 'scripts\release-manifests.ps1')
 $manifest = Get-Content -Raw (Join-Path $projectRoot "widget\manifest.json") | ConvertFrom-Json
 if ($manifest.version -notmatch '^\d+\.\d+\.\d+$') { throw "Widget version must use major.minor.patch." }
-$stage = [IO.Path]::GetFullPath((Join-Path $projectRoot "dist\PlannerEdgeWidget-$($manifest.version)"))
-$distRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot "dist"))
-if (-not $stage.StartsWith($distRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "Packaging stage must stay inside dist."
+$distRoot = Initialize-TrustedDirectory -Path (Join-Path $projectRoot 'dist') -Anchor $projectRoot
+$workspace = New-ReleaseWorkspace -Parent $distRoot -Prefix 'planner-package'
+$stage = Join-Path $workspace 'stage'
+[void][IO.Directory]::CreateDirectory($stage)
+foreach ($relative in $PlannerWidgetManifest) {
+    $source = Join-Path (Join-Path $projectRoot 'widget') ($relative.Replace('/', [IO.Path]::DirectorySeparatorChar))
+    $destination = Join-Path $stage ($relative.Replace('/', [IO.Path]::DirectorySeparatorChar))
+    [void][IO.Directory]::CreateDirectory((Split-Path -Parent $destination))
+    Copy-Item -LiteralPath $source -Destination $destination
 }
-if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
-New-Item -ItemType Directory -Path (Join-Path $stage "resources"), (Join-Path $stage "src") -Force | Out-Null
-
-Copy-Item -LiteralPath (Join-Path $projectRoot "widget\index.html"), (Join-Path $projectRoot "widget\manifest.json"), (Join-Path $projectRoot "widget\styles.css") -Destination $stage
-Copy-Item -LiteralPath (Join-Path $projectRoot "widget\resources\icon.svg") -Destination (Join-Path $stage "resources")
-Copy-Item -LiteralPath (Join-Path $projectRoot "widget\src\api.js"), (Join-Path $projectRoot "widget\src\app.js"), (Join-Path $projectRoot "widget\src\filters.js"), (Join-Path $projectRoot "widget\src\state.js"), (Join-Path $projectRoot "widget\src\view-state.js") -Destination (Join-Path $stage "src")
+& $inventoryVerifier -Stage $stage -Manifest (ConvertTo-Json -InputObject $PlannerWidgetManifest -Compress)
 
 $cli = Join-Path $projectRoot "widget\node_modules\icuewidget-cli\node-bin\icuewidget.js"
-if (-not (Test-Path -LiteralPath $cli)) { throw "Run npm install in widget first." }
-node $cli validate $stage
-if ($LASTEXITCODE -ne 0) { throw "Widget validation failed." }
-node $cli package $stage
-if ($LASTEXITCODE -ne 0) { throw "Widget packaging failed." }
-
-$generated = [IO.Path]::GetFullPath((Join-Path $distRoot "planner-edge-widget.icuewidget"))
+if (-not (Test-Path -LiteralPath $cli)) { throw "Run npm ci in widget first." }
+$generated = [IO.Path]::GetFullPath((Join-Path $workspace "planner-edge-widget.icuewidget"))
 $versioned = [IO.Path]::GetFullPath((Join-Path $distRoot "PlannerEdgeWidget-$($manifest.version).icuewidget"))
-if (-not $generated.StartsWith($distRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or
-    -not $versioned.StartsWith($distRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "Package output must stay inside dist."
+$snapshot = Open-ReleaseSnapshot -Stage $stage -Manifest $PlannerWidgetManifest
+try {
+    node $cli validate $stage
+    if ($LASTEXITCODE -ne 0) { throw "Widget validation failed." }
+    node $cli package $stage --output $generated
+    if ($LASTEXITCODE -ne 0) { throw "Widget packaging failed." }
+    Assert-ReleaseArchive -Archive $generated -Snapshot $snapshot
+    $publishedLease = Publish-VerifiedReleaseArchive -Source $generated -Destination $versioned -TrustedParent $distRoot -Snapshot $snapshot
+    Close-VerifiedReleaseArchive $publishedLease
+} finally {
+    Close-ReleaseSnapshot $snapshot
 }
-if (-not (Test-Path -LiteralPath $generated)) { throw "Widget package was not created." }
-Move-Item -LiteralPath $generated -Destination $versioned -Force
 Write-Host "Import: $versioned"
