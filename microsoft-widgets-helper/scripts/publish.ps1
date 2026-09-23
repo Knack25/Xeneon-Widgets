@@ -16,8 +16,11 @@ if (-not $SkipWidgetBuild) {
 $outlookDist = Join-Path $repositoryRoot 'outlook-edge-widget\dist'
 & $inventoryVerifier -Stage $outlookDist -Manifest (ConvertTo-Json -InputObject $OutlookWidgetManifest -Compress)
 $distRoot = Initialize-TrustedDirectory -Path (Join-Path $projectRoot 'dist') -Anchor $projectRoot
-$output = if ($OutputDirectory) { [IO.Path]::GetFullPath($OutputDirectory) } else { Join-Path $distRoot 'helper' }
-$output = Reset-TrustedDirectory -Path $output -Root $distRoot
+$workspace = New-ReleaseWorkspace -Parent $distRoot -Prefix 'helper-publish'
+$output = if ($OutputDirectory) { [IO.Path]::GetFullPath($OutputDirectory) } else { Join-Path $workspace 'helper' }
+if (Test-Path -LiteralPath $output) { throw "Helper output must be a fresh path: $output" }
+if (-not (Test-ReleasePathWithin $output $distRoot)) { throw "Helper output must stay under the helper dist root: $output" }
+[void][IO.Directory]::CreateDirectory($output)
 dotnet publish $project -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o $output
 if ($LASTEXITCODE -ne 0) { throw "Helper publish failed." }
 & $inventoryVerifier -Stage $output -Manifest (ConvertTo-Json -InputObject $HelperPublishManifest -Compress)
@@ -25,8 +28,15 @@ if ($LASTEXITCODE -ne 0) { throw "Helper publish failed." }
 $version = $projectFile.Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
 $archive = Join-Path $distRoot "MicrosoftWidgetsHelper-$version-win-x64.zip"
 if (-not $SkipArchive) {
-    Remove-TrustedFile -Path $archive -Root $distRoot
-    Compress-Archive -Path (Join-Path $output '*') -DestinationPath $archive
+    $pendingArchive = Join-Path $workspace 'helper.zip'
+    $snapshot = Open-ReleaseSnapshot -Stage $output -Manifest $HelperPublishManifest
+    try {
+        Compress-Archive -Path (Join-Path $output '*') -DestinationPath $pendingArchive
+        Assert-ReleaseArchive -Archive $pendingArchive -Snapshot $snapshot
+        Publish-ReleaseFile -Source $pendingArchive -Destination $archive -TrustedParent $distRoot
+    } finally {
+        Close-ReleaseSnapshot $snapshot
+    }
 }
 Write-Host "Open: $(Join-Path $output 'MicrosoftWidgets.Helper.exe')"
 if (-not $SkipArchive) { Write-Host "Package: $archive" }

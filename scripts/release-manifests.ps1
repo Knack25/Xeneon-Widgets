@@ -10,6 +10,13 @@ $PlannerWidgetManifest = @(
     'src/view-state.js'
 )
 
+$PlannerConnectionTestManifest = @(
+    'app.js',
+    'index.html',
+    'manifest.json',
+    'resources/icon.svg'
+)
+
 $OutlookWidgetManifest = @(
     'index.html',
     'manifest.json',

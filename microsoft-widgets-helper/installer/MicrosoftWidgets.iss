@@ -4,6 +4,9 @@
 #ifndef HelperSource
   #define HelperSource "..\dist\helper"
 #endif
+#ifndef ReleaseOutput
+  #define ReleaseOutput "..\..\dist\release"
+#endif
 
 [Setup]
 AppId={{C7DA283D-675F-4467-B340-E24B5572C955}
@@ -19,7 +22,7 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.19045
-OutputDir=..\..\dist\release
+OutputDir={#ReleaseOutput}
 OutputBaseFilename=MicrosoftWidgetsSetup-{#ReleaseVersion}
 Compression=lzma2
 SolidCompression=yes
@@ -89,10 +92,12 @@ var
 begin
   PowerShellPath := ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe');
   Command := '$pipe = [IO.Pipes.NamedPipeClientStream]::new(''.'', ''Knack25.MicrosoftWidgetsHelper.Control.v1'', [IO.Pipes.PipeDirection]::InOut); ' +
-    'try { $pipe.Connect(3000); $message = [Text.Encoding]::UTF8.GetBytes(''stop''); ' +
+    'try { $pipe.Connect(3000); $pipe.ReadTimeout = 3000; $pipe.WriteTimeout = 3000; $message = [Text.Encoding]::UTF8.GetBytes(''stop''); ' +
     '$pipe.WriteByte([byte]$message.Length); $pipe.Write($message, 0, $message.Length); $pipe.Flush(); ' +
     'if ($pipe.ReadByte() -ne 1) { exit 2 } } ' +
-    'catch [TimeoutException] { exit 0 } catch [IO.IOException] { exit 3 } ' +
+    'catch [TimeoutException] { $mutex = $null; try { $mutex = [Threading.Mutex]::OpenExisting(''Local\Knack25.MicrosoftWidgetsHelper''); exit 4 } ' +
+    'catch [Threading.WaitHandleCannotBeOpenedException] { exit 0 } finally { if ($null -ne $mutex) { $mutex.Dispose() } } } ' +
+    'catch [IO.IOException] { exit 3 } ' +
     'finally { if ($null -ne $pipe) { $pipe.Dispose() } }';
   Result := Exec(PowerShellPath, '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -Command "' + Command + '"',
     '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);

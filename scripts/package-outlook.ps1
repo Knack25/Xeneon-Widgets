@@ -22,8 +22,9 @@ if ($null -eq $title -or [string]::IsNullOrWhiteSpace($title.InnerText)) { throw
 $manifest = Get-Content -Raw -LiteralPath (Join-Path $built 'manifest.json') | ConvertFrom-Json
 if ($manifest.version -notmatch '^\d+\.\d+\.\d+$') { throw 'Outlook widget version must use major.minor.patch.' }
 $dist = Initialize-TrustedDirectory -Path (Join-Path $root 'dist') -Anchor $root
-$stage = [IO.Path]::GetFullPath((Join-Path $dist 'outlook-package'))
-$stage = Reset-TrustedDirectory -Path $stage -Root $dist
+$workspace = New-ReleaseWorkspace -Parent $dist -Prefix 'outlook-package'
+$stage = Join-Path $workspace 'stage'
+[void][IO.Directory]::CreateDirectory($stage)
 foreach ($relative in $OutlookWidgetManifest) {
     $source = Join-Path $built ($relative.Replace('/', [IO.Path]::DirectorySeparatorChar))
     $destination = Join-Path $stage ($relative.Replace('/', [IO.Path]::DirectorySeparatorChar))
@@ -33,15 +34,17 @@ foreach ($relative in $OutlookWidgetManifest) {
 & $inventoryVerifier -Stage $stage -Manifest (ConvertTo-Json -InputObject $OutlookWidgetManifest -Compress)
 $cli = Join-Path $root 'planner-edge-widget/widget/node_modules/icuewidget-cli/node-bin/icuewidget.js'
 if (-not (Test-Path -LiteralPath $cli)) { throw 'Run npm ci in planner-edge-widget/widget to install the shared packaging CLI.' }
-$generated = Join-Path $dist 'outlook-edge-widget.icuewidget'
+$generated = Join-Path $workspace 'outlook-edge-widget.icuewidget'
 $versioned = Join-Path $dist "OutlookEdgeWidget-$($manifest.version).icuewidget"
-Remove-TrustedFile -Path $generated -Root $dist
-Remove-TrustedFile -Path $versioned -Root $dist
-node $cli validate $stage
-if ($LASTEXITCODE -ne 0) { throw 'Outlook widget validation failed.' }
-node $cli package $stage
-if ($LASTEXITCODE -ne 0) { throw 'Outlook widget packaging failed.' }
-& $inventoryVerifier -Stage $stage -Manifest (ConvertTo-Json -InputObject $OutlookWidgetManifest -Compress)
-if (-not (Test-Path -LiteralPath $generated)) { throw 'Outlook widget package was not created.' }
-Move-Item -LiteralPath $generated -Destination $versioned -Force
+$snapshot = Open-ReleaseSnapshot -Stage $stage -Manifest $OutlookWidgetManifest
+try {
+    node $cli validate $stage
+    if ($LASTEXITCODE -ne 0) { throw 'Outlook widget validation failed.' }
+    node $cli package $stage --output $generated
+    if ($LASTEXITCODE -ne 0) { throw 'Outlook widget packaging failed.' }
+    Assert-ReleaseArchive -Archive $generated -Snapshot $snapshot
+    Publish-ReleaseFile -Source $generated -Destination $versioned -TrustedParent $dist
+} finally {
+    Close-ReleaseSnapshot $snapshot
+}
 Write-Host "Import: $versioned"
