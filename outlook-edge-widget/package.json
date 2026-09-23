@@ -12,7 +12,7 @@
   "dependencies": {
     "fullcalendar": "7.1.0",
     "lucide": "0.577.0",
-    "temporal-polyfill": "1.0.1"
+    "temporal-polyfill": "1.0.5"
   },
   "devDependencies": {
     "@playwright/test": "1.55.1",
