@@ -29,7 +29,8 @@ try {
     node $cli package $stage --output $generated
     if ($LASTEXITCODE -ne 0) { throw "Widget packaging failed." }
     Assert-ReleaseArchive -Archive $generated -Snapshot $snapshot
-    Publish-ReleaseFile -Source $generated -Destination $versioned -TrustedParent $distRoot
+    $publishedLease = Publish-VerifiedReleaseArchive -Source $generated -Destination $versioned -TrustedParent $distRoot -Snapshot $snapshot
+    Close-VerifiedReleaseArchive $publishedLease
 } finally {
     Close-ReleaseSnapshot $snapshot
 }

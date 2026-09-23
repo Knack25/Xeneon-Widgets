@@ -5,6 +5,7 @@ $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $verifier = Join-Path $repositoryRoot 'scripts\verify-release-inventory.ps1'
 $releaseSafety = Join-Path $repositoryRoot 'scripts\release-safety.ps1'
 $installer = Join-Path $repositoryRoot 'microsoft-widgets-helper\installer\MicrosoftWidgets.iss'
+$stopScript = Join-Path $repositoryRoot 'microsoft-widgets-helper\installer\Stop-MicrosoftWidgetsHelper.ps1'
 
 function Assert-True([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
@@ -23,6 +24,10 @@ Assert-True ($null -ne (Get-Command New-ReleaseWorkspace -ErrorAction SilentlyCo
 Assert-True ($null -ne (Get-Command Open-ReleaseSnapshot -ErrorAction SilentlyContinue)) 'Immutable release snapshot helper is missing.'
 Assert-True ($null -ne (Get-Command Assert-ReleaseArchive -ErrorAction SilentlyContinue)) 'Archive verifier is missing.'
 Assert-True ($null -ne (Get-Command Publish-ReleaseFile -ErrorAction SilentlyContinue)) 'Atomic release publisher is missing.'
+Assert-True ($null -ne (Get-Command Publish-VerifiedReleaseArchive -ErrorAction SilentlyContinue)) 'Verified archive publisher is missing.'
+Assert-True ($null -ne (Get-Command Close-VerifiedReleaseArchive -ErrorAction SilentlyContinue)) 'Verified archive lease cleanup is missing.'
+Assert-True ($null -ne (Get-Command New-InnoFileManifest -ErrorAction SilentlyContinue)) 'Exact Inno file manifest generator is missing.'
+Assert-True ($null -ne (Get-Command Close-InnoFileManifest -ErrorAction SilentlyContinue)) 'Exact Inno file manifest lease cleanup is missing.'
 Assert-True ($null -ne (Get-Command Publish-ReleaseDirectory -ErrorAction SilentlyContinue)) 'Atomic release-directory publisher is missing.'
 
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ("MicrosoftWidgetsReleaseSecurity-" + [Guid]::NewGuid().ToString('N'))
@@ -63,6 +68,8 @@ try {
     Assert-True ($thirdWorkspace -ne $predictableStage) 'Fresh staging must not reuse a predictable replaced path.'
     Assert-True (Test-Path -LiteralPath (Join-Path $attackerTarget 'keep.txt')) 'Workspace creation must not clean an attacker-controlled junction.'
 
+    $publishRoot = Join-Path $testRoot 'published'
+    New-Item -ItemType Directory -Path $publishRoot | Out-Null
     $archiveStage = New-ReleaseWorkspace -Parent $workspaceRoot -Prefix 'archive'
     Set-Content -NoNewline -LiteralPath (Join-Path $archiveStage 'allowed.txt') -Value 'reviewed'
     New-Item -ItemType Directory -Path (Join-Path $archiveStage 'nested') | Out-Null
@@ -108,14 +115,51 @@ try {
         Assert-Fails { Assert-ReleaseArchive -Archive $mismatchArchive -Snapshot $snapshot } 'Archive verification must reject staged-file hash mismatches.'
         Assert-Fails { Assert-ReleaseArchive -Archive $validArchive -Snapshot $snapshot -MaxEntryBytes 3 } 'Archive verification must enforce per-entry size limits.'
         Assert-Fails { Assert-ReleaseArchive -Archive $validArchive -Snapshot $snapshot -MaxTotalBytes 10 } 'Archive verification must enforce total size limits.'
+
+        $handoffArchive = Join-Path $firstWorkspace 'handoff.zip'
+        Copy-Item -LiteralPath $validArchive -Destination $handoffArchive
+        $handoffTarget = Join-Path $publishRoot 'handoff.zip'
+        Assert-Fails {
+            Publish-VerifiedReleaseArchive -Source $handoffArchive -Destination $handoffTarget -TrustedParent $publishRoot -Snapshot $snapshot -AfterMoveProbe {
+                Copy-Item -LiteralPath $mismatchArchive -Destination $handoffTarget -Force
+            }
+        } 'Replacing an archive during the publish handoff must be detected at the destination.'
+
+        $lockedArchive = Join-Path $firstWorkspace 'locked.zip'
+        Copy-Item -LiteralPath $validArchive -Destination $lockedArchive
+        $lockedTarget = Join-Path $publishRoot 'locked.zip'
+        $replacementDenied = $false
+        $lease = Publish-VerifiedReleaseArchive -Source $lockedArchive -Destination $lockedTarget -TrustedParent $publishRoot -Snapshot $snapshot -WhileLockedProbe {
+            try { Copy-Item -LiteralPath $mismatchArchive -Destination $lockedTarget -Force }
+            catch { $script:replacementDenied = $true }
+        }
+        try {
+            Assert-True $replacementDenied 'A verified destination must deny write/delete replacement while its lease is held.'
+            Assert-Fails { Remove-Item -LiteralPath $lockedTarget -Force } 'A verified destination must remain delete-locked for parent consumption.'
+        } finally {
+            Close-VerifiedReleaseArchive $lease
+        }
+
+        $innoManifestPath = Join-Path $firstWorkspace 'helper-files.iss'
+        $innoLease = New-InnoFileManifest -Snapshot $snapshot -Output $innoManifestPath -TemporaryEntries @('allowed.txt')
+        try {
+            Assert-Fails { Set-Content -LiteralPath $innoManifestPath -Value 'Source: "late-extra.dll"' } 'The generated Inno include must stay immutable through compilation.'
+            Set-Content -LiteralPath (Join-Path $archiveStage 'late-extra.dll') -Value 'must-not-ship'
+            $innoManifest = Get-Content -Raw -LiteralPath $innoManifestPath
+            Assert-True ($innoManifest -match [regex]::Escape('allowed.txt')) 'Generated Inno manifest omitted an expected root file.'
+            Assert-True ($innoManifest -match [regex]::Escape('nested\data.txt')) 'Generated Inno manifest omitted an expected nested file.'
+            Assert-True ($innoManifest -notmatch 'late-extra') 'A file injected after manifest generation must not enter the installer file list.'
+            Assert-True ($innoManifest -notmatch '\\\*') 'Generated Inno manifest must not contain recursive wildcards.'
+            Assert-True ($innoManifest -match 'allowed\.txt[^\r\n]*dontcopy') 'Temporary installer files must come from the same immutable generated manifest.'
+        } finally {
+            Close-InnoFileManifest $innoLease
+        }
     } finally {
         Close-ReleaseSnapshot $snapshot
     }
 
     $publishSource = Join-Path $secondWorkspace 'artifact.zip'
     Set-Content -NoNewline -LiteralPath $publishSource -Value 'new'
-    $publishRoot = Join-Path $testRoot 'published'
-    New-Item -ItemType Directory -Path $publishRoot | Out-Null
     $publishTarget = Join-Path $publishRoot 'artifact.zip'
     Set-Content -NoNewline -LiteralPath $publishTarget -Value 'old'
     Publish-ReleaseFile -Source $publishSource -Destination $publishTarget -TrustedParent $publishRoot
@@ -142,6 +186,7 @@ try {
 }
 
 $installerSource = Get-Content -Raw -LiteralPath $installer
+$stopScriptSource = Get-Content -Raw -LiteralPath $stopScript
 $releaseScriptPaths = @(
     (Join-Path $repositoryRoot 'scripts\build-release.ps1'),
     (Join-Path $repositoryRoot 'scripts\package-outlook.ps1'),
@@ -165,12 +210,16 @@ Assert-True ($installerSource -match 'function\s+InitializeSetup') 'Installer mu
 Assert-True ($installerSource -match 'function\s+InitializeUninstall') 'Installer must reject elevated uninstall.'
 Assert-True ($installerSource -match 'IsAdmin') 'Installer must detect an elevated token.'
 Assert-True ($installerSource -match 'Run as administrator') 'Elevation error must explain how to rerun setup.'
-Assert-True ($installerSource -match 'Knack25\.MicrosoftWidgetsHelper\.Control\.v1') 'Installer must stop the helper through the same-user control pipe.'
-Assert-True ($installerSource -match 'Local\\Knack25\.MicrosoftWidgetsHelper') 'Installer must check the helper instance mutex before accepting a connection timeout.'
-Assert-True ($installerSource -match 'ReadTimeout\s*=') 'Installer helper acknowledgement must have a bounded read timeout.'
-Assert-True ($installerSource -notmatch 'catch \[TimeoutException\] \{ exit 0 \}') 'A pipe timeout alone must not be treated as proof that the helper is absent.'
+Assert-True ($stopScriptSource -match 'Knack25\.MicrosoftWidgetsHelper\.Control\.v1') 'Installer must stop the helper through the same-user control pipe.'
+Assert-True ($stopScriptSource -match 'Local\\Knack25\.MicrosoftWidgetsHelper') 'Installer must check the helper instance mutex before accepting a connection timeout.'
+Assert-True ($stopScriptSource -notmatch '(ReadTimeout|WriteTimeout)\s*=') 'NamedPipeClientStream timeout properties cannot provide a real bounded shutdown.'
+Assert-True ($installerSource -match 'Stop-MicrosoftWidgetsHelper\.ps1') 'Installer must use the tested bounded helper-stop script.'
+Assert-True ($installerSource -match '#include\s+HelperManifest') 'Installer must consume an exact generated file manifest.'
+Assert-True ($installerSource -notmatch 'Source:\s*"\{#HelperSource\}\\\*"') 'Installer must not recursively enumerate the helper stage.'
+Assert-True ($installerSource -notmatch 'Source:\s*"Stop-MicrosoftWidgetsHelper\.ps1"') 'Installer stop script must come from the immutable generated stage manifest.'
+Assert-True ($stopScriptSource -notmatch 'catch \[TimeoutException\] \{ exit 0 \}') 'A pipe timeout alone must not be treated as proof that the helper is absent.'
 Assert-True ($installerSource -match 'Result\s*:=\s*RequestHelperStop;') 'Uninstall must stop through the same-user control pipe before removing files.'
-Assert-True ($installerSource -notmatch 'catch \[IO\.IOException\] \{ exit 0 \}') 'Control-pipe I/O failures must not be treated as a safe stop.'
+Assert-True ($stopScriptSource -notmatch 'catch \[IO\.IOException\] \{ exit 0 \}') 'Control-pipe I/O failures must not be treated as a safe stop.'
 Assert-True ($installerSource -notmatch '\[UninstallRun\]') 'Uninstall must not execute the installed helper.'
 Assert-True ($installerSource -notmatch 'Exec\s*\(\s*HelperPath') 'Setup must not execute the installed helper.'
 

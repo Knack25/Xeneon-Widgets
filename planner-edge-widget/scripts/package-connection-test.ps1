@@ -32,7 +32,8 @@ try {
     node $cli package $stage --output $generated
     if ($LASTEXITCODE -ne 0) { throw "Connection test packaging failed." }
     Assert-ReleaseArchive -Archive $generated -Snapshot $snapshot
-    Publish-ReleaseFile -Source $generated -Destination $output -TrustedParent $dist
+    $publishedLease = Publish-VerifiedReleaseArchive -Source $generated -Destination $output -TrustedParent $dist -Snapshot $snapshot
+    Close-VerifiedReleaseArchive $publishedLease
 } finally {
     Close-ReleaseSnapshot $snapshot
 }

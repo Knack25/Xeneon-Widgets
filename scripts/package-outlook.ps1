@@ -43,7 +43,8 @@ try {
     node $cli package $stage --output $generated
     if ($LASTEXITCODE -ne 0) { throw 'Outlook widget packaging failed.' }
     Assert-ReleaseArchive -Archive $generated -Snapshot $snapshot
-    Publish-ReleaseFile -Source $generated -Destination $versioned -TrustedParent $dist
+    $publishedLease = Publish-VerifiedReleaseArchive -Source $generated -Destination $versioned -TrustedParent $dist -Snapshot $snapshot
+    Close-VerifiedReleaseArchive $publishedLease
 } finally {
     Close-ReleaseSnapshot $snapshot
 }

@@ -17,15 +17,20 @@ public sealed class HelperPackageTests
     public void InstallerRefusesElevationAndUsesTheSameUserControlPipe()
     {
         var source = File.ReadAllText(Path.Combine(RepositoryRoot, "microsoft-widgets-helper", "installer", "MicrosoftWidgets.iss"));
+        var stopScript = File.ReadAllText(Path.Combine(RepositoryRoot, "microsoft-widgets-helper", "installer", "Stop-MicrosoftWidgetsHelper.ps1"));
 
         Assert.Contains("PrivilegesRequired=lowest", source, StringComparison.Ordinal);
         Assert.Contains("function InitializeSetup", source, StringComparison.Ordinal);
         Assert.Contains("function InitializeUninstall", source, StringComparison.Ordinal);
         Assert.Contains("IsAdmin", source, StringComparison.Ordinal);
         Assert.Contains("Run as administrator", source, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("Knack25.MicrosoftWidgetsHelper.Control.v1", source, StringComparison.Ordinal);
+        Assert.Contains("Stop-MicrosoftWidgetsHelper.ps1", source, StringComparison.Ordinal);
+        Assert.Contains("Knack25.MicrosoftWidgetsHelper.Control.v1", stopScript, StringComparison.Ordinal);
+        Assert.Contains("Local\\Knack25.MicrosoftWidgetsHelper", stopScript, StringComparison.Ordinal);
+        Assert.DoesNotContain("ReadTimeout", stopScript, StringComparison.Ordinal);
+        Assert.DoesNotContain("WriteTimeout", stopScript, StringComparison.Ordinal);
         Assert.Contains("Result := RequestHelperStop;", source, StringComparison.Ordinal);
-        Assert.DoesNotContain("catch [IO.IOException] { exit 0 }", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("catch [IO.IOException] { exit 0 }", stopScript, StringComparison.Ordinal);
         Assert.DoesNotContain("[UninstallRun]", source, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("Exec(HelperPath", source, StringComparison.OrdinalIgnoreCase);
     }

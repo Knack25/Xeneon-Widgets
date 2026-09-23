@@ -134,6 +134,20 @@ function Assert-ReleaseArchive(
 ) {
     $archivePath = [IO.Path]::GetFullPath($Archive)
     if (-not (Test-Path -LiteralPath $archivePath -PathType Leaf)) { throw "Release archive does not exist: $archivePath" }
+    $stream = [IO.File]::Open($archivePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        Assert-ReleaseArchiveStream -Stream $stream -DisplayPath $archivePath -Snapshot $Snapshot -MaxEntryBytes $MaxEntryBytes -MaxTotalBytes $MaxTotalBytes
+    } finally { $stream.Dispose() }
+}
+
+function Assert-ReleaseArchiveStream(
+    [IO.Stream]$Stream,
+    [string]$DisplayPath,
+    $Snapshot,
+    [long]$MaxEntryBytes = 268435456,
+    [long]$MaxTotalBytes = 536870912
+) {
+    if ($null -eq $Stream -or -not $Stream.CanRead -or -not $Stream.CanSeek) { throw 'Release archive stream must be readable and seekable.' }
     if ($MaxEntryBytes -le 0 -or $MaxTotalBytes -le 0) { throw 'Archive size limits must be positive.' }
     Assert-ReleaseSnapshotUnchanged $Snapshot
 
@@ -141,9 +155,9 @@ function Assert-ReleaseArchive(
     foreach ($entry in $Snapshot.Entries) { $expected.Add($entry.Name, $entry) }
     $found = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     $total = [long]0
-    $stream = [IO.File]::Open($archivePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    $Stream.Position = 0
     try {
-        $zip = [IO.Compression.ZipArchive]::new($stream, [IO.Compression.ZipArchiveMode]::Read, $false)
+        $zip = [IO.Compression.ZipArchive]::new($Stream, [IO.Compression.ZipArchiveMode]::Read, $true)
         try {
             foreach ($entry in $zip.Entries) {
                 $name = $entry.FullName
@@ -170,13 +184,13 @@ function Assert-ReleaseArchive(
                 if ($entry.Length -ne $source.Length -or $hash -ne $source.Hash) { throw "Archive entry does not match its immutable source: $name" }
             }
         } finally { $zip.Dispose() }
-    } finally { $stream.Dispose() }
+    } finally { $Stream.Position = 0 }
 
     foreach ($entry in $Snapshot.Entries) {
         if (-not $found.Contains($entry.Name)) { throw "Missing archive entry: $($entry.Name)" }
     }
     Assert-ReleaseSnapshotUnchanged $Snapshot
-    Write-Host "Verified release archive: $($found.Count) entries in $archivePath"
+    Write-Host "Verified release archive: $($found.Count) entries in $DisplayPath"
 }
 
 function Publish-ReleaseFile([string]$Source, [string]$Destination, [string]$TrustedParent) {
@@ -192,6 +206,78 @@ function Publish-ReleaseFile([string]$Source, [string]$Destination, [string]$Tru
     if (Test-Path -LiteralPath $destinationPath -PathType Container) { throw "Release destination is a directory: $destinationPath" }
     if (Test-Path -LiteralPath $destinationPath) { Assert-NotReparsePoint $destinationPath }
     [IO.File]::Move($sourcePath, $destinationPath, $true)
+}
+
+function Open-VerifiedReleaseArchive(
+    [string]$Archive,
+    $Snapshot,
+    [scriptblock]$WhileLockedProbe,
+    [long]$MaxEntryBytes = 268435456,
+    [long]$MaxTotalBytes = 536870912
+) {
+    $archivePath = [IO.Path]::GetFullPath($Archive)
+    Assert-NotReparsePoint $archivePath
+    $stream = [IO.File]::Open($archivePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        if ($null -ne $WhileLockedProbe) { & $WhileLockedProbe }
+        Assert-ReleaseArchiveStream -Stream $stream -DisplayPath $archivePath -Snapshot $Snapshot -MaxEntryBytes $MaxEntryBytes -MaxTotalBytes $MaxTotalBytes
+        return [pscustomobject]@{ Path = $archivePath; Stream = $stream }
+    } catch {
+        $stream.Dispose()
+        throw
+    }
+}
+
+function Close-VerifiedReleaseArchive($Lease) {
+    if ($null -ne $Lease -and $null -ne $Lease.Stream) { $Lease.Stream.Dispose() }
+}
+
+function Publish-VerifiedReleaseArchive(
+    [string]$Source,
+    [string]$Destination,
+    [string]$TrustedParent,
+    $Snapshot,
+    [scriptblock]$AfterMoveProbe,
+    [scriptblock]$WhileLockedProbe,
+    [long]$MaxEntryBytes = 268435456,
+    [long]$MaxTotalBytes = 536870912
+) {
+    Publish-ReleaseFile -Source $Source -Destination $Destination -TrustedParent $TrustedParent
+    if ($null -ne $AfterMoveProbe) { & $AfterMoveProbe }
+    return Open-VerifiedReleaseArchive -Archive $Destination -Snapshot $Snapshot -WhileLockedProbe $WhileLockedProbe -MaxEntryBytes $MaxEntryBytes -MaxTotalBytes $MaxTotalBytes
+}
+
+function New-InnoFileManifest($Snapshot, [string]$Output, [string[]]$TemporaryEntries = @()) {
+    Assert-ReleaseSnapshotUnchanged $Snapshot
+    $outputPath = [IO.Path]::GetFullPath($Output)
+    if (Test-ReleasePathWithin $outputPath $Snapshot.Stage -AllowRoot) { throw 'Inno manifest must be written outside the immutable source stage.' }
+    $temporary = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($name in $TemporaryEntries) {
+        Assert-NormalizedReleaseEntry $name
+        if (-not $temporary.Add($name)) { throw "Duplicate temporary Inno entry: $name" }
+    }
+    $lines = foreach ($entry in $Snapshot.Entries) {
+        $relative = $entry.Name.Replace('/', '\')
+        $directory = [IO.Path]::GetDirectoryName($relative)
+        $destination = if ([string]::IsNullOrEmpty($directory)) { '{app}' } else { "{app}\$directory" }
+        "Source: `"$($entry.Path)`"; DestDir: `"$destination`"; Flags: ignoreversion"
+        if ($temporary.Contains($entry.Name)) {
+            "Source: `"$($entry.Path)`"; Flags: dontcopy"
+        }
+    }
+    foreach ($name in $temporary) {
+        if (-not ($Snapshot.Entries | Where-Object { $_.Name.Equals($name, [StringComparison]::OrdinalIgnoreCase) })) {
+            throw "Temporary Inno entry is not part of the immutable snapshot: $name"
+        }
+    }
+    [IO.File]::WriteAllLines($outputPath, $lines, [Text.UTF8Encoding]::new($false))
+    Assert-ReleaseSnapshotUnchanged $Snapshot
+    $stream = [IO.File]::Open($outputPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    return [pscustomobject]@{ Path = $outputPath; Stream = $stream }
+}
+
+function Close-InnoFileManifest($Lease) {
+    if ($null -ne $Lease -and $null -ne $Lease.Stream) { $Lease.Stream.Dispose() }
 }
 
 function Publish-ReleaseDirectory([string]$Source, [string]$Destination, [string]$TrustedParent) {

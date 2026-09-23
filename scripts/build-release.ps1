@@ -54,27 +54,42 @@ $outlookWidget = Join-Path $root "dist/OutlookEdgeWidget-$outlookVersion.icuewid
 Copy-Item -LiteralPath $outlookWidget -Destination (Join-Path $stage 'widgets/OutlookEdgeWidget.icuewidget') -Force
 Copy-Item -LiteralPath (Join-Path $root 'docs\INSTALL.md') -Destination $stage -Force
 Copy-Item -LiteralPath (Join-Path $root 'docs\OUTLOOK.md') -Destination $stage -Force
-$installerStageManifest = @($HelperPublishManifest) + @('widgets/PlannerEdgeWidget.icuewidget', 'widgets/OutlookEdgeWidget.icuewidget', 'INSTALL.md', 'OUTLOOK.md')
+Copy-Item -LiteralPath (Join-Path $helperRoot 'installer\Stop-MicrosoftWidgetsHelper.ps1') -Destination $stage -Force
+$installerStageManifest = @($HelperPublishManifest) + @('widgets/PlannerEdgeWidget.icuewidget', 'widgets/OutlookEdgeWidget.icuewidget', 'INSTALL.md', 'OUTLOOK.md', 'Stop-MicrosoftWidgetsHelper.ps1')
 & $inventoryVerifier -Stage $stage -Manifest (ConvertTo-Json -InputObject $installerStageManifest -Compress)
 $stageSnapshot = Open-ReleaseSnapshot -Stage $stage -Manifest $installerStageManifest
+$innoFileManifest = Join-Path $helperWorkspace 'helper-files.iss'
+$lockedReleaseAssets = [Collections.Generic.List[IDisposable]]::new()
 try {
-    & $InnoCompiler "/DReleaseVersion=$releaseVersion" "/DHelperSource=$stage" "/DReleaseOutput=$releaseCandidate" (Join-Path $helperRoot 'installer\MicrosoftWidgets.iss')
-    if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed.' }
+    $innoManifestLease = New-InnoFileManifest -Snapshot $stageSnapshot -Output $innoFileManifest -TemporaryEntries @('Stop-MicrosoftWidgetsHelper.ps1')
+    try {
+        & $InnoCompiler "/DReleaseVersion=$releaseVersion" "/DHelperManifest=$($innoManifestLease.Path)" "/DReleaseOutput=$releaseCandidate" (Join-Path $helperRoot 'installer\MicrosoftWidgets.iss')
+        if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed.' }
+    } finally {
+        Close-InnoFileManifest $innoManifestLease
+    }
+    $installerOutput = Join-Path $releaseCandidate "MicrosoftWidgetsSetup-$releaseVersion.exe"
+    $lockedReleaseAssets.Add([IO.File]::Open($installerOutput, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read))
     Copy-Item -LiteralPath $widget -Destination $releaseCandidate
     Copy-Item -LiteralPath $outlookWidget -Destination $releaseCandidate
     Copy-Item -LiteralPath (Join-Path $root 'docs/OUTLOOK.md') -Destination $releaseCandidate
     Copy-Item -LiteralPath (Join-Path $root 'docs\INSTALL.md') -Destination $releaseCandidate
     $plannerSnapshot = Open-ReleaseSnapshot -Stage (Join-Path $widgetRoot 'widget') -Manifest $PlannerWidgetManifest
     try {
-        Assert-ReleaseArchive -Archive (Join-Path $releaseCandidate (Split-Path -Leaf $widget)) -Snapshot $plannerSnapshot
+        $plannerLease = Open-VerifiedReleaseArchive -Archive (Join-Path $releaseCandidate (Split-Path -Leaf $widget)) -Snapshot $plannerSnapshot
+        $lockedReleaseAssets.Add($plannerLease.Stream)
     } finally { Close-ReleaseSnapshot $plannerSnapshot }
     $outlookSnapshot = Open-ReleaseSnapshot -Stage (Join-Path $outlookRoot 'dist') -Manifest $OutlookWidgetManifest
     try {
-        Assert-ReleaseArchive -Archive (Join-Path $releaseCandidate (Split-Path -Leaf $outlookWidget)) -Snapshot $outlookSnapshot
+        $outlookLease = Open-VerifiedReleaseArchive -Archive (Join-Path $releaseCandidate (Split-Path -Leaf $outlookWidget)) -Snapshot $outlookSnapshot
+        $lockedReleaseAssets.Add($outlookLease.Stream)
     } finally { Close-ReleaseSnapshot $outlookSnapshot }
     $portable = Join-Path $releaseCandidate "MicrosoftWidgetsHelper-$helperVersion-portable-win-x64.zip"
-    Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $portable
-    Assert-ReleaseArchive -Archive $portable -Snapshot $stageSnapshot
+    $pendingPortable = Join-Path $helperWorkspace 'portable.zip'
+    Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $pendingPortable
+    Assert-ReleaseArchive -Archive $pendingPortable -Snapshot $stageSnapshot
+    $portableLease = Publish-VerifiedReleaseArchive -Source $pendingPortable -Destination $portable -TrustedParent $releaseCandidate -Snapshot $stageSnapshot
+    $lockedReleaseAssets.Add($portableLease.Stream)
 } finally {
     Close-ReleaseSnapshot $stageSnapshot
 }
@@ -86,5 +101,7 @@ $checksums = foreach ($asset in $assets) {
 }
 $checksums | Set-Content -LiteralPath (Join-Path $releaseCandidate 'SHA256SUMS.txt') -Encoding ascii
 & $inventoryVerifier -Stage $releaseCandidate -Manifest (ConvertTo-Json -InputObject (@($assets) + 'SHA256SUMS.txt') -Compress)
+foreach ($lockedAsset in $lockedReleaseAssets) { $lockedAsset.Dispose() }
+$lockedReleaseAssets.Clear()
 $release = Publish-ReleaseDirectory -Source $releaseCandidate -Destination (Join-Path $distRoot 'release') -TrustedParent $distRoot
 Write-Host "Release files: $release"

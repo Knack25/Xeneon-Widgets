@@ -33,7 +33,8 @@ if (-not $SkipArchive) {
     try {
         Compress-Archive -Path (Join-Path $output '*') -DestinationPath $pendingArchive
         Assert-ReleaseArchive -Archive $pendingArchive -Snapshot $snapshot
-        Publish-ReleaseFile -Source $pendingArchive -Destination $archive -TrustedParent $distRoot
+        $publishedLease = Publish-VerifiedReleaseArchive -Source $pendingArchive -Destination $archive -TrustedParent $distRoot -Snapshot $snapshot
+        Close-VerifiedReleaseArchive $publishedLease
     } finally {
         Close-ReleaseSnapshot $snapshot
     }
