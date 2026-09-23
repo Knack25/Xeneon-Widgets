@@ -21,7 +21,8 @@ public static class PlannerIntegration
         services.AddSingleton<PlannerDataLifecycle>();
         services.AddHostedService(provider => provider.GetRequiredService<PlannerDataLifecycle>());
         services.AddHttpClient<IPlannerGraphClient, PlannerGraphClient>(client =>
-            client.BaseAddress = new Uri("https://graph.microsoft.com/v1.0/"));
+            client.BaseAddress = new Uri("https://graph.microsoft.com/v1.0/"))
+            .ConfigurePrimaryHttpMessageHandler(PlannerGraphHttpHandlerFactory.Create);
         services.AddSingleton<PlannerBoardService>();
         services.AddSingleton<BoardSelectionService>();
         services.AddSingleton<PlannerDisplayService>();

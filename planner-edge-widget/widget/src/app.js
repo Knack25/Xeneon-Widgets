@@ -1064,15 +1064,16 @@ app.addEventListener("click", async event => {
   if (hit("data-save-notes") && state.dialog?.type === "taskDetails" && !state.dialog.notesPending) {
     const dialog = state.dialog;
     const { taskId, generation } = dialog;
-    const description = dialog.notesDraft ?? "";
+    const description = (dialog.notesDraft ?? details.get(taskId)?.description ?? "").replace(/\r\n?/g, "\n");
     dialog.notesPending = true; dialog.notesStatus = "Saving notes..."; render();
     try {
       await api.updateNotes(taskId, description);
       if (!isCurrentTaskDialog(taskId, generation)) return;
       const info = details.get(taskId);
       if (info) details.set(taskId, { ...info, description });
-      const hasNewerDraft = dialog.notesDraft !== description;
-      if (!hasNewerDraft) dialog.notesDraft = null;
+      const currentDraft = (dialog.notesDraft ?? "").replace(/\r\n?/g, "\n");
+      const hasNewerDraft = currentDraft !== description;
+      if (!hasNewerDraft) dialog.notesDraft = description;
       dialog.notesPending = false;
       dialog.notesStatus = hasNewerDraft ? "Earlier notes saved. Save current changes." : "Notes saved.";
       render();

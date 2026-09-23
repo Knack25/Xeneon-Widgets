@@ -17,7 +17,9 @@ public sealed class BoardActionServiceTests
     public async Task SetDueDate_UsesLatestEtagAndNoonUtc()
     {
         var graph = new FakeGraph();
-        await new DueDateService(graph, new FakeSettings(), new MemoryCache(new MemoryCacheOptions()))
+        var settings = new FakeSettings();
+        await new DueDateService(graph, new SelectedPlanTaskService(graph, settings),
+            new MemoryCache(new MemoryCacheOptions()))
             .SetAsync("task", "2026-09-19", CancellationToken.None);
 
         Assert.Equal("latest", graph.UpdatedEtag);
@@ -29,7 +31,8 @@ public sealed class BoardActionServiceTests
     {
         var graph = new FakeGraph { Start = new DateTimeOffset(2026, 9, 20, 0, 0, 0, TimeSpan.Zero) };
         await Assert.ThrowsAsync<ArgumentException>(() =>
-            new DueDateService(graph, new FakeSettings(), new MemoryCache(new MemoryCacheOptions()))
+            new DueDateService(graph, new SelectedPlanTaskService(graph, new FakeSettings()),
+                new MemoryCache(new MemoryCacheOptions()))
                 .SetAsync("task", "2026-09-19", CancellationToken.None));
         Assert.Null(graph.UpdatedEtag);
     }
@@ -40,12 +43,30 @@ public sealed class BoardActionServiceTests
         var graph = new FakeGraph { Assigned = [MemberId] };
         var settings = new FakeSettings();
         var members = new BoardMemberService(graph, settings);
-        await new TaskAssignmentService(graph, settings, members, new MemoryCache(new MemoryCacheOptions()))
+        await new TaskAssignmentService(graph, new SelectedPlanTaskService(graph, settings), members,
+            new MemoryCache(new MemoryCacheOptions()))
             .SetAsync("task", [OtherId], CancellationToken.None);
 
         Assert.Equal([OtherId], graph.Added);
         Assert.Equal([MemberId], graph.Removed);
         Assert.Equal("latest", graph.UpdatedEtag);
+    }
+
+    [Fact]
+    public async Task DueDateAndAssignmentMutationsRejectTasksOutsideSelectedPlan()
+    {
+        var graph = new FakeGraph { TaskPlan = "other-plan", Assigned = [MemberId] };
+        var settings = new FakeSettings();
+        var selected = new SelectedPlanTaskService(graph, settings);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => new DueDateService(graph, selected,
+            new MemoryCache(new MemoryCacheOptions())).SetAsync("task", "2026-09-19", CancellationToken.None));
+        await Assert.ThrowsAsync<ArgumentException>(() => new TaskAssignmentService(graph, selected,
+            new BoardMemberService(graph, settings), new MemoryCache(new MemoryCacheOptions()))
+            .SetAsync("task", [OtherId], CancellationToken.None));
+
+        Assert.Null(graph.UpdatedDue);
+        Assert.Null(graph.Added);
     }
 
     [Fact]
@@ -82,6 +103,7 @@ public sealed class BoardActionServiceTests
     {
         public DateTimeOffset? Start { get; init; }
         public IReadOnlyList<string> Assigned { get; init; } = [];
+        public string TaskPlan { get; init; } = "plan";
         public DateTimeOffset? UpdatedDue { get; private set; }
         public string? UpdatedEtag { get; private set; }
         public IReadOnlyList<string>? Added { get; private set; }
@@ -89,7 +111,7 @@ public sealed class BoardActionServiceTests
         public string? CreatedTitle { get; private set; }
         public string? CreatedPlan { get; private set; }
         public Task<GraphTask?> GetTaskAsync(string taskId, CancellationToken ct) => Task.FromResult<GraphTask?>(
-            new GraphTask(taskId, "Task", "plan", "bucket", null, null, 0, "latest", Assigned, null, Start));
+            new GraphTask(taskId, "Task", TaskPlan, "bucket", null, null, 0, "latest", Assigned, null, Start));
         public Task<IReadOnlyList<GraphPlan>> GetMyPlansAsync(CancellationToken ct) => Task.FromResult<IReadOnlyList<GraphPlan>>(
             [new GraphPlan("plan", "Board", GroupId, null)]);
         public Task<IReadOnlyList<GraphMember>> GetGroupMembersAsync(string groupId, CancellationToken ct) =>

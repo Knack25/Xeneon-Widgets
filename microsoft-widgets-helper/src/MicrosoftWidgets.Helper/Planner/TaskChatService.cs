@@ -9,18 +9,13 @@ namespace PlannerEdge.Helper.Planner;
 
 public sealed class TaskChatService(
     IPlannerGraphClient graphClient,
-    IPlannerSettingsStore settingsStore,
+    SelectedPlanTaskService selectedPlanTasks,
     TaskDetailsService taskDetails,
     PlannerDataLifecycle lifecycle)
 {
     private const string PermissionMessage = "Enable task chat to read and post Planner comments.";
     private const string AttachmentPendingMessage =
         "Your comment was created, but Planner could not attach the conversation. Refresh task details before posting again.";
-
-    internal TaskChatService(IPlannerGraphClient graphClient, IPlannerSettingsStore settingsStore,
-        TaskDetailsService taskDetails) : this(graphClient, settingsStore, taskDetails,
-        new PlannerDataLifecycle(new Microsoft.Extensions.Caching.Memory.MemoryCache(
-            new Microsoft.Extensions.Caching.Memory.MemoryCacheOptions()))) { }
 
     public async Task<TaskChatResponse> GetAsync(string taskId, string? cursor, CancellationToken cancellationToken)
     {
@@ -106,17 +101,10 @@ public sealed class TaskChatService(
     private async Task<(GraphTask Task, string GroupId)> ResolveAsync(string taskId,
         CancellationToken cancellationToken)
     {
-        var settings = await settingsStore.LoadSettingsAsync(cancellationToken);
-        if (string.IsNullOrWhiteSpace(settings.SelectedPlanId))
-            throw new ArgumentException("Choose a board first.");
-
-        var task = await graphClient.GetTaskAsync(taskId, cancellationToken)
-            ?? throw new InvalidOperationException("Planner task was not found.");
-        if (!task.PlanId.Equals(settings.SelectedPlanId, StringComparison.Ordinal))
-            throw new ArgumentException("This task is not on the selected board.", nameof(taskId));
+        var task = await selectedPlanTasks.GetAsync(taskId, cancellationToken);
 
         var plan = (await graphClient.GetMyPlansAsync(cancellationToken))
-            .SingleOrDefault(candidate => candidate.Id == settings.SelectedPlanId);
+            .SingleOrDefault(candidate => candidate.Id == task.PlanId);
         if (string.IsNullOrWhiteSpace(plan?.GroupId))
             throw new InvalidOperationException("The selected Planner board is unavailable.");
         return (task, plan.GroupId);
@@ -178,7 +166,7 @@ public sealed class TaskChatService(
     {
         try
         {
-            return await graphClient.GetTaskAsync(taskId, cancellationToken);
+            return await selectedPlanTasks.GetAsync(taskId, cancellationToken);
         }
         catch (Exception error) when (error is not OperationCanceledException && !IsAuthorizationFailure(error))
         {

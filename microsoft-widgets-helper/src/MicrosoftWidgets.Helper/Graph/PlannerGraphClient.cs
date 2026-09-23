@@ -54,10 +54,14 @@ public sealed class PlannerGraphClient : IPlannerGraphClient
     {
         var members = new List<GraphMember>();
         var token = await tokenProvider.GetGroupMemberTokenAsync(cancellationToken);
-        string? next = $"groups/{Uri.EscapeDataString(groupId)}/members/microsoft.graph.user?$count=true&$select=id,displayName";
-        while (next is not null)
+        var current = new Uri(httpClient.BaseAddress!,
+            $"groups/{Uri.EscapeDataString(groupId)}/members/microsoft.graph.user?$count=true&$select=id,displayName");
+        var visited = new HashSet<string>(StringComparer.Ordinal) { GraphNextLinkPolicy.Canonical(current) };
+        var pages = 0;
+        while (true)
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, next);
+            GraphNextLinkPolicy.RequirePageCount(++pages);
+            using var request = new HttpRequestMessage(HttpMethod.Get, current);
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             request.Headers.TryAddWithoutValidation("ConsistencyLevel", "eventual");
             using var response = await httpClient.SendAsync(request, cancellationToken);
@@ -66,7 +70,10 @@ public sealed class PlannerGraphClient : IPlannerGraphClient
             using var document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellationToken), cancellationToken: cancellationToken);
             foreach (var member in document.RootElement.GetProperty("value").EnumerateArray())
                 members.Add(new GraphMember(member.GetProperty("id").GetString()!, member.GetProperty("displayName").GetString() ?? "Unnamed member"));
-            next = document.RootElement.TryGetProperty("@odata.nextLink", out var link) ? link.GetString() : null;
+            GraphNextLinkPolicy.RequireRecordCount(GraphCollectionKind.Members, members.Count);
+            var next = document.RootElement.TryGetProperty("@odata.nextLink", out var link) ? link.GetString() : null;
+            if (string.IsNullOrWhiteSpace(next)) break;
+            current = GraphNextLinkPolicy.RequireAllowed(current, next, visited);
         }
         return members;
     }
@@ -74,7 +81,7 @@ public sealed class PlannerGraphClient : IPlannerGraphClient
     public async Task<IReadOnlyList<GraphPlan>> GetMyPlansAsync(CancellationToken cancellationToken)
     {
         var plans = new List<GraphPlan>();
-        await foreach (var item in GetCollectionAsync("me/planner/plans", cancellationToken))
+        await foreach (var item in GetCollectionAsync("me/planner/plans", GraphCollectionKind.Plans, cancellationToken))
             plans.Add(new GraphPlan(item.GetProperty("id").GetString()!, item.GetProperty("title").GetString() ?? "Untitled plan",
                 item.TryGetProperty("owner", out var owner) ? owner.GetString() ?? string.Empty : string.Empty, null));
         return plans;
@@ -83,7 +90,8 @@ public sealed class PlannerGraphClient : IPlannerGraphClient
     public async Task<IReadOnlyList<GraphGroup>> GetMemberGroupsAsync(CancellationToken cancellationToken)
     {
         var groups = new List<GraphGroup>();
-        await foreach (var item in GetCollectionAsync("me/memberOf/microsoft.graph.group?$select=id,displayName", cancellationToken))
+        await foreach (var item in GetCollectionAsync("me/memberOf/microsoft.graph.group?$select=id,displayName",
+                           GraphCollectionKind.Groups, cancellationToken))
             groups.Add(new GraphGroup(item.GetProperty("id").GetString()!, item.GetProperty("displayName").GetString() ?? "Planner"));
         return groups;
     }
@@ -91,7 +99,8 @@ public sealed class PlannerGraphClient : IPlannerGraphClient
     public async Task<IReadOnlyList<GraphPlan>> GetPlansForGroupAsync(string groupId, CancellationToken cancellationToken)
     {
         var plans = new List<GraphPlan>();
-        await foreach (var item in GetCollectionAsync($"groups/{Uri.EscapeDataString(groupId)}/planner/plans", cancellationToken))
+        await foreach (var item in GetCollectionAsync($"groups/{Uri.EscapeDataString(groupId)}/planner/plans",
+                           GraphCollectionKind.Plans, cancellationToken))
             plans.Add(new GraphPlan(item.GetProperty("id").GetString()!, item.GetProperty("title").GetString() ?? "Untitled plan", groupId, null));
         return plans;
     }
@@ -99,7 +108,8 @@ public sealed class PlannerGraphClient : IPlannerGraphClient
     public async Task<IReadOnlyList<GraphBucket>> GetBucketsAsync(string planId, CancellationToken cancellationToken)
     {
         var buckets = new List<GraphBucket>();
-        await foreach (var item in GetCollectionAsync($"planner/plans/{Uri.EscapeDataString(planId)}/buckets", cancellationToken))
+        await foreach (var item in GetCollectionAsync($"planner/plans/{Uri.EscapeDataString(planId)}/buckets",
+                           GraphCollectionKind.Buckets, cancellationToken))
             buckets.Add(new GraphBucket(item.GetProperty("id").GetString()!, item.GetProperty("name").GetString() ?? "Unnamed bucket", planId,
                 item.TryGetProperty("orderHint", out var hint) ? hint.GetString() : null));
         return buckets;
@@ -109,7 +119,8 @@ public sealed class PlannerGraphClient : IPlannerGraphClient
     {
         var lease = accountState is null ? (AccountLease?)null : await accountState.GetAsync(cancellationToken);
         var tasks = new List<GraphTask>();
-        await foreach (var item in GetCollectionAsync($"planner/plans/{Uri.EscapeDataString(planId)}/tasks", cancellationToken))
+        await foreach (var item in GetCollectionAsync($"planner/plans/{Uri.EscapeDataString(planId)}/tasks",
+                           GraphCollectionKind.Tasks, cancellationToken))
             tasks.Add(ToTask(item));
         return await Task.WhenAll(tasks.Select(async task => task with
         {
@@ -367,7 +378,9 @@ public sealed class PlannerGraphClient : IPlannerGraphClient
         using var document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellationToken),
             cancellationToken: cancellationToken);
         var posts = new List<GraphConversationPost>();
-        foreach (var item in document.RootElement.GetProperty("value").EnumerateArray())
+        var values = document.RootElement.GetProperty("value");
+        GraphNextLinkPolicy.RequireRecordCount(GraphCollectionKind.ConversationPosts, values.GetArrayLength());
+        foreach (var item in values.EnumerateArray())
         {
             var hasBody = item.TryGetProperty("body", out var bodyValue) && bodyValue.ValueKind == JsonValueKind.Object;
             var body = hasBody && bodyValue.TryGetProperty("content", out var content)
@@ -389,7 +402,12 @@ public sealed class PlannerGraphClient : IPlannerGraphClient
         if (document.RootElement.TryGetProperty("@odata.nextLink", out var next) && next.ValueKind == JsonValueKind.String)
         {
             var value = next.GetString();
-            if (!string.IsNullOrWhiteSpace(value)) nextLink = new Uri(value, UriKind.Absolute);
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                var visited = new HashSet<string>(StringComparer.Ordinal)
+                    { GraphNextLinkPolicy.Canonical(new Uri(httpClient.BaseAddress!, requestUri)) };
+                nextLink = GraphNextLinkPolicy.RequireAllowed(new Uri(httpClient.BaseAddress!, requestUri), value, visited);
+            }
         }
         return new GraphConversationPage(posts, nextLink);
     }
@@ -448,16 +466,26 @@ public sealed class PlannerGraphClient : IPlannerGraphClient
         using var response = await SendAsync(request, cancellationToken);
     }
 
-    private async IAsyncEnumerable<JsonElement> GetCollectionAsync(string path, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
+    private async IAsyncEnumerable<JsonElement> GetCollectionAsync(string path, GraphCollectionKind kind,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        string? next = path;
-        while (next is not null)
+        var current = new Uri(httpClient.BaseAddress!, path);
+        var visited = new HashSet<string>(StringComparer.Ordinal) { GraphNextLinkPolicy.Canonical(current) };
+        var pages = 0;
+        var records = 0;
+        while (true)
         {
-            using var response = await SendAsync(new HttpRequestMessage(HttpMethod.Get, next), cancellationToken);
+            GraphNextLinkPolicy.RequirePageCount(++pages);
+            using var response = await SendAsync(new HttpRequestMessage(HttpMethod.Get, current), cancellationToken);
             using var document = await JsonDocument.ParseAsync(await response.Content.ReadAsStreamAsync(cancellationToken), cancellationToken: cancellationToken);
-            foreach (var item in document.RootElement.GetProperty("value").EnumerateArray())
+            var values = document.RootElement.GetProperty("value");
+            records += values.GetArrayLength();
+            GraphNextLinkPolicy.RequireRecordCount(kind, records);
+            foreach (var item in values.EnumerateArray())
                 yield return item.Clone();
-            next = document.RootElement.TryGetProperty("@odata.nextLink", out var link) ? link.GetString() : null;
+            var next = document.RootElement.TryGetProperty("@odata.nextLink", out var link) ? link.GetString() : null;
+            if (string.IsNullOrWhiteSpace(next)) break;
+            current = GraphNextLinkPolicy.RequireAllowed(current, next, visited);
         }
     }
 
@@ -547,11 +575,17 @@ public sealed class PlannerGraphClient : IPlannerGraphClient
 
     private static void ValidateConversationContinuation(Uri uri, string escapedGroup, string escapedThread)
     {
-        if (uri.Scheme != Uri.UriSchemeHttps
-            || !uri.Host.Equals("graph.microsoft.com", StringComparison.OrdinalIgnoreCase)
-            || !uri.AbsolutePath.Equals($"/v1.0/groups/{escapedGroup}/threads/{escapedThread}/posts",
-                StringComparison.Ordinal))
-            throw new ArgumentException("The conversation cursor is invalid.", nameof(uri));
+        var expected = new Uri(
+            $"https://graph.microsoft.com/v1.0/groups/{escapedGroup}/threads/{escapedThread}/posts");
+        try
+        {
+            GraphNextLinkPolicy.RequireAllowed(expected, uri.AbsoluteUri,
+                new HashSet<string>(StringComparer.Ordinal) { GraphNextLinkPolicy.Canonical(expected) });
+        }
+        catch (InvalidDataException error)
+        {
+            throw new ArgumentException("The conversation cursor is invalid.", nameof(uri), error);
+        }
     }
 
     private static GraphTask ToTask(JsonElement item)

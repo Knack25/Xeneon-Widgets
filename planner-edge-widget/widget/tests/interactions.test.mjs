@@ -419,6 +419,31 @@ test("notes save explicitly, support clearing, disable while pending, and report
   assert.match(app.innerHTML, /Notes saved/);
 });
 
+test("saving unchanged notes repeatedly preserves the normalized description", async () => {
+  const board = { planId: "plan", planTitle: "Work", syncedAt: "2026-09-21T12:00:00Z", buckets: [
+    { bucketId: "b", name: "Doing", tasks: [{ taskId: "task", title: "Build" }] }
+  ] };
+  const detail = { taskId: "task", title: "Build", bucketId: "b", checklist: [], assignees: [], description: "Original" };
+  const updates = [];
+  const { app, tap, input } = createDetailFixture(async (path, options = {}) => {
+    if (path.endsWith("/display")) return { ok: true, status: 200, json: async () => board };
+    if (path.endsWith("/details")) return { ok: true, status: 200, json: async () => detail };
+    if (path.includes("/chat")) return { ok: true, status: 200, json: async () => ({ state: "available", messages: [] }) };
+    updates.push(JSON.parse(options.body).description);
+    return { ok: true, status: 204, json: async () => null };
+  });
+  await settle();
+  await tap("data-open-task", { openTask: "task" });
+  await settle();
+
+  input("data-notes-draft", "Line one\r\nLine two");
+  await tap("data-save-notes");
+  assert.doesNotMatch(app.innerHTML, /Save current changes/);
+  await tap("data-save-notes");
+
+  assert.deepEqual(updates, ["Line one\nLine two", "Line one\nLine two"]);
+});
+
 test("notes edits made while saving remain unsaved and do not replace the submitted cache value", async () => {
   const board = { planId: "plan", planTitle: "Work", syncedAt: "2026-09-21T12:00:00Z", buckets: [
     { bucketId: "b", name: "Doing", tasks: [{ taskId: "task", title: "Build" }] }

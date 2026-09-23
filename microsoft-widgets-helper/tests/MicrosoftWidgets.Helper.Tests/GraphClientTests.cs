@@ -180,8 +180,8 @@ public sealed class GraphClientTests
     {
         var handler = new StubHandler(request => request.RequestUri!.AbsolutePath.EndsWith("/bucketTaskBoardFormat")
             ? """{"orderHint":"a"}"""
-            : request.RequestUri.AbsolutePath.EndsWith("/tasks")
-            ? """{"value":[{"id":"one","title":"First","planId":"plan","percentComplete":0,"@odata.etag":"W/\"v1\"","conversationThreadId":"thread-1"}],"@odata.nextLink":"https://graph.microsoft.com/v1.0/next"}"""
+            : request.RequestUri.AbsolutePath.EndsWith("/tasks") && string.IsNullOrEmpty(request.RequestUri.Query)
+            ? """{"value":[{"id":"one","title":"First","planId":"plan","percentComplete":0,"@odata.etag":"W/\"v1\"","conversationThreadId":"thread-1"}],"@odata.nextLink":"https://graph.microsoft.com/v1.0/planner/plans/plan/tasks?$skiptoken=next"}"""
             : """{"value":[{"id":"two","title":"Second","planId":"plan","percentComplete":0,"@odata.etag":"W/\"v2\""}]}""");
         var client = CreateClient(handler);
 
@@ -193,6 +193,95 @@ public sealed class GraphClientTests
         Assert.Equal("a", tasks[0].BucketOrderHint);
         Assert.Equal("thread-1", tasks[0].ConversationThreadId);
         Assert.Null(tasks[1].ConversationThreadId);
+    }
+
+    [Theory]
+    [InlineData("http://graph.microsoft.com/v1.0/planner/plans/plan/tasks?$skiptoken=x")]
+    [InlineData("https://example.com/v1.0/planner/plans/plan/tasks?$skiptoken=x")]
+    [InlineData("https://graph.microsoft.com/beta/planner/plans/plan/tasks?$skiptoken=x")]
+    [InlineData("https://graph.microsoft.com/v1.0/users?$skiptoken=x")]
+    [InlineData("https://user:password@graph.microsoft.com/v1.0/planner/plans/plan/tasks?$skiptoken=x")]
+    [InlineData("https://graph.microsoft.com/v1.0/planner/plans/plan/tasks?$skiptoken=x#fragment")]
+    public void GraphNextLinkPolicy_RejectsHostileOrForeignLinks(string candidate)
+    {
+        var current = new Uri("https://graph.microsoft.com/v1.0/planner/plans/plan/tasks");
+
+        Assert.Throws<InvalidDataException>(() => GraphNextLinkPolicy.RequireAllowed(
+            current, candidate, new HashSet<string>(StringComparer.Ordinal)));
+    }
+
+    [Fact]
+    public void GraphNextLinkPolicy_RejectsLoopsPageOverflowAndOperationRecordOverflow()
+    {
+        var current = new Uri("https://graph.microsoft.com/v1.0/planner/plans/plan/tasks");
+        var next = "https://graph.microsoft.com/v1.0/planner/plans/plan/tasks?$skiptoken=one";
+        var visited = new HashSet<string>(StringComparer.Ordinal) { current.AbsoluteUri };
+        var accepted = GraphNextLinkPolicy.RequireAllowed(current, next, visited);
+
+        Assert.Equal(new Uri(next), accepted);
+        Assert.Throws<InvalidDataException>(() => GraphNextLinkPolicy.RequireAllowed(current, next, visited));
+        Assert.Throws<InvalidDataException>(() => GraphNextLinkPolicy.RequirePageCount(101));
+        Assert.Throws<InvalidDataException>(() => GraphNextLinkPolicy.RequireRecordCount(
+            GraphCollectionKind.Tasks, GraphNextLinkPolicy.TaskRecordLimit + 1));
+    }
+
+    [Fact]
+    public async Task GetTasksAsync_RejectsForeignNextLinkBeforeBearerTokenCanLeaveGraph()
+    {
+        var calls = 0;
+        var handler = new StubHandler(_ =>
+        {
+            calls++;
+            return """{"value":[],"@odata.nextLink":"https://attacker.example/steal"}""";
+        });
+
+        await Assert.ThrowsAsync<InvalidDataException>(() =>
+            CreateClient(handler).GetTasksAsync("plan", CancellationToken.None));
+
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public async Task GetMyPlansAsync_StopsBeforeRequestingPage101()
+    {
+        var calls = 0;
+        var handler = new StubHandler(request =>
+        {
+            calls++;
+            var nextPage = calls + 1;
+            return $$"""{"value":[],"@odata.nextLink":"https://graph.microsoft.com/v1.0/me/planner/plans?$skiptoken={{nextPage}}"}""";
+        });
+
+        await Assert.ThrowsAsync<InvalidDataException>(() =>
+            CreateClient(handler).GetMyPlansAsync(CancellationToken.None));
+
+        Assert.Equal(100, calls);
+    }
+
+    [Fact]
+    public async Task GetTasksAsync_RejectsOperationRecordOverflowBeforeTaskFormatRequests()
+    {
+        var values = string.Join(',', Enumerable.Range(0, GraphNextLinkPolicy.TaskRecordLimit + 1)
+            .Select(index => $$"""{"id":"{{index}}","title":"Task","planId":"plan","percentComplete":0}"""));
+        var calls = 0;
+        var handler = new StubHandler(_ =>
+        {
+            calls++;
+            return $$"""{"value":[{{values}}]}""";
+        });
+
+        await Assert.ThrowsAsync<InvalidDataException>(() =>
+            CreateClient(handler).GetTasksAsync("plan", CancellationToken.None));
+
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public void PlannerGraphTransport_DisablesAutomaticRedirects()
+    {
+        using var handler = PlannerGraphHttpHandlerFactory.Create();
+
+        Assert.False(handler.AllowAutoRedirect);
     }
 
     [Fact]
@@ -537,6 +626,34 @@ public sealed class GraphClientTests
     }
 
     [Fact]
+    public async Task GetConversationPostsAsync_RejectsOperationRecordOverflow()
+    {
+        var values = Enumerable.Range(0, GraphNextLinkPolicy.ConversationRecordLimit + 1)
+            .Select(index => new { id = index.ToString(), body = new { contentType = "text", content = "x" } });
+        var payload = JsonSerializer.Serialize(new { value = values });
+        var handler = new StubHandler(_ => payload);
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => CreateClient(handler, new DistinctTokenProvider())
+            .GetConversationPostsAsync("group", "thread", null, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task GetGroupMembersAsync_RejectsForeignNextLinkBeforeDirectoryTokenCanLeaveGraph()
+    {
+        var calls = 0;
+        var handler = new StubHandler(_ =>
+        {
+            calls++;
+            return """{"value":[],"@odata.nextLink":"https://attacker.example/steal"}""";
+        });
+
+        await Assert.ThrowsAsync<InvalidDataException>(() =>
+            CreateClient(handler).GetGroupMembersAsync("group", CancellationToken.None));
+
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
     public async Task GetConversationPostsAsync_UsesValidatedContinuationWithoutAddingTop()
     {
         var continuation = new Uri("https://graph.microsoft.com/v1.0/groups/group/threads/thread/posts?$skiptoken=older");
@@ -555,6 +672,8 @@ public sealed class GraphClientTests
     [InlineData("http://graph.microsoft.com/v1.0/groups/group/threads/thread/posts?$skiptoken=x")]
     [InlineData("https://example.com/v1.0/groups/group/threads/thread/posts?$skiptoken=x")]
     [InlineData("https://graph.microsoft.com/v1.0/groups/group/threads/other/posts?$skiptoken=x")]
+    [InlineData("https://user:password@graph.microsoft.com/v1.0/groups/group/threads/thread/posts?$skiptoken=x")]
+    [InlineData("https://graph.microsoft.com/v1.0/groups/group/threads/thread/posts?$skiptoken=x#fragment")]
     public async Task GetConversationPostsAsync_RejectsUnsafeContinuation(string continuation)
     {
         var handler = new StubHandler(_ => throw new Xunit.Sdk.XunitException("Unsafe continuation reached the network."));

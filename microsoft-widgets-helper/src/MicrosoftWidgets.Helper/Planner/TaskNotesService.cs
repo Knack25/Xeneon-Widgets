@@ -3,7 +3,8 @@ using PlannerEdge.Helper.Graph;
 
 namespace PlannerEdge.Helper.Planner;
 
-public sealed class TaskNotesService(IPlannerGraphClient graphClient, TaskDetailsService taskDetails)
+public sealed class TaskNotesService(IPlannerGraphClient graphClient, SelectedPlanTaskService selectedPlanTasks,
+    TaskDetailsService taskDetails)
 {
     public async Task UpdateAsync(string taskId, string? description, CancellationToken cancellationToken)
     {
@@ -12,6 +13,7 @@ public sealed class TaskNotesService(IPlannerGraphClient graphClient, TaskDetail
         if (description.Length > 4000)
             throw new ArgumentException("Task notes cannot exceed 4000 characters.", nameof(description));
 
+        await selectedPlanTasks.GetAsync(taskId, cancellationToken);
         var details = await graphClient.GetTaskDetailsAsync(taskId, cancellationToken);
         try
         {

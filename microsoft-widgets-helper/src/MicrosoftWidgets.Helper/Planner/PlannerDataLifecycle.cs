@@ -13,11 +13,15 @@ public sealed class PlannerDataLifecycle : IHostedService
     private readonly PlannerDataAccessGate accessGate;
     private readonly ConcurrentDictionary<string, byte> memoryKeys = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim purgeGate = new(1, 1);
+    private readonly SemaphoreSlim purgeRegistrationGate = new(1, 1);
     private readonly PlannerPurgeRetryWorker purgeWorker;
     private readonly Func<CancellationToken, Task>? beforePurgeFinalization;
+    private readonly Func<CancellationToken, Task>? beforeShutdownMarkerClear;
     private readonly object purgeStateSync = new();
     private long purgeVersion;
     private bool purgeRequired;
+    private bool purgeRegistrationClosed;
+    private bool rejectedPurgeDuringShutdown;
     private int started;
 
     [ActivatorUtilitiesConstructor]
@@ -41,6 +45,16 @@ public sealed class PlannerDataLifecycle : IHostedService
         : this(accountState, settingsStore, cache, accessGate)
     {
         this.beforePurgeFinalization = beforePurgeFinalization;
+    }
+
+    internal PlannerDataLifecycle(MicrosoftAccountState accountState, IPlannerSettingsStore settingsStore,
+        IMemoryCache cache, PlannerDataAccessGate accessGate,
+        Func<CancellationToken, Task>? beforePurgeFinalization,
+        Func<CancellationToken, Task>? beforeShutdownMarkerClear)
+        : this(accountState, settingsStore, cache, accessGate)
+    {
+        this.beforePurgeFinalization = beforePurgeFinalization;
+        this.beforeShutdownMarkerClear = beforeShutdownMarkerClear;
     }
 
     internal PlannerDataLifecycle(IMemoryCache cache) : this(cache, new PlannerDataAccessGate()) { }
@@ -186,6 +200,13 @@ public sealed class PlannerDataLifecycle : IHostedService
         if (settingsStore is null || Volatile.Read(ref started) == 0) return;
         if (accountState is not null) accountState.Invalidated -= OnInvalidated;
 
+        await purgeRegistrationGate.WaitAsync(cancellationToken);
+        try
+        {
+            lock (purgeStateSync) purgeRegistrationClosed = true;
+        }
+        finally { purgeRegistrationGate.Release(); }
+
         while (PurgeRequired)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -196,7 +217,18 @@ public sealed class PlannerDataLifecycle : IHostedService
             }
         }
 
-        await settingsStore.ClearPurgeRequiredAsync(cancellationToken);
+        await purgeRegistrationGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (beforeShutdownMarkerClear is not null)
+                await beforeShutdownMarkerClear(cancellationToken);
+            bool canMarkClean;
+            lock (purgeStateSync)
+                canMarkClean = !purgeRequired && !rejectedPurgeDuringShutdown;
+            if (canMarkClean)
+                await settingsStore.ClearPurgeRequiredAsync(cancellationToken);
+        }
+        finally { purgeRegistrationGate.Release(); }
         await purgeWorker.StopAsync(cancellationToken);
     }
 
@@ -234,15 +266,41 @@ public sealed class PlannerDataLifecycle : IHostedService
         StartPurgeWorker();
     }
 
-    private Task BeginPurgeAsync(CancellationToken cancellationToken) => accessGate.AdvanceAsync(() =>
+    private async Task BeginPurgeAsync(CancellationToken cancellationToken)
     {
-        PurgeMemory();
-        lock (purgeStateSync)
+        await purgeRegistrationGate.WaitAsync(cancellationToken);
+        try
         {
-            purgeVersion++;
-            purgeRequired = true;
+            var rejected = false;
+            lock (purgeStateSync)
+            {
+                if (purgeRegistrationClosed)
+                {
+                    rejectedPurgeDuringShutdown = true;
+                    rejected = true;
+                }
+            }
+
+            if (rejected)
+            {
+                if (settingsStore is not null)
+                    await settingsStore.MarkPurgeRequiredAsync(cancellationToken);
+                throw new InvalidOperationException(
+                    "Planner data cleanup cannot start while the helper is shutting down.");
+            }
+
+            await accessGate.AdvanceAsync(() =>
+            {
+                PurgeMemory();
+                lock (purgeStateSync)
+                {
+                    purgeVersion++;
+                    purgeRequired = true;
+                }
+            }, cancellationToken);
         }
-    }, cancellationToken);
+        finally { purgeRegistrationGate.Release(); }
+    }
 
     private void StartPurgeWorker() => purgeWorker.Request();
 

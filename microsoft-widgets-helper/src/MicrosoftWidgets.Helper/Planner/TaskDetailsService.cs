@@ -3,18 +3,16 @@ using PlannerEdge.Helper.Graph;
 
 namespace PlannerEdge.Helper.Planner;
 
-public sealed class TaskDetailsService(IPlannerGraphClient graphClient, PlannerDataLifecycle lifecycle)
+public sealed class TaskDetailsService(IPlannerGraphClient graphClient, SelectedPlanTaskService selectedPlanTasks,
+    PlannerDataLifecycle lifecycle)
 {
-    internal TaskDetailsService(IPlannerGraphClient graphClient, Microsoft.Extensions.Caching.Memory.IMemoryCache cache)
-        : this(graphClient, new PlannerDataLifecycle(cache)) { }
     public async Task<TaskDetailsResponse> GetAsync(string taskId, CancellationToken cancellationToken)
     {
         using var operation = lifecycle.BindOperation();
+        var task = await selectedPlanTasks.GetAsync(taskId, cancellationToken);
         var cached = await lifecycle.TryGetAsync<TaskDetailsResponse>("task-details", taskId, cancellationToken);
         if (cached.Found && cached.Value is not null) return cached.Value;
 
-        var task = await graphClient.GetTaskAsync(taskId, cancellationToken)
-            ?? throw new InvalidOperationException("Planner task was not found.");
         var details = await graphClient.GetTaskDetailsAsync(taskId, cancellationToken);
         var assignees = new List<string>();
         foreach (var userId in task.Assignments.Distinct(StringComparer.Ordinal))

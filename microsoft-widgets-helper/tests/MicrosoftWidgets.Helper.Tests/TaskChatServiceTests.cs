@@ -291,8 +291,10 @@ public sealed class TaskChatServiceTests
         };
         var settings = new FakeSettingsStore();
         var cache = new MemoryCache(new MemoryCacheOptions());
-        var details = new TaskDetailsService(graph, cache);
-        return new Fixture(new TaskChatService(graph, settings, details), graph, details, cache);
+        var selected = new SelectedPlanTaskService(graph, settings);
+        var lifecycle = new PlannerDataLifecycle(cache);
+        var details = new TaskDetailsService(graph, selected, lifecycle);
+        return new Fixture(new TaskChatService(graph, selected, details, lifecycle), graph, details, cache);
     }
 
     private sealed record Fixture(TaskChatService Service, FakeGraph Graph, TaskDetailsService Details, MemoryCache Cache);

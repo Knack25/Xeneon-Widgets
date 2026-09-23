@@ -1,5 +1,7 @@
 using PlannerEdge.Helper.Graph;
 using PlannerEdge.Helper.Planner;
+using PlannerEdge.Helper.Storage;
+using PlannerEdge.Helper.Contracts;
 
 namespace PlannerEdge.Helper.Tests;
 
@@ -9,7 +11,7 @@ public sealed class TaskCompletionServiceTests
     public async Task CompleteAsync_UsesLatestEtagAndMarksIncompleteTaskComplete()
     {
         var graph = new FakePlannerGraphClient(new GraphTask("task-1", "Finish", "plan-1", "bucket-1", null, 5, 0, "etag-latest", []));
-        var service = new TaskCompletionService(graph);
+        var service = new TaskCompletionService(graph, new SelectedPlanTaskService(graph, new FakeSettings()));
 
         var response = await service.CompleteAsync("task-1", CancellationToken.None);
 
@@ -22,12 +24,34 @@ public sealed class TaskCompletionServiceTests
     public async Task CompleteAsync_TreatsAlreadyCompleteTaskAsSuccessWithoutPatch()
     {
         var graph = new FakePlannerGraphClient(new GraphTask("task-1", "Finish", "plan-1", "bucket-1", null, 5, 100, "etag-latest", []));
-        var service = new TaskCompletionService(graph);
+        var service = new TaskCompletionService(graph, new SelectedPlanTaskService(graph, new FakeSettings()));
 
         var response = await service.CompleteAsync("task-1", CancellationToken.None);
 
         Assert.True(response.Completed);
         Assert.Empty(graph.CompletedCalls);
+    }
+
+    [Fact]
+    public async Task CompleteAsync_RejectsTaskOutsideSelectedPlanBeforeMutation()
+    {
+        var graph = new FakePlannerGraphClient(new GraphTask("task-1", "Finish", "other-plan", "bucket-1", null, 5, 0, "etag-latest", []));
+        var selected = new SelectedPlanTaskService(graph, new FakeSettings());
+        var service = new TaskCompletionService(graph, selected);
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            service.CompleteAsync("task-1", CancellationToken.None));
+
+        Assert.Empty(graph.CompletedCalls);
+    }
+
+    private sealed class FakeSettings : IPlannerSettingsStore
+    {
+        public Task<SettingsDto> LoadSettingsAsync(CancellationToken ct) =>
+            Task.FromResult(new SettingsDto("plan-1", "Board", true));
+        public Task SaveSettingsAsync(SettingsDto settings, CancellationToken ct) => throw new NotSupportedException();
+        public Task<BoardDisplay?> LoadCachedDisplayAsync(CancellationToken ct) => throw new NotSupportedException();
+        public Task SaveCachedDisplayAsync(BoardDisplay display, CancellationToken ct) => throw new NotSupportedException();
     }
 
     private sealed class FakePlannerGraphClient(GraphTask? task) : IPlannerGraphClient

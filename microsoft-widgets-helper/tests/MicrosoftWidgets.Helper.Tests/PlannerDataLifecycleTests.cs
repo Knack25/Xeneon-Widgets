@@ -207,8 +207,10 @@ public sealed class PlannerDataLifecycleTests
     public async Task Details_load_started_before_purge_cannot_publish_after_purge()
     {
         await using var fixture = await Fixture.CreateAsync();
+        await fixture.Settings.SaveSettingsAsync(new SettingsDto("plan", "Board", true), default);
         var graph = PausedPlannerGraph.ForDetails();
-        var service = new TaskDetailsService(graph, fixture.Lifecycle);
+        var service = new TaskDetailsService(graph,
+            new SelectedPlanTaskService(graph, fixture.Settings), fixture.Lifecycle);
 
         var load = service.GetAsync("task", default);
         await graph.Entered.WaitAsync(TimeSpan.FromSeconds(5));
@@ -244,8 +246,9 @@ public sealed class PlannerDataLifecycleTests
         await using var fixture = await Fixture.CreateAsync();
         await fixture.Settings.SaveSettingsAsync(new SettingsDto("plan", "Board", true), default);
         var graph = PausedPlannerGraph.ForChat();
-        var details = new TaskDetailsService(graph, fixture.Lifecycle);
-        var service = new TaskChatService(graph, fixture.Settings, details, fixture.Lifecycle);
+        var selected = new SelectedPlanTaskService(graph, fixture.Settings);
+        var details = new TaskDetailsService(graph, selected, fixture.Lifecycle);
+        var service = new TaskChatService(graph, selected, details, fixture.Lifecycle);
 
         var load = service.GetAsync("task", null, default);
         await graph.Entered.WaitAsync(TimeSpan.FromSeconds(5));
@@ -305,6 +308,39 @@ public sealed class PlannerDataLifecycleTests
         Assert.True(json.Contains("settings"));
         json.ReleaseDeletes();
         await lifecycle.RetryPendingPurgeAsync(default);
+    }
+
+    [Fact]
+    public async Task Shutdown_rejects_late_purge_and_keeps_recovery_marker()
+    {
+        var json = new FaultingPlannerJsonStore();
+        var account = new MicrosoftAccountState(new MutableIdentity(), json);
+        await account.GetAsync(default);
+        var settings = new PlannerSettingsStore(json, account,
+            new FakeTimeProvider(DateTimeOffset.Parse("2026-09-22T12:00:00Z")));
+        await settings.ClearPurgeRequiredAsync(default);
+        var shutdownReady = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finishShutdown = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var lifecycle = new PlannerDataLifecycle(account, settings, new MemoryCache(new MemoryCacheOptions()),
+            new PlannerDataAccessGate(), beforePurgeFinalization: null,
+            beforeShutdownMarkerClear: async cancellationToken =>
+            {
+                shutdownReady.TrySetResult();
+                await finishShutdown.Task.WaitAsync(cancellationToken);
+            });
+        await lifecycle.StartAsync(default);
+        await settings.SaveSettingsAsync(new SettingsDto("plan", "Board", true), default);
+
+        var stop = lifecycle.StopAsync(default);
+        await shutdownReady.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var latePurge = lifecycle.PurgeAsync(default);
+        finishShutdown.TrySetResult();
+        await stop.WaitAsync(TimeSpan.FromSeconds(5));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => latePurge);
+
+        Assert.True(await settings.IsPurgeRequiredAsync(default));
+        Assert.True(json.Contains("settings"));
     }
 
     [Fact]
@@ -520,7 +556,9 @@ public sealed class PlannerDataLifecycleTests
         await using var fixture = await Fixture.CreateAsync();
         await fixture.Settings.SaveSettingsAsync(new SettingsDto("plan", "Board", true), default);
         await fixture.Settings.SaveCachedDisplayAsync(Display("plan"), default);
-        var service = new TaskDetailsService(new AssigneeForbiddenGraph(), fixture.Lifecycle);
+        var graph = new AssigneeForbiddenGraph();
+        var service = new TaskDetailsService(graph,
+            new SelectedPlanTaskService(graph, fixture.Settings), fixture.Lifecycle);
 
         await Assert.ThrowsAsync<GraphApiException>(() => service.GetAsync("task", default));
 
