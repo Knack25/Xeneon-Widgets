@@ -33,6 +33,32 @@ test('embedded account change invalidates every request ticket', () => {
   assert.equal(state.seed(ticket, response('late-cache')), false);
   assert.equal(state.accept(ticket, response('late-live')), false);
   assert.deepEqual(state.events, []);
+  assert.equal(state.authorized, false);
+  assert.equal(state.offline, false);
+});
+
+test('successful authorization explicitly restores usable state', () => {
+  const state = new RefreshState();
+  state.clearAuthorization();
+
+  assert.equal(state.authorized, false);
+  state.authorize();
+
+  assert.equal(state.authorized, true);
+});
+
+test('late cached authorization loss wins over resolved and superseded tickets', () => {
+  for(const superseded of [false,true]) {
+    const state=new RefreshState(), old=state.begin('range');
+    state.accept(old,response('live'));
+    if(superseded)state.begin('new-range');
+
+    assert.throws(()=>state.seed(old,{
+      events:[],sources:[{calendarKey:'calendar',error:{code:'sign_in_required',message:'Sign in'}}]
+    }),error=>error.status===401);
+    assert.equal(state.authorized,false);
+    assert.deepEqual(state.events,[]);
+  }
 });
 
 test('clearAuthorization aborts active work before invalidating tickets', () => {

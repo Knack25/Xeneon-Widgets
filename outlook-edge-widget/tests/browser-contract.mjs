@@ -9,6 +9,36 @@ async function ownerPreview(page) {
   });
 }
 
+async function runEmbeddedAuthorizationDialogCheck(browser,base,{source,delay}) {
+  const context=await browser.newContext(),page=await context.newPage(),fixture=new FixtureApi();
+  await ownerPreview(page);
+  let mode='normal',releaseDetail,releaseJoin;
+  const detailGate=new Promise(resolve=>releaseDetail=resolve),joinGate=new Promise(resolve=>releaseJoin=resolve);
+  await page.route('**/api/outlook/**',async route=>{
+    const req=route.request(),path=new URL(req.url()).pathname.split('/api/outlook/')[1];
+    if(path==='event-details' && delay==='details')await detailGate;
+    if(path==='join' && delay==='join')await joinGate;
+    const result=req.method()==='GET'?await fixture.get(path):await fixture.post(path,req.postDataJSON());
+    if(path===source && mode==='unauthorized')result.sources=[{calendarKey:'work',fetchedAt:null,stale:false,error:{code:'account_changed',message:'Account changed'}}];
+    await route.fulfill({json:result}).catch(()=>{});
+  });
+  await page.goto(`${base}/outlook/?instance=embedded-${source.replace('/','-')}-${delay||'open'}`);
+  await page.locator('[data-event-id]').first().waitFor();
+  await page.locator('[data-event-id]').first().click();
+  if(delay!=='details')await page.getByRole('heading',{name:'Description',exact:true}).waitFor();
+  if(delay==='join')await page.getByRole('button',{name:'Join meeting',exact:true}).click();
+  mode='unauthorized';
+  if(source==='view/cached')await page.evaluate(()=>document.querySelector('.navigation button:last-child').click());
+  else await page.evaluate(()=>document.querySelector('button[aria-label="Refresh"]').click());
+  await page.getByRole('button',{name:'Reconnect',exact:true}).waitFor();
+  assert.equal(await page.getByRole('dialog').count(),0,`${source} authorization loss closes details`);
+  assert.equal(await page.getByRole('button',{name:'Join meeting',exact:true}).count(),0,`${source} authorization loss removes Join`);
+  releaseDetail();releaseJoin();await page.waitForTimeout(50);
+  assert.equal(await page.getByRole('dialog').count(),0,`${source} delayed ${delay||'dialog'} response stays closed`);
+  assert.equal(await page.getByText(/Meeting opened on your PC|Demo meeting launch recorded/).count(),0,`${source} delayed Join response stays hidden`);
+  await context.close();
+}
+
 export async function runContractChecks(browser,base) {
   const context=await browser.newContext(), page=await context.newPage(), fixture=new FixtureApi(), calls=[];
   page.on('pageerror',error=>console.error('Contract preview:',error.message));
@@ -110,16 +140,20 @@ export async function runContractChecks(browser,base) {
   await native.evaluate(()=>document.querySelector('button[aria-label="Refresh"]').click());
   await native.getByRole('button',{name:'Pair again',exact:true,includeHidden:true}).waitFor({state:'attached'});
   assert.equal(await native.locator('[data-event-id]').count(),0);
-  assert.equal(await native.locator('#dialog-title').textContent(),'Event details');
+  assert.equal(await native.getByRole('dialog').count(),0);
   assert.equal(await native.getByRole('button',{name:'Join meeting',exact:true}).count(),0);
   assert.equal(await native.evaluate(()=>JSON.parse(localStorage.getItem('native-test')).outlook.credential),'');
-  await native.keyboard.press('Escape');
   assert.equal(await native.getByRole('button',{name:'Refresh',exact:true}).isDisabled(),false);
   sourceAuthFailure=false;paired=false;
   await native.getByRole('button',{name:'Pair again',exact:true}).click();
   await native.locator('[data-event-id]').first().waitFor();
   assert.equal(polls,2,'embedded auth failure can recover through re-pairing');
   await nativeContext.close();
+
+  await runEmbeddedAuthorizationDialogCheck(browser,base,{source:'view'});
+  await runEmbeddedAuthorizationDialogCheck(browser,base,{source:'view/cached'});
+  await runEmbeddedAuthorizationDialogCheck(browser,base,{source:'view',delay:'details'});
+  await runEmbeddedAuthorizationDialogCheck(browser,base,{source:'view',delay:'join'});
 
   const blockedContext=await browser.newContext(),blocked=await blockedContext.newPage();
   await blocked.addInitScript(()=>{
