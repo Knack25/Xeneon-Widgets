@@ -4,9 +4,9 @@ Microsoft Planner and Outlook on the XENEON EDGE, backed by a shared Windows hel
 
 ## Install
 
-Download the **MicrosoftWidgetsSetup** installer from the [latest release](https://github.com/Knack25/Xeneon-Widgets/releases/latest). The installer includes the helper, Planner and Outlook widgets, Start menu shortcuts, and an optional Windows startup setting. No terminal commands or separate runtime installation are needed.
+Download the **MicrosoftWidgetsSetup** installer from the [latest release](https://github.com/Knack25/Xeneon-Widgets/releases/latest) and run it normally, without **Run as administrator**. The installer includes the helper, Planner and Outlook widgets, Start menu shortcuts, and an optional Windows startup setting. No terminal commands or separate runtime installation are needed.
 
-Follow the setup page to connect your work account, choose a board, and download the widget for import into iCUE. See the [installation guide](docs/INSTALL.md) for upgrades, Microsoft permissions, and portable use.
+Open setup from the helper's notification-area icon or the Start menu, then connect your work account, choose a board, and approve each widget's short pairing code. Direct visits to `http://localhost:8787` intentionally show only instructions to open setup from the tray. After this security upgrade, each existing Planner and Outlook widget must be paired once again. See the [installation guide](docs/INSTALL.md) for upgrades, Microsoft permissions, and portable use.
 
 ## Projects
 

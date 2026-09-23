@@ -8,13 +8,15 @@ Download **MicrosoftWidgetsSetup** from the [latest release](https://github.com/
 
 From suite version 0.3.1, setup checks for updates at startup and daily. **Check for updates** checks immediately; **Update now** requires explicit approval before downloading and installing. In-app installation requires an installed copy, not a portable/development build. New iCUE widget packages still need importing manually.
 
-The running helper has a notification-area icon. Left-click opens setup; right-click offers **Open setup**, **Check for updates**, and **Quit helper**. The update command opens the Updates section and checks immediately, without approving installation. The icon is removed during shutdown and returns after an update restart. Windows may initially hide it in the tray overflow.
+The running helper has a notification-area icon. Left-click opens setup through a short-lived, single-use bootstrap; right-click offers **Open setup**, **Check for updates**, and **Quit helper**. The update command opens the Updates section and checks immediately, without approving installation. Direct navigation to `http://localhost:8787` shows only instructions to use the tray icon and does not expose helper state. The icon is removed during shutdown and returns after an update restart. Windows may initially hide it in the tray overflow.
+
+The first hardened upgrade requires each existing Planner and Outlook widget instance to pair once again. Approve only the short code shown by that widget. Pairing credentials are scoped to one integration and account and can be revoked independently from setup.
 
 ## Build and run
 
-Run `scripts/publish.ps1`, then open `dist/helper/MicrosoftWidgets.Helper.exe`. The setup page opens at http://localhost:8787. Only one helper should run at a time. Stop the old Planner Edge helper before starting this executable.
+Run `scripts/publish.ps1`, then open `dist/helper/MicrosoftWidgets.Helper.exe`. The helper opens an authenticated setup link; typing the loopback address directly does not create a setup session. Only one helper should run at a time. Stop the old Planner Edge helper before starting this executable.
 
-Run `scripts/verify.ps1` to test the helper independently. `MicrosoftWidgets.Helper.slnx` contains the host and test projects.
+Run `scripts/verify.ps1` to test the helper independently. Run the repository-level `../scripts/verify.ps1` for the helper, both widgets, browser setup, and release-security checks together. `MicrosoftWidgets.Helper.slnx` contains the host and test projects.
 
 The helper targets `net10.0-windows` and uses a dedicated STA Windows Forms message loop for its tray UI. Release builds remain self-contained. `scripts/create-icon.ps1` regenerates the multi-resolution application/tray icon.
 

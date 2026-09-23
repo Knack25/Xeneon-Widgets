@@ -7,6 +7,10 @@ $releaseSafety = Join-Path $repositoryRoot 'scripts\release-safety.ps1'
 $installer = Join-Path $repositoryRoot 'microsoft-widgets-helper\installer\MicrosoftWidgets.iss'
 $stopScript = Join-Path $repositoryRoot 'microsoft-widgets-helper\installer\Stop-MicrosoftWidgetsHelper.ps1'
 $releaseResolver = Join-Path $repositoryRoot 'scripts\resolve-release.ps1'
+$rootVerifier = Join-Path $repositoryRoot 'scripts\verify.ps1'
+$securityWorkflow = Join-Path $repositoryRoot '.github\workflows\security.yml'
+$dependabot = Join-Path $repositoryRoot '.github\dependabot.yml'
+$secretScanner = Join-Path $repositoryRoot 'scripts\scan-secrets.ps1'
 
 function Assert-True([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
@@ -35,6 +39,33 @@ Assert-True ($null -ne (Get-Command Publish-VerifiedReleaseSnapshot -ErrorAction
 Assert-True ($null -ne (Get-Command Resolve-VerifiedReleaseSnapshot -ErrorAction SilentlyContinue)) 'Verified release consumer resolver is missing.'
 Assert-True ($null -ne (Get-Command Resolve-VerifiedReleaseDescriptor -ErrorAction SilentlyContinue)) 'Descriptor-backed release resolver is missing.'
 Assert-True (Test-Path -LiteralPath $releaseResolver -PathType Leaf) 'Verified release resolver command is missing.'
+Assert-True (Test-Path -LiteralPath $rootVerifier -PathType Leaf) 'Root security verification command is missing.'
+
+$rootVerifierSource = Get-Content -Raw -LiteralPath $rootVerifier
+$helperVerifierSource = Get-Content -Raw -LiteralPath (Join-Path $repositoryRoot 'microsoft-widgets-helper\scripts\verify.ps1')
+$plannerVerifierSource = Get-Content -Raw -LiteralPath (Join-Path $repositoryRoot 'planner-edge-widget\scripts\verify.ps1')
+Assert-True ($rootVerifierSource -match 'planner-edge-widget[\\/]scripts[\\/]verify\.ps1') 'Root verification must invoke the combined widget verifier.'
+foreach ($requiredHelperSuite in @('setup-browser\.mjs', 'outlook-setup\.test\.mjs', 'helper-api\.test\.mjs', 'update-ui\.test\.mjs', 'release-security\.test\.ps1')) {
+    Assert-True ($helperVerifierSource -match $requiredHelperSuite) "Helper verification does not invoke required security suite: $requiredHelperSuite"
+}
+Assert-True ($plannerVerifierSource -match 'microsoft-widgets-helper[\\/]scripts[\\/]verify\.ps1') 'Combined widget verification must invoke the complete helper verifier.'
+Assert-True ($plannerVerifierSource -match 'outlook-edge-widget') 'Combined widget verification does not invoke the Outlook suite.'
+Assert-True (Test-Path -LiteralPath $securityWorkflow -PathType Leaf) 'Security CI workflow is missing.'
+Assert-True (Test-Path -LiteralPath $dependabot -PathType Leaf) 'Dependabot configuration is missing.'
+Assert-True (Test-Path -LiteralPath $secretScanner -PathType Leaf) 'Tracked-history secret scanner is missing.'
+$securityWorkflowSource = Get-Content -Raw -LiteralPath $securityWorkflow
+$dependabotSource = Get-Content -Raw -LiteralPath $dependabot
+Assert-True ($securityWorkflowSource -match 'permissions:\s*\r?\n\s*contents:\s*read') 'Security CI must grant only read access to repository contents.'
+Assert-True ($securityWorkflowSource -match 'runs-on:\s*windows-latest') 'Security CI must run on Windows.'
+Assert-True (($securityWorkflowSource | Select-String -AllMatches 'npm ci --ignore-scripts').Matches.Count -eq 2) 'Security CI must use locked installs for both npm projects.'
+Assert-True ($securityWorkflowSource -match 'NuGetAuditMode=all' -and $securityWorkflowSource -match 'package --vulnerable --include-transitive') 'Security CI must freshly audit direct and transitive NuGet dependencies.'
+Assert-True ($securityWorkflowSource -match 'scripts[/\\]verify\.ps1' -and $securityWorkflowSource -match 'scripts[/\\]scan-secrets\.ps1') 'Security CI must run complete verification and tracked-history secret scanning.'
+foreach ($ecosystem in @('npm', 'nuget', 'github-actions')) {
+    Assert-True ($dependabotSource -match "package-ecosystem:\s*'$ecosystem'") "Dependabot does not cover $ecosystem."
+}
+foreach ($directory in @('/planner-edge-widget/widget', '/outlook-edge-widget')) {
+    Assert-True ($dependabotSource -match [regex]::Escape("directory: '$directory'")) "Dependabot does not cover npm root $directory."
+}
 
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ("MicrosoftWidgetsReleaseSecurity-" + [Guid]::NewGuid().ToString('N'))
 $stage = Join-Path $testRoot 'stage'
