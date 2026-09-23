@@ -17,7 +17,7 @@
     <EmbeddedResource Include="Assets/helper.ico" LogicalName="MicrosoftWidgets.Helper.Icon.ico" />
     <EmbeddedResource Include="Assets/helper-light.ico" LogicalName="MicrosoftWidgets.Helper.IconLight.ico" />
     <AssemblyMetadata Include="ReleaseVersion" Value="$(ReleaseVersion)" />
-    <PackageReference Include="Microsoft.Identity.Client" Version="4.89.0" />
+    <PackageReference Include="Microsoft.Identity.Client" Version="4.90.0" />
     <PackageReference Include="Microsoft.Identity.Client.Extensions.Msal" Version="4.89.0" />
     <PackageReference Include="HtmlAgilityPack" Version="1.13.0" />
   </ItemGroup>
