@@ -22,12 +22,15 @@ public sealed class LocalAccessService
 
     public const int MaximumBootstrapCount = 256;
     public const int MaximumOwnerSessionCount = 256;
+    internal const int MaximumFailedBootstrapExchanges = 16;
 
     private static readonly TimeSpan BootstrapLifetime = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan OwnerSessionLifetime = TimeSpan.FromHours(8);
+    private static readonly TimeSpan FailedBootstrapWindow = TimeSpan.FromMinutes(1);
     private readonly object gate = new();
     private readonly Dictionary<long, ExpiringToken> bootstraps = [];
     private readonly Dictionary<long, ExpiringToken> ownerSessions = [];
+    private readonly Queue<DateTimeOffset> failedBootstrapExchanges = [];
     private readonly TimeProvider timeProvider;
     private readonly MicrosoftAccountState? accountState;
     private long nextTokenId;
@@ -64,36 +67,71 @@ public sealed class LocalAccessService
     }
 
     public string ExchangeBootstrap(string token)
-        => ExchangeBootstrap(token, null);
+    {
+        var hash = RequirePendingBootstrap(token);
+        try { return CompleteBootstrapExchange(hash, null); }
+        finally { CryptographicOperations.ZeroMemory(hash); }
+    }
 
     public async Task<string> ExchangeBootstrapAsync(string token, CancellationToken cancellationToken)
     {
-        AccountLease? lease = accountState is null
-            ? null
-            : await accountState.GetIdentityAsync(requireAccount: false, cancellationToken);
-        return ExchangeBootstrap(token, lease);
-    }
-
-    private string ExchangeBootstrap(string token, AccountLease? lease)
-    {
-        if (!TryGetHash(token, out var hash)) throw new LocalAccessException("The local access bootstrap is invalid.");
+        var hash = RequirePendingBootstrap(token);
         try
         {
-            var now = timeProvider.GetUtcNow();
-            lock (gate)
-            {
-                RemoveExpired(bootstraps, now);
-                var match = FindMatch(bootstraps, hash);
-                if (match is null) throw new LocalAccessException("The local access bootstrap is invalid or expired.");
-
-                bootstraps.Remove(match.Value);
-                return IssueOwnerSession(now, lease);
-            }
+            AccountLease? lease = accountState is null
+                ? null
+                : await accountState.GetIdentityAsync(requireAccount: false, cancellationToken);
+            return CompleteBootstrapExchange(hash, lease);
         }
         finally
         {
             CryptographicOperations.ZeroMemory(hash);
         }
+    }
+
+    private byte[] RequirePendingBootstrap(string token)
+    {
+        if (!TryGetHash(token, out var hash))
+        {
+            lock (gate)
+            {
+                throw BootstrapFailure(timeProvider.GetUtcNow(), "The local access bootstrap is invalid.");
+            }
+        }
+
+        lock (gate)
+        {
+            var now = timeProvider.GetUtcNow();
+            RemoveExpired(bootstraps, now);
+            if (FindMatch(bootstraps, hash) is not null) return hash;
+            CryptographicOperations.ZeroMemory(hash);
+            throw BootstrapFailure(now, "The local access bootstrap is invalid or expired.");
+        }
+    }
+
+    private string CompleteBootstrapExchange(byte[] hash, AccountLease? lease)
+    {
+        lock (gate)
+        {
+            var now = timeProvider.GetUtcNow();
+            RemoveExpired(bootstraps, now);
+            var match = FindMatch(bootstraps, hash);
+            if (match is null)
+                throw BootstrapFailure(now, "The local access bootstrap is invalid or expired.");
+
+            bootstraps.Remove(match.Value);
+            return IssueOwnerSession(now, lease);
+        }
+    }
+
+    private Exception BootstrapFailure(DateTimeOffset now, string message)
+    {
+        while (failedBootstrapExchanges.TryPeek(out var failedAt) && failedAt <= now - FailedBootstrapWindow)
+            failedBootstrapExchanges.Dequeue();
+        if (failedBootstrapExchanges.Count >= MaximumFailedBootstrapExchanges)
+            return new LocalAccessThrottleException();
+        failedBootstrapExchanges.Enqueue(now);
+        return new LocalAccessException(message);
     }
 
     internal string IssueReplacementOwnerSession(AccountLease lease)
@@ -262,6 +300,10 @@ public static class LocalAccessEndpointRouteBuilderExtensions
                 var session = await access.ExchangeBootstrapAsync(
                     context.Request.Headers[LocalAccessHeaders.Bootstrap].ToString(), ct);
                 return Results.Ok(new OwnerSessionResponse(session));
+            }
+            catch (LocalAccessThrottleException)
+            {
+                return Results.StatusCode(StatusCodes.Status429TooManyRequests);
             }
             catch (LocalAccessException)
             {

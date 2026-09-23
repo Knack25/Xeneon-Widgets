@@ -20,7 +20,10 @@ public sealed record OwnerBootstrap(string Token, DateTimeOffset ExpiresAt);
 
 public sealed record OwnerSessionResponse(string Token);
 
-public sealed class LocalAccessException(string message) : Exception(message);
+public class LocalAccessException(string message) : Exception(message);
+
+internal sealed class LocalAccessThrottleException() :
+    LocalAccessException("Local access bootstrap attempts are temporarily limited.");
 
 public static class LocalAccessHeaders
 {

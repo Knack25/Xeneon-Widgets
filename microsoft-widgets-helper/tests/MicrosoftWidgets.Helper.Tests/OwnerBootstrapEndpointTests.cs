@@ -61,6 +61,30 @@ public sealed class OwnerBootstrapEndpointTests
         Assert.Contains("sensitive-installation-data", await installationResponse.Content.ReadAsStringAsync());
     }
 
+    [Fact]
+    public async Task Invalid_bootstrap_flood_is_throttled_without_identity_work_or_starving_a_valid_exchange()
+    {
+        await using var host = await OwnerBootstrapTestHost.StartAsync();
+        var valid = host.Access.CreateBootstrap();
+        var statuses = new List<HttpStatusCode>();
+
+        for (var attempt = 0; attempt < 64; attempt++)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/api/local-access/session");
+            request.Headers.Add(LocalAccessHeaders.Bootstrap,
+                attempt % 2 == 0 ? "%%%malformed%%%" : new string('A', 43));
+            using var response = await host.Client.SendAsync(request);
+            statuses.Add(response.StatusCode);
+        }
+
+        Assert.True(statuses.Contains(HttpStatusCode.TooManyRequests) && host.Identity.Calls == 0,
+            $"Expected throttling with no identity work; 429 seen: {statuses.Contains(HttpStatusCode.TooManyRequests)}, identity calls: {host.Identity.Calls}.");
+
+        var session = await ExchangeAsync(host.Client, valid.Token).WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal(1, host.Identity.Calls);
+        Assert.True(await host.Access.ValidateOwnerSessionAsync(session, default));
+    }
+
     private static async Task<string> ExchangeAsync(HttpClient client, string bootstrap)
     {
         using var request = new HttpRequestMessage(HttpMethod.Post, "/api/local-access/session");
@@ -72,10 +96,12 @@ public sealed class OwnerBootstrapEndpointTests
     }
 }
 
-internal sealed class OwnerBootstrapTestHost(WebApplication app, HttpClient client, LocalAccessService access) : IAsyncDisposable
+internal sealed class OwnerBootstrapTestHost(WebApplication app, HttpClient client, LocalAccessService access,
+    CountingOwnerIdentity identity) : IAsyncDisposable
 {
     public HttpClient Client { get; } = client;
     public LocalAccessService Access { get; } = access;
+    public CountingOwnerIdentity Identity { get; } = identity;
 
     public static async Task<OwnerBootstrapTestHost> StartAsync()
     {
@@ -83,7 +109,7 @@ internal sealed class OwnerBootstrapTestHost(WebApplication app, HttpClient clie
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = "Testing" });
         builder.WebHost.UseUrls("http://127.0.0.1:" + port);
         builder.Services.AddSingleton(TimeProvider.System);
-        var identity = new OwnerManagementAuth(true);
+        var identity = new CountingOwnerIdentity();
         builder.Services.AddSingleton<IMicrosoftAccountIdentityProvider>(identity);
         builder.Services.AddSingleton<ILocalJsonStore>(new OwnerManagementStore());
         builder.Services.AddSingleton<MicrosoftAccountState>();
@@ -97,7 +123,8 @@ internal sealed class OwnerBootstrapTestHost(WebApplication app, HttpClient clie
         await app.StartAsync();
 
         var access = app.Services.GetRequiredService<LocalAccessService>();
-        return new(app, new HttpClient { BaseAddress = new Uri("http://localhost:" + port + "/") }, access);
+        return new(app, new HttpClient { BaseAddress = new Uri("http://localhost:" + port + "/") }, access,
+            identity);
     }
 
     public async ValueTask DisposeAsync()
@@ -112,5 +139,18 @@ internal sealed class OwnerBootstrapTestHost(WebApplication app, HttpClient clie
         using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         return ((IPEndPoint)listener.LocalEndpoint).Port;
+    }
+}
+
+internal sealed class CountingOwnerIdentity : IMicrosoftAccountIdentityProvider
+{
+    private int calls;
+    public int Calls => Volatile.Read(ref calls);
+
+    public Task<MicrosoftAccountIdentity> GetAccountIdentityAsync(CancellationToken cancellationToken)
+    {
+        Interlocked.Increment(ref calls);
+        return Task.FromResult(new MicrosoftAccountIdentity(
+            "owner-home", "owner-tenant", "owner-client", "owner@example.test"));
     }
 }
