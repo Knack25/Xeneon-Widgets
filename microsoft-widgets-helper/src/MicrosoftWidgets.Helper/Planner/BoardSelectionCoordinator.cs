@@ -45,7 +45,12 @@ public sealed class BoardSelectionCoordinator : IBoardSelectionCoordinator
         this.settingsStore = settingsStore;
     }
 
-    public async Task<BoardSelectionTicket> CaptureAsync(CancellationToken cancellationToken)
+    public Task<BoardSelectionTicket> CaptureAsync(CancellationToken cancellationToken) =>
+        accountState is null
+            ? CaptureCoreAsync(cancellationToken)
+            : accountState.ExecuteBoundAsync(() => CaptureCoreAsync(cancellationToken), cancellationToken);
+
+    private async Task<BoardSelectionTicket> CaptureCoreAsync(CancellationToken cancellationToken)
     {
         await gate.WaitAsync(cancellationToken);
         try
@@ -61,7 +66,12 @@ public sealed class BoardSelectionCoordinator : IBoardSelectionCoordinator
         }
     }
 
-    public async Task<SettingsDto> ChangeAsync(Func<CancellationToken, Task<SettingsDto>> change,
+    public Task<SettingsDto> ChangeAsync(Func<CancellationToken, Task<SettingsDto>> change,
+        CancellationToken cancellationToken) => accountState is null
+            ? ChangeCoreAsync(change, cancellationToken)
+            : accountState.ExecuteBoundAsync(() => ChangeCoreAsync(change, cancellationToken), cancellationToken);
+
+    private async Task<SettingsDto> ChangeCoreAsync(Func<CancellationToken, Task<SettingsDto>> change,
         CancellationToken cancellationToken)
     {
         await gate.WaitAsync(cancellationToken);

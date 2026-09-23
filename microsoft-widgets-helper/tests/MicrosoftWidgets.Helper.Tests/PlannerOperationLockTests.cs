@@ -13,6 +13,64 @@ namespace PlannerEdge.Helper.Tests;
 
 public sealed class PlannerOperationLockTests
 {
+    [Theory]
+    [InlineData("capture")]
+    [InlineData("change")]
+    public async Task Production_settings_store_and_member_publication_use_account_lifecycle_selection_order(
+        string operation)
+    {
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var identity = new MutableIdentity();
+        var store = new OutlookMemoryStore();
+        var account = new MicrosoftAccountState(identity, store);
+        var accessGate = new PlannerDataAccessGate();
+        var productionSettings = new PlannerSettingsStore(store, account, TimeProvider.System, accessGate);
+        var settingsEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var settings = new SignalingSettingsStore(productionSettings, settingsEntered);
+        var selection = new BoardSelectionCoordinator(settings, account);
+        var lifecycle = new PlannerDataLifecycle(new MemoryCache(new MemoryCacheOptions()), accessGate);
+        var lease = await account.GetAsync(cancellation.Token);
+        using var request = account.BindRequest(lease);
+        await productionSettings.SaveSettingsAsync(new SettingsDto("plan", "Board", true), cancellation.Token);
+        var selectionTicket = await selection.CaptureAsync(cancellation.Token);
+        var lifecycleTicket = lifecycle.CaptureTicket();
+        var publicationHasOuterGates = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releasePublication = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var publication = account.ExecuteAuthorizedAsync(lease,
+            () => lifecycle.ExecutePublicationAsync(lifecycleTicket, async () =>
+            {
+                publicationHasOuterGates.TrySetResult();
+                await releasePublication.Task.WaitAsync(cancellation.Token);
+                await selection.RunAsync(selectionTicket, _ => Task.CompletedTask, cancellation.Token);
+            }, cancellation.Token), cancellation.Token);
+        await publicationHasOuterGates.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        settings.Arm();
+        Task boardWork = operation == "capture"
+            ? selection.CaptureAsync(cancellation.Token)
+            : selection.ChangeAsync(_ =>
+            {
+                settingsEntered.TrySetResult();
+                return productionSettings.UpdateSettingsAsync(
+                    value => value with { SelectedPlanTitle = "Renamed" }, cancellation.Token);
+            }, cancellation.Token);
+        var selectionWasAvailable = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseProbe = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var probe = selection.RunAsync(selectionTicket, async _ =>
+        {
+            selectionWasAvailable.TrySetResult();
+            await releaseProbe.Task.WaitAsync(cancellation.Token);
+        }, cancellation.Token);
+
+        await Task.WhenAny(settingsEntered.Task, selectionWasAvailable.Task).WaitAsync(TimeSpan.FromSeconds(2));
+        releaseProbe.TrySetResult();
+        releasePublication.TrySetResult();
+
+        await Task.WhenAll(boardWork, probe, publication).WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
     [Fact]
     public async Task Real_graph_mutation_and_member_publication_use_one_lock_order()
     {
@@ -125,6 +183,44 @@ public sealed class PlannerOperationLockTests
         await Task.WhenAll(child, transition).WaitAsync(TimeSpan.FromSeconds(2));
     }
 
+    [Fact]
+    public async Task Child_that_enters_before_parent_completion_cannot_outlive_the_account_gate()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        using var request = fixture.Account.BindRequest(fixture.Lease);
+        var childEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseChild = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task? child = null;
+
+        var parent = fixture.Account.ExecuteBoundAsync(async () =>
+        {
+            child = Task.Run(() => fixture.Account.ExecuteBoundAsync(async () =>
+            {
+                childEntered.TrySetResult();
+                await releaseChild.Task.WaitAsync(cancellation.Token);
+                return true;
+            }, cancellation.Token), cancellation.Token);
+            await childEntered.Task.WaitAsync(cancellation.Token);
+            return true;
+        }, cancellation.Token);
+        await childEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        var transitionEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var transition = fixture.Account.TransitionAsync(() =>
+        {
+            transitionEntered.TrySetResult();
+            return Task.FromResult(true);
+        }, cancellation.Token);
+
+        await Assert.ThrowsAsync<TimeoutException>(() =>
+            transitionEntered.Task.WaitAsync(TimeSpan.FromMilliseconds(200)));
+        Assert.False(parent.IsCompleted);
+
+        releaseChild.TrySetResult();
+        await Task.WhenAll(parent, child!, transition).WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
     private sealed class Fixture : IAsyncDisposable
     {
         private readonly ServiceProvider services;
@@ -211,6 +307,32 @@ public sealed class PlannerOperationLockTests
             Task.FromResult<BoardDisplay?>(null);
         public Task SaveCachedDisplayAsync(BoardDisplay display, CancellationToken cancellationToken) =>
             Task.CompletedTask;
+    }
+
+    private sealed class SignalingSettingsStore(IPlannerSettingsStore inner, TaskCompletionSource entered)
+        : IPlannerSettingsStore
+    {
+        private int armed;
+
+        public void Arm() => Interlocked.Exchange(ref armed, 1);
+
+        public Task<SettingsDto> LoadSettingsAsync(CancellationToken cancellationToken)
+        {
+            if (Volatile.Read(ref armed) != 0) entered.TrySetResult();
+            return inner.LoadSettingsAsync(cancellationToken);
+        }
+
+        public Task SaveSettingsAsync(SettingsDto settings, CancellationToken cancellationToken) =>
+            inner.SaveSettingsAsync(settings, cancellationToken);
+
+        public Task<SettingsDto> UpdateSettingsAsync(Func<SettingsDto, SettingsDto> update,
+            CancellationToken cancellationToken) => inner.UpdateSettingsAsync(update, cancellationToken);
+
+        public Task<BoardDisplay?> LoadCachedDisplayAsync(CancellationToken cancellationToken) =>
+            inner.LoadCachedDisplayAsync(cancellationToken);
+
+        public Task SaveCachedDisplayAsync(BoardDisplay display, CancellationToken cancellationToken) =>
+            inner.SaveCachedDisplayAsync(display, cancellationToken);
     }
 
     private sealed class BlockingTokenProvider : IGraphTokenProvider

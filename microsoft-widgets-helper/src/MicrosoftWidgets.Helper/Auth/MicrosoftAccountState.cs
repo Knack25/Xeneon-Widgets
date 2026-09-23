@@ -15,7 +15,7 @@ public sealed class MicrosoftAccountState(IMicrosoftAccountIdentityProvider iden
     private const string IdentityStore = "microsoft-account-identity";
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly AsyncLocal<AccountLease?> authorizedRequest = new();
-    private readonly AsyncLocal<AccountExecution?> executingRequest = new();
+    private readonly AsyncLocal<AccountExecutionScope?> executingRequest = new();
     private readonly AsyncLocal<LocalAccessService.OwnerAuthorization?> authorizedOwnerRequest = new();
     private string? account;
     private long generation;
@@ -40,6 +40,11 @@ public sealed class MicrosoftAccountState(IMicrosoftAccountIdentityProvider iden
 
     public async Task<AccountLease> GetIdentityAsync(bool requireAccount, CancellationToken ct)
     {
+        if (TryGetExecutingLease(out var executingLease))
+        {
+            RequireCurrent(executingLease);
+            return executingLease;
+        }
         await gate.WaitAsync(ct);
         try { return await SynchronizeIdentityLockedAsync(requireAccount, ct); }
         finally { gate.Release(); }
@@ -208,17 +213,29 @@ public sealed class MicrosoftAccountState(IMicrosoftAccountIdentityProvider iden
 
     internal async Task<T> ExecuteAuthorizedAsync<T>(AccountLease lease, Func<Task<T>> action, CancellationToken ct)
     {
-        if (executingRequest.Value is { } active && active.IsCurrent(lease))
+        if (TryEnterNestedExecution(lease, out var nested))
         {
-            RequireCurrent(lease);
-            return await action();
+            var nestedPrevious = executingRequest.Value;
+            try
+            {
+                executingRequest.Value = nested.Scope;
+                RequireCurrent(lease);
+                var result = await action();
+                RequireCurrent(lease);
+                return result;
+            }
+            finally
+            {
+                executingRequest.Value = nestedPrevious;
+                nested.Dispose();
+            }
         }
         await gate.WaitAsync(ct);
         var previous = executingRequest.Value;
         var execution = new AccountExecution(lease);
         try
         {
-            executingRequest.Value = execution;
+            executingRequest.Value = execution.RootScope;
             RequireCurrent(lease);
             await SynchronizeIdentityLockedAsync(false, ct);
             RequireCurrent(lease);
@@ -229,6 +246,7 @@ public sealed class MicrosoftAccountState(IMicrosoftAccountIdentityProvider iden
         }
         finally
         {
+            await execution.CloseAsync();
             execution.Revoke();
             executingRequest.Value = previous;
             gate.Release();
@@ -239,17 +257,29 @@ public sealed class MicrosoftAccountState(IMicrosoftAccountIdentityProvider iden
     {
         var lease = authorizedRequest.Value
             ?? throw new OutlookException("account_changed", "The Microsoft account changed. Reconnect the widget.", 401);
-        if (executingRequest.Value is { } active && active.IsCurrent(lease))
+        if (TryEnterNestedExecution(lease, out var nested))
         {
-            RequireCurrent(lease);
-            return await action();
+            var nestedPrevious = executingRequest.Value;
+            try
+            {
+                executingRequest.Value = nested.Scope;
+                RequireCurrent(lease);
+                var result = await action();
+                RequireCurrent(lease);
+                return result;
+            }
+            finally
+            {
+                executingRequest.Value = nestedPrevious;
+                nested.Dispose();
+            }
         }
         await gate.WaitAsync(ct);
         var previous = executingRequest.Value;
         var execution = new AccountExecution(lease);
         try
         {
-            executingRequest.Value = execution;
+            executingRequest.Value = execution.RootScope;
             RequireCurrent(lease);
             await SynchronizeIdentityLockedAsync(false, ct);
             RequireCurrent(lease);
@@ -269,6 +299,7 @@ public sealed class MicrosoftAccountState(IMicrosoftAccountIdentityProvider iden
         }
         finally
         {
+            await execution.CloseAsync();
             execution.Revoke();
             executingRequest.Value = previous;
             gate.Release();
@@ -357,11 +388,113 @@ public sealed class MicrosoftAccountState(IMicrosoftAccountIdentityProvider iden
         public void Dispose() => restore();
     }
 
-    private sealed class AccountExecution(AccountLease lease)
+    private bool TryEnterNestedExecution(AccountLease lease, out AccountExecutionRegistration registration)
     {
-        private int active = 1;
-        public bool IsCurrent(AccountLease candidate) =>
-            Volatile.Read(ref active) == 1 && candidate == lease;
-        public void Revoke() => Interlocked.Exchange(ref active, 0);
+        var current = executingRequest.Value;
+        if (current is not null && current.Execution.TryEnter(current, lease, out registration)) return true;
+        registration = null!;
+        return false;
+    }
+
+    private bool TryGetExecutingLease(out AccountLease lease)
+    {
+        var current = executingRequest.Value;
+        if (current is not null && current.Execution.TryGetLease(current, out lease)) return true;
+        lease = default;
+        return false;
+    }
+
+    private sealed class AccountExecution
+    {
+        private readonly AccountLease lease;
+        private readonly object sync = new();
+        private TaskCompletionSource? drained;
+        private bool active = true;
+        private bool accepting = true;
+        private int nestedCount;
+
+        public AccountExecution(AccountLease lease)
+        {
+            this.lease = lease;
+            RootScope = new AccountExecutionScope(this, false);
+        }
+
+        public AccountExecutionScope RootScope { get; }
+
+        public bool TryEnter(AccountExecutionScope current, AccountLease candidate,
+            out AccountExecutionRegistration registration)
+        {
+            lock (sync)
+            {
+                if (!active || candidate != lease || !accepting && (!current.Registered || nestedCount == 0))
+                {
+                    registration = null!;
+                    return false;
+                }
+
+                nestedCount++;
+                registration = new AccountExecutionRegistration(this,
+                    new AccountExecutionScope(this, true));
+                return true;
+            }
+        }
+
+        public bool TryGetLease(AccountExecutionScope current, out AccountLease currentLease)
+        {
+            lock (sync)
+            {
+                if (active && (accepting || current.Registered && nestedCount > 0))
+                {
+                    currentLease = lease;
+                    return true;
+                }
+                currentLease = default;
+                return false;
+            }
+        }
+
+        public Task CloseAsync()
+        {
+            lock (sync)
+            {
+                accepting = false;
+                if (nestedCount == 0) return Task.CompletedTask;
+                drained ??= new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                return drained.Task;
+            }
+        }
+
+        public void Exit()
+        {
+            TaskCompletionSource? completion = null;
+            lock (sync)
+            {
+                nestedCount--;
+                if (!accepting && nestedCount == 0) completion = drained;
+            }
+            completion?.TrySetResult();
+        }
+
+        public void Revoke()
+        {
+            lock (sync) active = false;
+        }
+    }
+
+    private sealed class AccountExecutionScope(AccountExecution? execution, bool registered)
+    {
+        public AccountExecution Execution { get; } = execution!;
+        public bool Registered { get; } = registered;
+    }
+
+    private sealed class AccountExecutionRegistration(AccountExecution execution, AccountExecutionScope scope)
+        : IDisposable
+    {
+        private int disposed;
+        public AccountExecutionScope Scope { get; } = scope;
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref disposed, 1) == 0) execution.Exit();
+        }
     }
 }
